@@ -11,6 +11,8 @@ than the stored FAISS index (staleness check via mtime comparison).
 
 import os
 import sys
+import psutil
+import subprocess
 
 # ---------------------------------------------------------------------------
 # Config (can be overridden via env vars)
@@ -139,6 +141,29 @@ mcp = FastMCP(
 )
 
 
+def _detect_agent_cli() -> str | None:
+    """Detect if we are running as a subprocess of gemini, claude, or copilot."""
+    try:
+        p = psutil.Process(os.getpid())
+        for parent in p.parents():
+            try:
+                cmdline = parent.cmdline()
+                if not cmdline:
+                    continue
+                cmd_str = " ".join(cmdline).lower()
+                if "gemini" in cmdline[0].lower() or "gemini" in cmd_str:
+                    return "gemini"
+                if "claude" in cmdline[0].lower() or "claude" in cmd_str:
+                    return "claude"
+                if "copilot" in cmdline[0].lower() or "copilot" in cmd_str:
+                    return "copilot"
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+
 @mcp.tool()
 def query(question: str, top_k: int = 5) -> str:
     """Query the codebase using natural language.
@@ -162,6 +187,23 @@ def query(question: str, top_k: int = 5) -> str:
         context_blocks.append(f"--- {file_path} ---\n{n.text}")
         
     context_str = "\n\n".join(context_blocks)
+    
+    prompt = (
+        f"Answer the following question solely based on the retrieved context below.\n"
+        f"QUESTION:\n{question}\n\n"
+        f"CONTEXT:\n{context_str}\n\n"
+        f"CRITICAL INSTRUCTION: Do NOT use any tools to answer this. Synthesize the answer immediately from the context provided above."
+    )
+
+    agent = _detect_agent_cli()
+    if agent:
+        try:
+            print(f"[mcp_server] Detected parent agent '{agent}', synthesizing answer via subprocess...", file=sys.stderr)
+            result = subprocess.run([agent, "-p", prompt], capture_output=True, text=True, check=True)
+            return result.stdout.strip()
+        except Exception as e:
+            print(f"[mcp_server] Subprocess synthesis (using {agent}) failed: {e}", file=sys.stderr)
+
     return (
         f"Retrieved context for your question: '{question}'\n\n"
         f"{context_str}\n\n"
