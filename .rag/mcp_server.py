@@ -13,6 +13,9 @@ import os
 import sys
 import psutil
 import subprocess
+import threading
+from typing import Optional, List
+from config_utils import load_config, expand_source_files
 
 # ---------------------------------------------------------------------------
 # Config (can be overridden via env vars)
@@ -33,29 +36,22 @@ _FAISS_FILE = os.path.join(INDEX_DIR, "default__vector_store.json")
 def _newest_source_mtime() -> float:
     """Return the mtime of the most recently modified source file across all
     configured sources.  Returns 0.0 if the config can't be read."""
-    import json
     try:
-        with open(CONFIG_PATH) as f:
-            cfg = json.load(f)
+        sources, skip_dirs, _cfg_dir = load_config(CONFIG_PATH)
     except Exception:
         return 0.0
 
-    config_dir = os.path.dirname(os.path.abspath(CONFIG_PATH))
-    skip_dirs  = set(cfg.get("skip_dirs", [".git", "target", "node_modules", ".venv", "dist"]))
     newest = 0.0
-
-    for entry in cfg.get("sources", []):
-        raw_dir  = entry["dir"]
-        resolved = os.path.abspath(os.path.join(config_dir, raw_dir))
-        exts     = tuple(entry.get("extensions", [".md", ".txt"]))
-        for root, dirs, files in os.walk(resolved):
-            dirs[:] = [d for d in dirs if d not in skip_dirs]
-            for name in files:
-                if name.endswith(exts):
-                    try:
-                        newest = max(newest, os.path.getmtime(os.path.join(root, name)))
-                    except OSError:
-                        pass
+    for src in sources:
+        try:
+            files = expand_source_files(src, skip_dirs)
+        except Exception:
+            files = []
+        for fp in files:
+            try:
+                newest = max(newest, os.path.getmtime(fp))
+            except OSError:
+                pass
 
     # Also watch the config file itself
     try:
@@ -229,6 +225,52 @@ def retrieve(question: str, top_k: int = 5) -> list[dict]:
         }
         for n in nodes
     ]
+
+
+@mcp.tool()
+def reindex(
+    sources: Optional[List[str]] = None,
+    config_path: Optional[str] = None,
+    blocking: bool = True,
+) -> dict:
+    """Trigger reindexing of the repository/index sources.
+
+    Args:
+        sources: Optional list of paths or glob patterns to index. If provided,
+                 these override the configured sources in `rag_config.json`.
+        config_path: Optional path to a config file (defaults to server CONFIG_PATH).
+        blocking: If True (default) run the reindex synchronously and return
+                  completion metadata. If False, start background reindex and
+                  return a started status.
+
+    Returns:
+        A dict with status metadata: `{status, index_path, indexed_files, started_at, finished_at?}`
+    """
+    cfg = config_path or CONFIG_PATH
+    from time import time
+
+    try:
+        from store import build_index
+    except Exception as e:
+        return {"status": "error", "error": f"failed-to-import-store: {e}"}
+
+    def _run_reindex():
+        started = time()
+        try:
+            build_index(config_path=cfg, index_dir=INDEX_DIR, sources=sources, embed_model=EMBED_MODEL)
+            finished = time()
+            return {"status": "ok", "index_path": INDEX_DIR, "started_at": started, "finished_at": finished}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc), "started_at": started}
+
+    if not blocking:
+        thread = threading.Thread(target=_run_reindex, daemon=True)
+        thread.start()
+        return {"status": "started", "index_path": INDEX_DIR}
+
+    # blocking: run and return result
+    result = _run_reindex()
+    return result
 
 
 # ---------------------------------------------------------------------------

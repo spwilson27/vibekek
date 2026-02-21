@@ -2,6 +2,9 @@
 
 Add the snippet below to your Claude Desktop config file, then restart Claude Desktop.
 
+Note: It only needs to be added once in order to continue to use this rag
+server. (Since it uses local paths, as long as claude is launched from within the root project dir it will work.)
+
 **Config file location (macOS):**
 ```
 ~/Library/Application Support/Claude/claude_desktop_config.json
@@ -13,7 +16,7 @@ Add the snippet below to your Claude Desktop config file, then restart Claude De
 {
   "mcpServers": {
     "example-rs-rag": {
-      "command": "{workspace}/.rag/mcp_server_wrapper.sh",
+      "command": ".rag/mcp_server_wrapper.sh",
       "args": [],
       "env": {}
     }

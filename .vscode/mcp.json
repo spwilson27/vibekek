@@ -1,6 +1,6 @@
 {
 	"servers": {
-		"rag-server": {
+		"local-rag-search": {
 			"type": "stdio",
 			"command": "bash",
 			"args": [

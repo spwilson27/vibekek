@@ -1,6 +1,6 @@
 {
     "mcpServers": {
-        "example-rs-rag": {
+        "local-rag-search": {
             "command": ".rag/mcp_server_wrapper.sh",
             "args": [],
             "env": {}

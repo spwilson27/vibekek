@@ -14,7 +14,6 @@ import argparse
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 
 import torch
 import faiss
@@ -23,6 +22,8 @@ from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.faiss import FaissVectorStore
+
+from config_utils import load_config, expand_source_files
 
 
 def _detect_device() -> str:
@@ -43,47 +44,16 @@ DEFAULT_WORKERS = min(8, (os.cpu_count() or 4))
 DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
 
-@dataclass
-class Source:
-    directory: str
-    extensions: frozenset
-    label: str
-
-
-def load_config(config_path: str) -> tuple[list[Source], set[str]]:
-    """Parse rag_config.json and return (sources, skip_dirs)."""
-    with open(config_path) as f:
-        cfg = json.load(f)
-
-    config_dir = os.path.dirname(os.path.abspath(config_path))
-    skip_dirs = set(cfg.get("skip_dirs", [".git", "target", "node_modules", ".venv", "dist"]))
-
-    sources = []
-    for entry in cfg.get("sources", []):
-        raw_dir = entry["dir"]
-        # Resolve relative paths from the config file's location
-        resolved = os.path.abspath(os.path.join(config_dir, raw_dir))
-        sources.append(Source(
-            directory=resolved,
-            extensions=frozenset(entry.get("extensions", [".md", ".txt"])),
-            label=entry.get("label", raw_dir),
-        ))
-    return sources, skip_dirs
+# `load_config` and `expand_source_files` are provided by `.config_utils`.
+# Local `Source` dataclass and config parsing helpers were removed in
+# favor of the shared utilities in `config_utils`.
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def collect_paths(source: Source, skip_dirs: set[str]) -> list[str]:
-    """Return all indexable file paths for a single Source entry."""
-    paths = []
-    for root, dirs, files in os.walk(source.directory):
-        dirs[:] = [d for d in dirs if d not in skip_dirs]
-        for name in files:
-            if any(name.endswith(ext) for ext in source.extensions):
-                paths.append(os.path.join(root, name))
-    return paths
+# `collect_paths` replaced by `expand_source_files` from config_utils.
 
 
 def load_file(path: str) -> Document:
@@ -111,19 +81,50 @@ def build_index(
     index_dir: str = DEFAULT_INDEX,
     workers: int = DEFAULT_WORKERS,
     embed_model: str = DEFAULT_EMBED_MODEL,
+    sources: list[str] | None = None,
 ) -> None:
-    """Build (or rebuild) the FAISS vector index from rag_config.json sources."""
-    sources, skip_dirs = load_config(config_path)
-    if not sources:
-        print("[store] No sources defined in config — nothing to index.")
-        return
+    """Build (or rebuild) the FAISS vector index.
 
-    # Collect paths from all sources, tagged with their label
+    If `sources` is provided it overrides `rag_config.json` and should be a
+    list of paths or glob patterns to index. When `sources` is None the
+    configured sources from `config_path` are used (backwards compatible).
+    """
     all_paths: list[tuple[str, str]] = []  # (file_path, source_label)
-    for src in sources:
-        src_paths = collect_paths(src, skip_dirs)
-        print(f"[store] {src.label}: {len(src_paths)} files ({', '.join(sorted(src.extensions))})")
-        all_paths.extend((p, src.label) for p in src_paths)
+
+    if sources:
+        # Expand provided paths/globs. Use simple globbing and include files only.
+        import glob
+
+        for s in sources:
+            matched = sorted(glob.glob(s, recursive=True))
+            matched_files = [p for p in matched if os.path.isfile(p)]
+            print(f"[store] source={s}: {len(matched_files)} files")
+            all_paths.extend((p, s) for p in matched_files)
+        if not all_paths:
+            print("[store] No files found for provided sources — nothing to index.")
+            return
+    else:
+        # New `load_config` returns (sources, skip_dirs, config_dir)
+        cfg_sources, skip_dirs, config_dir = load_config(config_path)
+        if not cfg_sources:
+            print("[store] No sources defined in config — nothing to index.")
+            return
+
+        # Collect paths from all configured sources, tagged with their label.
+        for src in cfg_sources:
+            src_paths = expand_source_files(src, skip_dirs)
+
+            # Support both dict-like and attribute-like source objects
+            if isinstance(src, dict):
+                label = src.get("label") or src.get("dir") or "source"
+                exts = src.get("extensions", [".md", ".txt"])
+            else:
+                label = getattr(src, "label", "source")
+                exts = getattr(src, "extensions", [".md", ".txt"]) or [".md", ".txt"]
+
+            exts_list = sorted(set(exts))
+            print(f"[store] {label}: {len(src_paths)} files ({', '.join(exts_list)})")
+            all_paths.extend((p, label) for p in src_paths)
 
     total = len(all_paths)
     print(f"[store] Total: {total} files — loading with {workers} parallel workers…")
@@ -177,10 +178,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build LlamaIndex RAG index.")
     parser.add_argument("--config",      default=DEFAULT_CONFIG,     help="Path to rag_config.json")
     parser.add_argument("--index",       default=DEFAULT_INDEX,      help="Directory to persist the index")
+    parser.add_argument("--paths",       nargs="+", default=None,    help="Optional list of paths/globs to index (overrides config)")
     parser.add_argument("--workers",     type=int, default=DEFAULT_WORKERS, help="Parallel workers")
     parser.add_argument("--embed-model", default=DEFAULT_EMBED_MODEL, help="HuggingFace embed model")
     args = parser.parse_args()
-    build_index(args.config, args.index, args.workers, args.embed_model)
+    build_index(args.config, args.index, args.workers, args.embed_model, sources=args.paths)
 
 
 if __name__ == "__main__":
