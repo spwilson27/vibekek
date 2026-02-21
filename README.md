@@ -66,12 +66,9 @@ Pick one — or all three:
 
 **gemini-cli** — automatic. `.gemini/settings.json` is already configured. Run `gemini` from the project root.
 
-**Claude Desktop** — follow [`.claude/mcp_config.md`](.claude/mcp_config.md) to add one entry to `~/Library/Application Support/Claude/claude_desktop_config.json`, then restart Claude.
+**GitHub Copilot CLI** — automatic `.vscode/mcp.json` is already configured. Run `copilot` from the project root.
 
-**GitHub Copilot CLI** — copy the config template:
-```bash
-cp .copilot/mcp-config.json ~/.copilot/mcp-config.json
-```
+**Claude Desktop** — follow [`.claude/mcp_config.md`](.claude/mcp_config.md) to add one entry to `~/Library/Application Support/Claude/claude_desktop_config.json`, then restart Claude.
 
 That's it. The first time an agent uses the RAG tool, the wrapper handles everything else automatically.
 

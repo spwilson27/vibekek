@@ -1,0 +1,12 @@
+{
+	"servers": {
+		"rag-server": {
+			"type": "stdio",
+			"command": "bash",
+			"args": [
+				".rag/mcp_server_wrapper.sh"
+			]
+		}
+	},
+	"inputs": []
+}

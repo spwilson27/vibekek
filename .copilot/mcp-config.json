@@ -1,9 +1,0 @@
-{
-    "mcpServers": {
-        "example-rs-rag": {
-            "command": ".rag/mcp_server_wrapper.sh",
-            "args": [],
-            "env": {}
-        }
-    }
-}
