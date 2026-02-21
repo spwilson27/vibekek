@@ -1,0 +1,6 @@
+# Generated files
+.rag/repo_index/
+.rag/.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
