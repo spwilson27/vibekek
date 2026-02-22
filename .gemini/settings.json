@@ -1,9 +1,18 @@
 {
     "mcpServers": {
-        "local-rag-search": {
+        "rag": {
             "command": "python3",
             "args": [
-                ".rag/mcp_server_wrapper.py"
+                ".tools/mcp_server_wrapper.py",
+                "rag"
+            ],
+            "env": {}
+        },
+        "mapper": {
+            "command": "python3",
+            "args": [
+                ".tools/mcp_server_wrapper.py",
+                "mapper"
             ],
             "env": {}
         }

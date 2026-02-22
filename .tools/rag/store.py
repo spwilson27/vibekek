@@ -13,7 +13,12 @@ the resulting vector index to disk so the MCP server can reload it cheaply.
 import argparse
 import json
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
+
+# Route all print statements to stderr to avoid corrupting MCP stdio JSON-RPC
+print = partial(print, file=sys.stderr)
 
 import torch
 import faiss
