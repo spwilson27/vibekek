@@ -90,7 +90,7 @@ def _ensure_index() -> None:
         print("[mcp_server] Index is up-to-date.", file=sys.stderr)
 
 
-_ensure_index()
+# _ensure_index()  # Moved to lazy loader _get_index() below
 
 # ---------------------------------------------------------------------------
 # Heavy imports (after index is guaranteed to exist)
@@ -121,6 +121,7 @@ _index = None
 def _get_index():
     global _index
     if _index is None:
+        _ensure_index()
         embed = HuggingFaceEmbedding(model_name=EMBED_MODEL, device=_detect_device())
         vector_store = FaissVectorStore.from_persist_dir(INDEX_DIR)
         sc = StorageContext.from_defaults(vector_store=vector_store, persist_dir=INDEX_DIR)

@@ -2,9 +2,9 @@
 	"servers": {
 		"local-rag-search": {
 			"type": "stdio",
-			"command": "bash",
+			"command": "python3",
 			"args": [
-				".rag/mcp_server_wrapper.sh"
+				".rag/mcp_server_wrapper.py"
 			]
 		}
 	},

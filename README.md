@@ -12,7 +12,7 @@ A template repository for bootstrapping new projects with AI agent tooling: a RA
 your-project/            ← source code to index
 .rag/
   rag_config.json        ← configure which dirs + file types to index
-  mcp_server_wrapper.sh  ← entrypoint: bootstraps venv, then starts server
+  mcp_server_wrapper.py  ← entrypoint: bootstraps venv, then starts server
   mcp_server.py          ← auto-rebuilds index when source files change
   store.py               ← parallelised indexer (FAISS binary store)
   repo_index/            ← generated — gitignored
@@ -24,7 +24,7 @@ your-project/            ← source code to index
 On every startup the wrapper runs these steps — skipping any that are already done:
 
 ```
-mcp_server_wrapper.sh
+mcp_server_wrapper.py
   1. Create .rag/.venv (if missing)
   2. pip install -r requirements.txt (only if requirements.txt changed since last install)
   3. Start mcp_server.py

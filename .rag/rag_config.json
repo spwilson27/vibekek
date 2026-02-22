@@ -10,11 +10,12 @@
     ],
     "sources": [
         {
-            "dirs": ["../docs/**"],
+            "dirs": ["./**"],
             "extensions": [
-                ".md"
+                ".md",
+                ".py"
             ],
-            "label": "docs"
+            "label": "codebase"
         }
     ]
 }

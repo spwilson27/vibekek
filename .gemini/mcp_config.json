@@ -1,11 +1,11 @@
 {
     "mcpServers": {
-        "local-rag-search": {
+        "rag": {
             "command": "python3",
             "args": [
                 ".rag/mcp_server_wrapper.py"
             ],
-            "env": {}
+            "disabled": false
         }
     }
 }

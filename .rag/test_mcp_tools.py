@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 async def main():
-    server = StdioServerParameters(command="./.rag/mcp_server_wrapper.sh", args=[], cwd='.')
+    server = StdioServerParameters(command="python3", args=[".rag/mcp_server_wrapper.py"], cwd='.')
 
     try:
         async with stdio_client(server) as (read, write):
