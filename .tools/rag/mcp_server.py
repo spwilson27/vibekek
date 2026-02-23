@@ -21,7 +21,7 @@ from config_utils import load_config, expand_source_files
 # Config (can be overridden via env vars)
 # ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.environ.get("RAG_CONFIG",    os.path.join(_HERE, "rag_config.json"))
+CONFIG_PATH = os.environ.get("RAG_CONFIG",    os.path.join(_HERE, "..", "config.json"))
 INDEX_DIR   = os.environ.get("RAG_INDEX_DIR", os.path.join(_HERE, "repo_index"))
 EMBED_MODEL = os.environ.get("RAG_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 
@@ -74,20 +74,45 @@ def _is_index_stale() -> bool:
 # ---------------------------------------------------------------------------
 # Auto-rebuild on startup
 # ---------------------------------------------------------------------------
+_index_lock = threading.Lock()
+
+def _background_update():
+    """Attempt to pull the gitlab cache in the background on startup."""
+    if _is_index_stale():
+        print("[mcp_server] Index missing/stale. Attempting background GitLab cache pull...", file=sys.stderr)
+        parent_dir = os.path.abspath(os.path.join(_HERE, ".."))
+        if parent_dir not in sys.path:
+            sys.path.append(parent_dir)
+            
+        with _index_lock:
+            try:
+                import pull_rag_cache
+                # Try pulling the cache; if it succeeds the index is no longer stale!
+                if pull_rag_cache.pull_cache():
+                    print("[mcp_server] Background cache pull successful.", file=sys.stderr)
+                else:
+                    print("[mcp_server] Background cache pull returned false. Will fallback to lazy-build.", file=sys.stderr)
+            except Exception as e:
+                print(f"[mcp_server] Background cache pull failed: {e}", file=sys.stderr)
+
+# Kick off background update immediately before the fastmcp connection spins up
+threading.Thread(target=_background_update, daemon=True).start()
 
 def _ensure_index() -> None:
-    if _is_index_stale():
-        print("[mcp_server] Index is missing or stale — rebuilding…", file=sys.stderr)
-        # Import here so heavy deps (torch, llama-index) only load once
-        from store import build_index  # store.py lives next to mcp_server.py
-        build_index(
-            config_path=CONFIG_PATH,
-            index_dir=INDEX_DIR,
-            embed_model=EMBED_MODEL,
-        )
-        print("[mcp_server] Index rebuild complete.", file=sys.stderr)
-    else:
-        print("[mcp_server] Index is up-to-date.", file=sys.stderr)
+    # Wait for any background pull to finish before deciding if we need to build locally
+    with _index_lock:
+        if _is_index_stale():
+            print("[mcp_server] Index is missing or stale — lazy-building locally…", file=sys.stderr)
+            # Import here so heavy deps (torch, llama-index) only load once
+            from store import build_index  # store.py lives next to mcp_server.py
+            build_index(
+                config_path=CONFIG_PATH,
+                index_dir=INDEX_DIR,
+                embed_model=EMBED_MODEL,
+            )
+            print("[mcp_server] Index rebuild complete.", file=sys.stderr)
+        else:
+            print("[mcp_server] Index is up-to-date.", file=sys.stderr)
 
 
 # _ensure_index()  # Moved to lazy loader _get_index() below

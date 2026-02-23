@@ -43,7 +43,7 @@ def _detect_device() -> str:
 # Config
 # ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_CONFIG  = os.path.join(_HERE, "rag_config.json")
+DEFAULT_CONFIG  = os.path.join(_HERE, "..", "config.json")
 DEFAULT_INDEX   = os.path.join(_HERE, "repo_index")
 DEFAULT_WORKERS = min(8, (os.cpu_count() or 4))
 DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
@@ -181,7 +181,7 @@ def build_index(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build LlamaIndex RAG index.")
-    parser.add_argument("--config",      default=DEFAULT_CONFIG,     help="Path to rag_config.json")
+    parser.add_argument("--config",      default=DEFAULT_CONFIG,     help="Path to config.json")
     parser.add_argument("--index",       default=DEFAULT_INDEX,      help="Directory to persist the index")
     parser.add_argument("--paths",       nargs="+", default=None,    help="Optional list of paths/globs to index (overrides config)")
     parser.add_argument("--workers",     type=int, default=DEFAULT_WORKERS, help="Parallel workers")

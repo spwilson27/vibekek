@@ -31,7 +31,7 @@ def _normalize_extensions(exts) -> frozenset:
 
 def load_config(config_path: str) -> Tuple[List[Source], Set[str], str]:
     """
-    Parse rag_config.json and return (sources, skip_dirs, config_dir).
+    Parse config.json and return (sources, skip_dirs, config_dir).
 
     Each source supports either "dir" (legacy string) or "dirs" (array of
     path patterns). Patterns may contain glob tokens (e.g. "**") and are
@@ -40,11 +40,14 @@ def load_config(config_path: str) -> Tuple[List[Source], Set[str], str]:
     with open(config_path) as f:
         cfg = json.load(f)
 
+    # Support nested "rag" block or fallback to root (for backwards compat)
+    rag_cfg = cfg.get("rag", cfg)
+
     config_dir = os.path.dirname(os.path.abspath(config_path))
-    skip_dirs = set(cfg.get("skip_dirs", [".git", "target", "node_modules", ".venv", "dist"]))
+    skip_dirs = set(rag_cfg.get("skip_dirs", [".git", "target", "node_modules", ".venv", "dist"]))
 
     sources: List[Source] = []
-    for entry in cfg.get("sources", []):
+    for entry in rag_cfg.get("sources", []):
         raw_dirs = []
         if "dirs" in entry and entry["dirs"] is not None:
             raw_dirs = list(entry["dirs"])
@@ -55,10 +58,11 @@ def load_config(config_path: str) -> Tuple[List[Source], Set[str], str]:
 
         patterns = []
         for raw in raw_dirs:
-            # Resolve relative patterns against config file directory
+            # Resolve relative patterns against the project root (parent of config file directory)
             resolved = raw
             if not os.path.isabs(raw):
-                resolved = os.path.abspath(os.path.join(config_dir, raw))
+                project_root = os.path.abspath(os.path.join(config_dir, ".."))
+                resolved = os.path.abspath(os.path.join(project_root, raw))
             patterns.append(Pattern(raw=raw, resolved=resolved))
 
         exts = _normalize_extensions(entry.get("extensions", [".md", ".txt"]))

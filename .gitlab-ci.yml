@@ -1,0 +1,28 @@
+stages:
+  - rag_index
+
+variables:
+  PYTHON_VERSION: "3.10" # or whichever python runtime you target
+
+build-rag-index:
+  stage: rag_index
+  image: python:$PYTHON_VERSION
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - "**/*.py"
+        - "**/*.md"
+        - ".tools/config.json"
+        - ".tools/rag/requirements.txt"
+  before_script:
+    - python3 -m venv .tools/rag/.venv
+    - source .tools/rag/.venv/bin/activate
+    - pip install -r .tools/rag/requirements.txt
+  script:
+    - echo "Building RAG index..."
+    - cd .tools/rag
+    - python store.py
+  artifacts:
+    paths:
+      - .tools/rag/repo_index/
+    expire_in: 30 days
