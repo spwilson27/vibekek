@@ -15,6 +15,9 @@ import psutil
 import subprocess
 import threading
 from typing import Optional, List
+
+# Add parent directory (.tools) to sys.path to access shared config_utils
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from config_utils import load_config, expand_source_files
 
 # ---------------------------------------------------------------------------
@@ -147,6 +150,17 @@ def _get_index():
     global _index
     if _index is None:
         _ensure_index()
+        
+        # Eagerly load NLTK corpora to prevent thread-safety AttributeErrors inside
+        # FastMCP when multiple tool calls resolve lazy-loaders concurrently
+        try:
+            import nltk
+            nltk.download('words', quiet=True)
+            nltk.download('punkt', quiet=True)
+            nltk.corpus.words.ensure_loaded()
+        except Exception as e:
+            print(f"[mcp_server] Warning: NLTK eager load failed: {e}", file=sys.stderr)
+            
         embed = HuggingFaceEmbedding(model_name=EMBED_MODEL, device=_detect_device())
         vector_store = FaissVectorStore.from_persist_dir(INDEX_DIR)
         sc = StorageContext.from_defaults(vector_store=vector_store, persist_dir=INDEX_DIR)

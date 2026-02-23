@@ -1,7 +1,7 @@
 {
     "gitlab": {
-        "project_id": "YOUR_PROJECT_ID",
-        "host": "https://gitlab.com",
+        "project_id": "mrwilson/vibekek",
+        "host": "http://gitlab.lan",
         "branch": "main",
         "rag_job_name": "build-rag-index"
     },

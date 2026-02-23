@@ -1,5 +1,5 @@
 {
-	"mcpServers": {
+	"servers": {
 		"rag": {
 			"command": "python3",
 			"args": [

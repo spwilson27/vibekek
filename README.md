@@ -18,4 +18,22 @@ To ensure the MCP servers are working correctly, you can run the following check
 - **Cursor**: Open settings (gear icon) > **Features** > **MCP** to see the list of active servers and their status.
 - **VS Code (Copilot)**: Look for the tool icon (usually a wrench or plug) in your Copilot Chat view, or search for "MCP" in the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`).
 
+### Remote RAG Caching
+
+To speed up AI indexing, this project is configured to automatically pull a pre-built RAG database from a GitLab CI artifact. If the database is missing or stale, the local MCP server will attempt to download it in the background rather than tying up your local CPU/GPU doing embeddings.
+
+To enable this feature, you must configure a GitLab Personal Access Token (PAT) with at least the `read_api` scope:
+
+1. Create a Personal Access Token in your GitLab settings.
+2. Export it in your environment:
+   ```bash
+   export GITLAB_TOKEN="glpat-xxxxxxxxxx"
+   ```
+3. *(Optional)* Add this export to your `~/.zshrc` or `~/.bashrc` so it is always available to your CLI tools and IDEs.
+
+You can also trigger this download manually:
+```bash
+python3 .tools/pull_rag_cache.py
+```
+
 **Note for AI Agents**: Please refer to [`docs/agents.md`](docs/agents.md) for detailed documentation on the available MCPs, how to use them, and how to extend the project's configurations further.
