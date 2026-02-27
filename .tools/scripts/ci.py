@@ -70,15 +70,15 @@ class Shell:
     def current_dir(self) -> str:
         return os.getcwd()
 
-    def output(self, cmd: List[str]) -> ShellOutput:
+    def output(self, cmd: List[str], cwd: Optional[str] = None) -> ShellOutput:
         # real shell uses subprocess; here is simple passthrough
         import subprocess
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
         out, err = p.communicate()
         return ShellOutput(out, err, p.returncode == 0)
 
-    def run(self, cmd: List[str]) -> ShellOutput:
-        return self.output(cmd)
+    def run(self, cmd: List[str], cwd: Optional[str] = None) -> ShellOutput:
+        return self.output(cmd, cwd=cwd)
 
     def read(self, path: str) -> str:
         with open(path, 'r') as f:
@@ -103,11 +103,11 @@ class MockShell(Shell):
         out, err, ok = self.outputs.pop(0)
         return ShellOutput(out, err, ok)
 
-    def output(self, cmd: List[str]) -> ShellOutput:
+    def output(self, cmd: List[str], cwd: Optional[str] = None) -> ShellOutput:
         self.recorded_commands.append(" ".join(cmd))
         return self._pop_output()
 
-    def run(self, cmd: List[str]) -> ShellOutput:
+    def run(self, cmd: List[str], cwd: Optional[str] = None) -> ShellOutput:
         self.recorded_commands.append(" ".join(cmd))
         return self._pop_output()
 
@@ -140,6 +140,8 @@ class Workflow:
         try:
             import subprocess
             subprocess.run(["git", "push", "origin", "--delete", self.branch], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if self.temp_dir and os.path.isdir(self.temp_dir):
+                shutil.rmtree(self.temp_dir)
         except Exception:
             pass
 
@@ -614,7 +616,7 @@ class RealCiProvider:
 
         branch = f"ci-test-{str(uuid.uuid4())[:8]}"
         def git_temp(args):
-            return self.shell.output(["git"] + args)
+            return self.shell.output(["git"] + args, cwd=temp_dir)
 
         repo_url = get_remote_url(self.shell, "origin")
         git_temp(["init"]) ; git_temp(["remote", "add", "origin", repo_url])
