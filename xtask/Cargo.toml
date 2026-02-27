@@ -1,0 +1,38 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+
+# CLI parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# File system operations
+walkdir = "2.5"
+zip = "0.6"
+tempfile = "3.10"
+uuid = { version = "1.8", features = ["v4"] }
+md-5 = "0.10"
+hex = "0.4"
+image.workspace = true
+tokio = { version = "1.0", features = ["full"] }
+time = { version = "0.3", features = ["parsing", "macros", "formatting"] }
+tonic = "0.12"
+debug-server.workspace = true
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0" # For parsing lockfile
+# test-e2e = { path = "../test-e2e" }
+which = "8.0.0"
+ctrlc = "3.5.1"
+[dev-dependencies]
