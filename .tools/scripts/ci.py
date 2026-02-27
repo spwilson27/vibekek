@@ -547,7 +547,9 @@ def run_with_provider(provider) -> None:
                     temp_branch = f"ci-temp-{branch}-{str(uuid.uuid4())[:8]}"
                     print(f"  Reference not found when triggering pipeline; pushing HEAD to temp branch {temp_branch} and retrying...")
                     # attempt to push HEAD to temp branch and verify it appears on origin
-                    provider.git_push_temp(original_dir, branch, temp_branch)
+                    # Ensure we push from the original repo directory to avoid cwd issues
+                    import subprocess
+                    subprocess.run(["git", "push", "origin", f"HEAD:{temp_branch}"], cwd=original_dir)
                     pushed = False
                     for _ in range(5):
                         remote_sha = provider.check_remote_branch_sha(original_dir, temp_branch)
@@ -586,7 +588,8 @@ def run_with_provider(provider) -> None:
                     if "Reference not found" in msg or "missing 'id'" in msg:
                         temp_branch = f"ci-temp-{branch}-{str(uuid.uuid4())[:8]}"
                         print(f"  Reference not found when triggering pipeline; pushing HEAD to temp branch {temp_branch} and retrying...")
-                        provider.git_push_temp(original_dir, branch, temp_branch)
+                        import subprocess
+                        subprocess.run(["git", "push", "origin", f"HEAD:{temp_branch}"], cwd=original_dir)
                         pushed = False
                         for _ in range(5):
                             remote_sha = provider.check_remote_branch_sha(original_dir, temp_branch)
