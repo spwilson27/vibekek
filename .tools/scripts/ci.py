@@ -546,8 +546,17 @@ def run_with_provider(provider) -> None:
                 if "Reference not found" in msg or "missing 'id'" in msg:
                     temp_branch = f"ci-temp-{branch}-{str(uuid.uuid4())[:8]}"
                     print(f"  Reference not found when triggering pipeline; pushing HEAD to temp branch {temp_branch} and retrying...")
-                    # attempt to push HEAD to temp branch and retry
+                    # attempt to push HEAD to temp branch and verify it appears on origin
                     provider.git_push_temp(original_dir, branch, temp_branch)
+                    pushed = False
+                    for _ in range(5):
+                        remote_sha = provider.check_remote_branch_sha(original_dir, temp_branch)
+                        if remote_sha:
+                            pushed = True
+                            break
+                        time.sleep(1)
+                    if not pushed:
+                        raise RuntimeError(f"Failed to verify pushed temp branch {temp_branch} on origin")
                     pipeline_id, web_url, created_at = provider.trigger_pipeline(host, project_encoded, temp_branch, token)
                 else:
                     raise
@@ -578,6 +587,15 @@ def run_with_provider(provider) -> None:
                         temp_branch = f"ci-temp-{branch}-{str(uuid.uuid4())[:8]}"
                         print(f"  Reference not found when triggering pipeline; pushing HEAD to temp branch {temp_branch} and retrying...")
                         provider.git_push_temp(original_dir, branch, temp_branch)
+                        pushed = False
+                        for _ in range(5):
+                            remote_sha = provider.check_remote_branch_sha(original_dir, temp_branch)
+                            if remote_sha:
+                                pushed = True
+                                break
+                            time.sleep(1)
+                        if not pushed:
+                            raise RuntimeError(f"Failed to verify pushed temp branch {temp_branch} on origin")
                         pipeline_id, web_url, created_at = provider.trigger_pipeline(host, project_encoded, temp_branch, token)
                     else:
                         raise
