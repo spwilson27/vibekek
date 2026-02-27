@@ -8,7 +8,7 @@ build-rag-index:
   stage: rag_index
   image: python:$PYTHON_VERSION
   rules:
-    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "api"
       changes:
         - "**/*.py"
         - "**/*.md"
