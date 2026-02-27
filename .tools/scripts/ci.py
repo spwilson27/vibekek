@@ -539,7 +539,18 @@ def run_with_provider(provider) -> None:
             workflow = None
         else:
             target_branch, workflow = ensure_branch_pushed_with_provider(provider, original_dir, branch)
-            pipeline_id, web_url, created_at = provider.trigger_pipeline(host, project_encoded, target_branch, token)
+            try:
+                pipeline_id, web_url, created_at = provider.trigger_pipeline(host, project_encoded, target_branch, token)
+            except RuntimeError as e:
+                msg = str(e)
+                if "Reference not found" in msg or "missing 'id'" in msg:
+                    temp_branch = f"ci-temp-{branch}-{str(uuid.uuid4())[:8]}"
+                    print(f"  Reference not found when triggering pipeline; pushing HEAD to temp branch {temp_branch} and retrying...")
+                    # attempt to push HEAD to temp branch and retry
+                    provider.git_push_temp(original_dir, branch, temp_branch)
+                    pipeline_id, web_url, created_at = provider.trigger_pipeline(host, project_encoded, temp_branch, token)
+                else:
+                    raise
     else:
         base_sha, diff_md5 = provider.calculate_metadata(original_dir)
         existing = provider.search_pipeline(host, project_encoded, base_sha, None, diff_md5, token)
@@ -559,7 +570,17 @@ def run_with_provider(provider) -> None:
                 web_url = found.web_url
                 created_at = found.created_at
             else:
-                pipeline_id, web_url, created_at = provider.trigger_pipeline(host, project_encoded, branch, token)
+                try:
+                    pipeline_id, web_url, created_at = provider.trigger_pipeline(host, project_encoded, branch, token)
+                except RuntimeError as e:
+                    msg = str(e)
+                    if "Reference not found" in msg or "missing 'id'" in msg:
+                        temp_branch = f"ci-temp-{branch}-{str(uuid.uuid4())[:8]}"
+                        print(f"  Reference not found when triggering pipeline; pushing HEAD to temp branch {temp_branch} and retrying...")
+                        provider.git_push_temp(original_dir, branch, temp_branch)
+                        pipeline_id, web_url, created_at = provider.trigger_pipeline(host, project_encoded, temp_branch, token)
+                    else:
+                        raise
 
     # monitor
     cursors: Dict[int, int] = {}
