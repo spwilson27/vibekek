@@ -236,7 +236,15 @@ def search_pipeline_robust(shell: Shell, host: str, project: str, sha: str, bran
 def trigger_new_pipeline(shell: Shell, host: str, project: str, branch: str, token: str) -> Tuple[int, str, str]:
     url = f"http://{host}/api/v4/projects/{project}/pipeline?ref={branch}"
     out = curl_post(shell, url, token)
-    resp = json.loads(out)
+    try:
+        resp = json.loads(out)
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse GitLab trigger response: {e}; raw response: {out}")
+
+    if "id" not in resp:
+        # Provide the full response for debugging (could be an error message)
+        raise RuntimeError(f"Trigger response missing 'id' field; response: {json.dumps(resp, indent=2)}")
+
     pid = int(resp["id"])
     web = resp.get("web_url", "")
     created_at = resp.get("created_at", "")
