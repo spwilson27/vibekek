@@ -8,6 +8,6 @@
   },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
-    "local-rag-search"
+    "mapper"
   ]
 }
