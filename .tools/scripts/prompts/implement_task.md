@@ -44,7 +44,7 @@ You are operating inside of a git worktree checked out specifically for you.
     - Run `./do presubmit`. 
     - If it fails, fix the issues until it passes cleanly.
 5.  **Document:**
-    - Update `./.agent/memory.md` (relative to your current working directory) with:
+    - Update `./.agent/MEMORY.md` (relative to your current working directory) with:
       - Any new **Architectural Decisions** you made (patterns, conventions).
       - Any **Brittle Areas** you discovered.
       - A brief description of what you broke/fixed/added to the **Recent Changelog**.
