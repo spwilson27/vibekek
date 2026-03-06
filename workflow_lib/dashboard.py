@@ -57,6 +57,7 @@ _STATUS_STYLE: Dict[str, Tuple[str, str]] = {
     "merging":  ("yellow",        "⟳"),
     "done":     ("bold green",    "✓"),
     "failed":   ("bold red",      "✗"),
+    "waiting":  ("bold yellow",   "⏸"),
 }
 
 
@@ -136,20 +137,20 @@ class Dashboard:
     def set_agent(
         self,
         task_id: str,
-        command: str,
+        stage: str,
         status: str,
         last_line: str = "",
     ) -> None:
         """Upsert an agent row in the status table.
 
         :param task_id: Fully-qualified task ID, e.g. ``"phase_1/auth.md"``.
-        :param command: Short label for what the agent is doing, e.g. ``"Generate"``.
+        :param stage: Short label for what the agent is doing, e.g. ``"Generate"``.
         :param status: One of ``queued``, ``cloning``, ``running``, ``merging``,
             ``done``, ``failed``.
         :param last_line: Optional initial output line to show in the card.
         """
         with self._lock:
-            # Preserve existing log lines when updating status/command
+            # Preserve existing log lines when updating status/stage
             if task_id in self._agents:
                 _, _, lines = self._agents[task_id]
             else:
@@ -157,7 +158,7 @@ class Dashboard:
             short = last_line.strip()[:120] if last_line else ""
             if short:
                 lines.append((_now_short(), short))
-            self._agents[task_id] = (command, status, lines)
+            self._agents[task_id] = (stage, status, lines)
         self._refresh()
 
     def update_last_line(self, task_id: str, last_line: str) -> None:
@@ -183,6 +184,26 @@ class Dashboard:
         with self._lock:
             self._agents.pop(task_id, None)
         self._refresh()
+
+    def prompt_input(self, message: str) -> str:
+        """Pause the live display, show a prominent prompt, and return user input.
+
+        :param message: The prompt text to display.
+        :returns: The user's input string.
+        """
+        if self._live:
+            self._live.stop()
+        try:
+            self._console.print()
+            self._console.print(Rule("[bold yellow]INPUT REQUIRED[/bold yellow]", style="yellow"))
+            self._console.print(f"[bold yellow]  {message}[/bold yellow]")
+            self._console.print(Rule(style="yellow"))
+            response = input("> ")
+            self._console.print()
+        finally:
+            if self._live:
+                self._live.start()
+        return response
 
     # ------------------------------------------------------------------
     # Internal rendering
@@ -210,7 +231,7 @@ class Dashboard:
         with self._lock:
             visible = {
                 k: v for k, v in self._agents.items()
-                if v[1] in ("running", "failed", "cloning", "merging", "queued")
+                if v[1] in ("running", "failed", "cloning", "merging", "queued", "waiting")
             }
 
         if not visible:
@@ -222,7 +243,7 @@ class Dashboard:
 
         cards = []
         for i, task_id in enumerate(sorted(visible)):
-            command, status, lines = visible[task_id]
+            stage, status, lines = visible[task_id]
             style, symbol = _STATUS_STYLE.get(status, ("white", "?"))
 
             # Header: task_id left, status right
@@ -230,7 +251,7 @@ class Dashboard:
             header.add_column(ratio=5)
             header.add_column(ratio=1, justify="right")
             header.add_row(
-                f"[bold]{task_id}[/bold]  [dim]{command}[/dim]",
+                f"[bold]{task_id}[/bold]  [dim]{stage}[/dim]",
                 f"[{style}]{symbol} {status}[/{style}]",
             )
             cards.append(header)
@@ -349,7 +370,7 @@ class NullDashboard:
                     except Exception:
                         pass
 
-    def set_agent(self, task_id: str, command: str, status: str, last_line: str = "") -> None:
+    def set_agent(self, task_id: str, stage: str, status: str, last_line: str = "") -> None:
         pass
 
     def update_last_line(self, task_id: str, last_line: str) -> None:
@@ -357,6 +378,14 @@ class NullDashboard:
 
     def remove_agent(self, task_id: str) -> None:
         pass
+
+    def prompt_input(self, message: str) -> str:
+        """Show a prominent prompt and return user input."""
+        self._stream.write("\n" + "=" * 60 + "\n")
+        self._stream.write(f"  INPUT REQUIRED: {message}\n")
+        self._stream.write("=" * 60 + "\n")
+        self._stream.flush()
+        return input("> ")
 
 
 def make_dashboard(log_file: Optional[IO[str]] = None) -> "Dashboard | NullDashboard":

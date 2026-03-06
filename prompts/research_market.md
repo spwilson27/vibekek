@@ -31,6 +31,12 @@ Before generating the final document, plan your approach:
 - Ensure all claims or projections sound highly realistic and logically derived from the project description.
 - You MUST save the generated document exactly to `{target_path}` using your file editing tools.
 
+
+# ERROR HANDLING
+- If a required input file is missing, print the exact path that was expected, then exit with a non-zero status. Do NOT create placeholder files or guess at content.
+- If a verification script fails, read the error output carefully, fix the specific issues listed, and re-run. Do NOT skip verification.
+- If you encounter malformed or unparseable content (broken JSON, invalid Markdown structure), report the exact location and nature of the error. Attempt to fix it if the fix is unambiguous; otherwise exit with a non-zero status.
+- Never silently ignore errors. Every error must either be fixed or explicitly reported.
 # ANTI-PATTERNS (WHAT NOT TO DO)
 - Do not invent or add core product features that are not explicitly requested in the Context or logically required to fulfill a requested feature.
 - Do not use placeholder text like "[Insert Name Here]" or "TBD"; make authoritative, data-backed decisions.

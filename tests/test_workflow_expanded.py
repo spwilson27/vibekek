@@ -17,7 +17,7 @@ from workflow import (
     Phase4BMergeRequirements, Phase4BScopeGate, Phase4COrderRequirements,
     Phase5GenerateEpics, Phase5BSharedComponents, Phase6BreakDownTasks,
     Phase6BReviewTasks, Phase6CCrossPhaseReview, Phase6DReorderTasks,
-    Phase7ADAGGeneration, Phase7BDAGReview, Orchestrator,
+    Phase7ADAGGeneration, Orchestrator,
     Logger, run_ai_command, load_dags, get_ready_tasks, process_task, merge_task, execute_dag,
     load_replan_state, save_replan_state, load_workflow_state, save_workflow_state,
     log_action, resolve_task_path, is_completed
@@ -33,15 +33,27 @@ def test_get_gitlab_remote_url_found():
         assert workflow.get_gitlab_remote_url("/fake/root") == "git@gitlab.lan:mrwilson/dreamer.git"
 
 def test_get_gitlab_remote_url_not_found():
+    """When no remotes exist, raises RuntimeError."""
+    with patch('subprocess.run') as mock_run:
+        mock_res = MagicMock()
+        mock_res.stdout = ""
+        mock_run.return_value = mock_res
+        with pytest.raises(RuntimeError, match="No git remote found"):
+            workflow.get_gitlab_remote_url("/fake/root")
+
+def test_get_gitlab_remote_url_falls_back_to_origin():
+    """When origin exists, it is returned regardless of host."""
     with patch('subprocess.run') as mock_run:
         mock_res = MagicMock()
         mock_res.stdout = "origin\tgit@github.com:foo/bar.git (fetch)\n"
         mock_run.return_value = mock_res
-        assert workflow.get_gitlab_remote_url("/fake/root") == "http://gitlab.lan/mrwilson/dreamer"
-        
+        assert workflow.get_gitlab_remote_url("/fake/root") == "git@github.com:foo/bar.git"
+
 def test_get_gitlab_remote_url_error():
+    """CalledProcessError with no remotes raises RuntimeError."""
     with patch('subprocess.run', side_effect=subprocess.CalledProcessError(1, 'cmd')):
-        assert workflow.get_gitlab_remote_url("/fake/root") == "http://gitlab.lan/mrwilson/dreamer"
+        with pytest.raises(RuntimeError, match="No git remote found"):
+            workflow.get_gitlab_remote_url("/fake/root")
 
 def test_phase_sort_key():
     assert workflow.phase_sort_key("phase_1/01_foo") == (1, 1)
@@ -146,7 +158,7 @@ def test_gemini_runner():
         mock_run.return_value = mock_res
         res = runner.run(".", "hello", "ignore_this", ".geminiignore")
         assert res.returncode == 0
-        mock_run.assert_called_with(["gemini", "-y"], input="hello", cwd=".", capture_output=True, text=True)
+        mock_run.assert_called_with(["gemini", "-y"], input="hello", cwd=".", capture_output=True, text=True, timeout=None)
 
 def test_claude_runner():
     runner = ClaudeRunner()
@@ -207,7 +219,8 @@ def test_project_context_run_ai(mock_ctx):
     with patch.object(mock_ctx, 'get_workspace_snapshot', return_value={}), \
          patch.object(mock_ctx.runner, 'run') as mock_run, \
          patch.object(mock_ctx, 'verify_changes'), \
-         patch.object(mock_ctx, 'strip_thinking_tags'):
+         patch.object(mock_ctx, 'strip_thinking_tags'), \
+         patch.object(mock_ctx, '_write_last_failed_command'):
         mock_res = MagicMock(returncode=0)
         mock_run.return_value = mock_res
         
@@ -453,6 +466,9 @@ def test_run_ai_writes_last_failed_on_failure(tmp_path):
         ctx.runner = runner
         ctx.image_paths = None
         ctx.ignore_file = str(tmp_path / ".geminiignore")
+        ctx.dashboard = None
+        ctx.current_phase = ""
+        ctx.agent_timeout = None
 
         result = ctx.run_ai("my prompt", "ignore stuff")
 
@@ -476,6 +492,9 @@ def test_run_ai_writes_last_command_on_success_too(tmp_path):
         ctx.runner = runner
         ctx.image_paths = None
         ctx.ignore_file = str(tmp_path / ".geminiignore")
+        ctx.dashboard = None
+        ctx.current_phase = ""
+        ctx.agent_timeout = None
 
         result = ctx.run_ai("my prompt", "ignore stuff")
 

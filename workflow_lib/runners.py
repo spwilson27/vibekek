@@ -57,6 +57,7 @@ class AIRunner:
         prompt: str,
         cwd: str,
         on_line: Callable[[str], None],
+        timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run *cmd* with *prompt* on stdin, calling *on_line* for each output line.
 
@@ -68,9 +69,13 @@ class AIRunner:
         :param prompt: Text written to the process stdin.
         :param cwd: Working directory for the subprocess.
         :param on_line: Callback invoked once per output line (newline stripped).
+        :param timeout: Maximum seconds to wait for the process. ``None`` means
+            no limit. On timeout the process is killed and a
+            :class:`subprocess.TimeoutExpired` is raised.
         :returns: Completed process with combined stdout (streamed lines) and
             stderr captured separately.
         :rtype: subprocess.CompletedProcess
+        :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
         """
         proc = subprocess.Popen(
             cmd,
@@ -97,7 +102,13 @@ class AIRunner:
         proc.stdin.write(prompt)
         proc.stdin.close()
 
-        reader.join()
+        reader.join(timeout=timeout)
+        if reader.is_alive():
+            # Timeout: kill the process
+            proc.kill()
+            proc.wait()
+            raise subprocess.TimeoutExpired(cmd, timeout or 0)
+
         stderr_raw = proc.stderr.read() if proc.stderr else ""
         proc.wait()
 
@@ -120,6 +131,7 @@ class AIRunner:
         ignore_file: str,
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
+        timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Invoke the AI CLI and return its completed process result.
 
@@ -135,6 +147,9 @@ class AIRunner:
             attach to the request.  How images are delivered depends on the
             backend — see concrete subclass implementations.
         :type image_paths: list[str] or None
+        :param timeout: Maximum seconds to wait for the AI process.
+            ``None`` means no limit.
+        :type timeout: int or None
         :raises NotImplementedError: Always — subclasses must override this.
         :returns: The completed subprocess result.
         :rtype: subprocess.CompletedProcess
@@ -169,6 +184,7 @@ class GeminiRunner(AIRunner):
         ignore_file: str,
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
+        timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``gemini -y`` with *full_prompt* on stdin.
 
@@ -199,8 +215,8 @@ class GeminiRunner(AIRunner):
             prompt = f"{prompt}\n\n{refs}"
         cmd = ["gemini", "-y"]
         if on_line is not None:
-            return self._run_streaming(cmd, prompt, cwd, on_line)
-        return subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True)
+            return self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout)
+        return subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout)
 
     @property
     def ignore_file_name(self) -> str:
@@ -229,6 +245,7 @@ class ClaudeRunner(AIRunner):
         ignore_file: str,
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
+        timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``claude -p --dangerously-skip-permissions`` with *full_prompt* on stdin.
 
@@ -242,8 +259,8 @@ class ClaudeRunner(AIRunner):
         for path in (image_paths or []):
             cmd += ["--image", path]
         if on_line is not None:
-            return self._run_streaming(cmd, full_prompt, cwd, on_line)
-        return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True)
+            return self._run_streaming(cmd, full_prompt, cwd, on_line, timeout=timeout)
+        return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout)
 
     @property
     def ignore_file_name(self) -> str:
@@ -272,6 +289,7 @@ class OpencodeRunner(AIRunner):
         ignore_file: str,
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
+        timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``opencode run`` with *full_prompt* on stdin.
 
@@ -281,8 +299,8 @@ class OpencodeRunner(AIRunner):
         for path in (image_paths or []):
             cmd += ["-f", path]
         if on_line is not None:
-            return self._run_streaming(cmd, full_prompt, cwd, on_line)
-        return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True)
+            return self._run_streaming(cmd, full_prompt, cwd, on_line, timeout=timeout)
+        return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout)
 
     @property
     def ignore_file_name(self) -> str:
@@ -309,6 +327,7 @@ class CopilotRunner(AIRunner):
         ignore_file: str,
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
+        timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run the Copilot CLI with *full_prompt* written to a temp file.
 
@@ -352,10 +371,10 @@ class CopilotRunner(AIRunner):
             for cmd in candidates:
                 try:
                     if on_line is not None:
-                        last_result = self._run_streaming(cmd, prompt, cwd, on_line)
+                        last_result = self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout)
                     else:
                         last_result = subprocess.run(
-                            cmd, input=prompt, cwd=cwd, capture_output=True, text=True
+                            cmd, input=prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout
                         )
                     if last_result.returncode == 0:
                         return last_result

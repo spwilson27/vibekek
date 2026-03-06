@@ -170,6 +170,7 @@ def cmd_plan(args: argparse.Namespace) -> None:
         sys.stderr = _DashboardStream(dashboard, original_stderr)
         try:
             ctx = ProjectContext(ROOT_DIR, runner=runner, jobs=args.jobs, dashboard=dashboard)
+            ctx.ignore_sandbox = args.ignore_sandbox
             if args.phase and args.force:
                 phase_state_keys = {
                     "3a-conflicts": ["conflict_resolution_completed"],
@@ -197,7 +198,8 @@ def cmd_plan(args: argparse.Namespace) -> None:
                 else:
                     dashboard.log(f"Warning: unknown phase '{args.phase}' for --force, ignoring.")
 
-            orchestrator = Orchestrator(ctx, dashboard=dashboard)
+            orchestrator = Orchestrator(ctx, dashboard=dashboard,
+                                       max_retries=args.retries, timeout=args.timeout)
             orchestrator.run()
         finally:
             sys.stdout = original_stdout
@@ -240,6 +242,7 @@ def main() -> None:
     # Shared flags available to all subcommands
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--backend", choices=["gemini", "claude", "opencode", "copilot"], default="gemini", help="AI CLI backend to use (default: gemini)")
+    shared.add_argument("--ignore-sandbox", action="store_true", help="Disable sandbox violation checks")
 
     parser = argparse.ArgumentParser(description="AI Project Planning and Execution Workflow")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -252,6 +255,8 @@ def main() -> None:
     p_plan.add_argument("--phase", default=None, help="Start from a specific phase, e.g. '4-merge'")
     p_plan.add_argument("--jobs", type=int, default=1, help="Maximum number of parallel AI agents/jobs")
     p_plan.add_argument("--force", action="store_true", help="Force re-run of the specified phase")
+    p_plan.add_argument("--retries", type=int, default=3, help="Max retries per phase on failure (default: 3, use 0 to disable)")
+    p_plan.add_argument("--timeout", type=int, default=600, help="Timeout in seconds per AI agent invocation (default: 600 = 10m)")
 
     # run
     p_run = sub.add_parser("run", parents=[shared], help="Parallel development workflow orchestrator")

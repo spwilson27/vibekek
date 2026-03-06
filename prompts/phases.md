@@ -25,6 +25,12 @@ Before generating the final document, silently plan your approach:
 - You MUST NOT use a script to generate the phase documents. Manually write them and build them up sequentially.
 - End your turn immediately once all the files are written.
 
+
+# ERROR HANDLING
+- If a required input file is missing, print the exact path that was expected, then exit with a non-zero status. Do NOT create placeholder files or guess at content.
+- If a verification script fails, read the error output carefully, fix the specific issues listed, and re-run. Do NOT skip verification.
+- If you encounter malformed or unparseable content (broken JSON, invalid Markdown structure), report the exact location and nature of the error. Attempt to fix it if the fix is unambiguous; otherwise exit with a non-zero status.
+- Never silently ignore errors. Every error must either be fixed or explicitly reported.
 # OUTPUT FORMAT
 - Must be a set of valid GitHub-Flavored Markdown documents saved to `docs/plan/phases/`.
 - Ensure the phases represent a logical order of operations and dependency chain.

@@ -81,14 +81,22 @@ def get_gitlab_remote_url(root_dir: str) -> str:
     """
     try:
         res = subprocess.run(["git", "remote", "-v"], cwd=root_dir, capture_output=True, text=True, check=True)
+        # Prefer 'origin' remote, fall back to first available
+        first_url = None
         for line in res.stdout.splitlines():
-            if "gitlab.lan" in line or "gitlab" in line.lower():
-                parts = line.split()
-                if len(parts) >= 2:
+            parts = line.split()
+            if len(parts) >= 2:
+                if first_url is None:
+                    first_url = parts[1]
+                if parts[0] == "origin":
                     return parts[1]
+        if first_url:
+            return first_url
     except subprocess.CalledProcessError:
         pass
-    return "http://gitlab.lan/mrwilson/dreamer"
+    raise RuntimeError(
+        "No git remote found. Configure a remote with: git remote add origin <url>"
+    )
 
 class Logger(object):
     """Thread-safe stream wrapper that timestamps output and mirrors it to a log file.

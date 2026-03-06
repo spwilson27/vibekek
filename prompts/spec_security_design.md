@@ -22,6 +22,12 @@ Before generating the final document, plan your approach:
 - Whenever you define a specific security rule, mitigation, or access constraint, you MUST prefix it with a unique identifier in bold (e.g., **[SEC-001]**, **[SEC-042]**).
 - You MUST save the generated document exactly to `{target_path}` using your file editing tools.
 
+
+# ERROR HANDLING
+- If a required input file is missing, print the exact path that was expected, then exit with a non-zero status. Do NOT create placeholder files or guess at content.
+- If a verification script fails, read the error output carefully, fix the specific issues listed, and re-run. Do NOT skip verification.
+- If you encounter malformed or unparseable content (broken JSON, invalid Markdown structure), report the exact location and nature of the error. Attempt to fix it if the fix is unambiguous; otherwise exit with a non-zero status.
+- Never silently ignore errors. Every error must either be fixed or explicitly reported.
 # ANTI-PATTERNS (WHAT NOT TO DO)
 - Do not provide generic advice (e.g., "Use strong passwords"); specify the exact mechanism (e.g., "Argon2id hashing with minimum 12-char length and zxcvbn validation").
 - Do not recommend insecure or deprecated crypto standards like MD5 or SHA1.

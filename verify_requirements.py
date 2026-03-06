@@ -289,7 +289,13 @@ def verify_dags(tasks_dir):
                 # Check for orphans and file existence WITHIN this phase
                 if not _verify_phase_consistency(phase_path, phase_dag):
                     all_success = False
-                    
+
+                # Check for cycles within this phase's DAG
+                phase_cycle = _find_cycle(phase_dag)
+                if phase_cycle:
+                    print(f"    FAILED: Cycle detected in {phase_dir} DAG: {' -> '.join(phase_cycle)}")
+                    all_success = False
+
                 for task_id, prerequisites in phase_dag.items():
                     full_task_id = f"{phase_dir}/{task_id}"
                     master_dag[full_task_id] = [f"{phase_dir}/{p}" for p in prerequisites]
@@ -355,12 +361,13 @@ def _verify_phase_consistency(phase_path, phase_dag):
                         orphan_tasks.append(rel_p)
                     
     if orphan_tasks:
-        print(f"    WARNING: The following {len(orphan_tasks)} .md files are not explicitly tracked in the DAG:")
+        print(f"    FAILED: The following {len(orphan_tasks)} .md files are not tracked in the DAG:")
         for t in sorted(orphan_tasks[:10]):
             print(f"      - {t}")
         if len(orphan_tasks) > 10:
             print(f"      ... and {len(orphan_tasks)-10} more.")
-        
+        return False
+
     return True
 
 def _find_cycle(dag):
@@ -430,6 +437,37 @@ def verify_req_format(file_path):
     return 0
 
 
+def verify_uniqueness(directory):
+    """Verifies that no requirement ID appears in more than one document within a directory."""
+    print(f"Verifying requirement ID uniqueness across {directory}...")
+
+    if not os.path.exists(directory) or not os.path.isdir(directory):
+        print(f"Error: Directory not found: {directory}")
+        return 1
+
+    id_to_files = {}
+    for root, _, files in os.walk(directory):
+        for filename in files:
+            if filename.endswith(".md"):
+                file_path = os.path.join(root, filename)
+                reqs = parse_requirements(file_path)
+                rel_path = os.path.relpath(file_path, directory)
+                for req_id in reqs:
+                    id_to_files.setdefault(req_id, []).append(rel_path)
+
+    duplicates = {k: v for k, v in id_to_files.items() if len(v) > 1}
+
+    if not duplicates:
+        print(f"Success: All {len(id_to_files)} requirement IDs are unique across {directory}.")
+        return 0
+
+    print(f"FAILED: {len(duplicates)} requirement IDs appear in multiple files:")
+    for req_id in sorted(duplicates):
+        files = ", ".join(sorted(duplicates[req_id]))
+        print(f"  - [{req_id}] in: {files}")
+    return 1
+
+
 def main():
     parser = argparse.ArgumentParser(description="Verify requirement extraction consistency.")
     parser.add_argument("--verify-doc", nargs=2, metavar=("SOURCE_FILE", "EXTRACTED_FILE"),
@@ -448,7 +486,9 @@ def main():
                         help="Verify that all dag.json files in TASKS_DIR are traversable and consistent")
     parser.add_argument("--verify-req-format", metavar="FILE",
                         help="Verify that all requirement IDs in FILE follow the standard format [DOC_PREFIX-REQ-NNN]")
-    
+    parser.add_argument("--verify-uniqueness", metavar="DIR",
+                        help="Verify that no requirement ID appears in multiple files within DIR")
+
     args = parser.parse_args()
     
     exit_code = 0
@@ -490,6 +530,9 @@ def main():
 
     elif args.verify_req_format:
         exit_code = verify_req_format(args.verify_req_format)
+
+    elif args.verify_uniqueness:
+        exit_code = verify_uniqueness(args.verify_uniqueness)
 
     else:
         parser.print_help()

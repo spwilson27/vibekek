@@ -356,6 +356,7 @@ class TestMergeTask:
 
     def test_squash_merge_success(self):
         with patch("subprocess.run", return_value=self._ok_run()), \
+             patch("workflow_lib.executor.get_gitlab_remote_url", return_value="http://example.com/repo.git"), \
              patch("workflow_lib.executor.get_task_details", return_value="# Task: T"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
@@ -377,6 +378,7 @@ class TestMergeTask:
             return MagicMock(returncode=0, stdout="M f", stderr="")
 
         with patch("subprocess.run", side_effect=side_effect), \
+             patch("workflow_lib.executor.get_gitlab_remote_url", return_value="http://example.com/repo.git"), \
              patch("workflow_lib.executor.get_task_details", return_value="# Task: T"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
@@ -386,6 +388,7 @@ class TestMergeTask:
 
     def test_all_attempts_fail(self):
         with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="")), \
+             patch("workflow_lib.executor.get_gitlab_remote_url", return_value="http://example.com/repo.git"), \
              patch("workflow_lib.executor.get_task_details", return_value="# Task: T"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
@@ -396,6 +399,7 @@ class TestMergeTask:
     def test_serena_rebuild_on_success(self):
         """With serena=True and cache_lock, rebuild_serena_cache is called after push."""
         with patch("subprocess.run", return_value=self._ok_run()), \
+             patch("workflow_lib.executor.get_gitlab_remote_url", return_value="http://example.com/repo.git"), \
              patch("workflow_lib.executor.get_task_details", return_value="# Task: T"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
@@ -897,6 +901,7 @@ class TestContextCoverage:
             ctx.state = kwargs.get("state", {})
             ctx.description_ctx = "project desc"
             ctx.runner = MagicMock()
+            ctx.ignore_sandbox = False
             return ctx
 
     def test_load_description_missing(self):
@@ -1025,6 +1030,15 @@ class TestContextCoverage:
         with patch("workflow_lib.context.ProjectContext.get_workspace_snapshot", return_value=after), \
              pytest.raises(SystemExit):
             ctx.verify_changes(before, ["/fake/root/other/"])
+
+    def test_verify_changes_skipped_when_ignore_sandbox(self):
+        ctx = self._make_ctx()
+        ctx.ignore_sandbox = True
+        before = {}
+        after = {"/fake/root/not_allowed/file.py": 200.0}
+        with patch("workflow_lib.context.ProjectContext.get_workspace_snapshot", return_value=after):
+            # Should NOT raise even though file is outside allowed paths
+            ctx.verify_changes(before, ["/fake/root/allowed/"])
 
 
 # ---------------------------------------------------------------------------
@@ -1837,69 +1851,6 @@ class TestPhase7AExecute:
             Phase7ADAGGeneration().execute(ctx)
 
 
-class TestPhase7BDAGReview:
-    def test_already_reviewed(self):
-        from workflow_lib.phases import Phase7BDAGReview
-        ctx = _mock_ctx_for_phases()
-        ctx.state["dag_reviewed"] = True
-        Phase7BDAGReview().execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
-    def test_tasks_dir_not_exists(self):
-        from workflow_lib.phases import Phase7BDAGReview
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=False), pytest.raises(SystemExit):
-            Phase7BDAGReview().execute(ctx)
-
-    def _make_mock_executor(self, result=True):
-        mock_future = MagicMock()
-        mock_future.result.return_value = result
-        mock_executor = MagicMock()
-        mock_executor.__enter__ = MagicMock(return_value=mock_executor)
-        mock_executor.__exit__ = MagicMock(return_value=False)
-        mock_executor.submit.return_value = mock_future
-        return mock_executor, mock_future
-
-    def test_dag_file_missing_skip(self):
-        from workflow_lib.phases import Phase7BDAGReview
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "dag review tmpl"
-        mock_executor, mock_future = self._make_mock_executor()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=["phase_1"]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
-             patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
-             patch("concurrent.futures.as_completed", return_value=[mock_future]):
-            Phase7BDAGReview().execute(ctx)
-        assert ctx.state.get("dag_reviewed") is True
-
-    def test_reviewed_dag_already_exists(self):
-        from workflow_lib.phases import Phase7BDAGReview
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "dag review tmpl"
-        mock_executor, mock_future = self._make_mock_executor()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=["phase_1"]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
-             patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
-             patch("concurrent.futures.as_completed", return_value=[mock_future]):
-            Phase7BDAGReview().execute(ctx)
-        assert ctx.state.get("dag_reviewed") is True
-
-    def test_full_review_success(self):
-        from workflow_lib.phases import Phase7BDAGReview
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "dag review tmpl"
-        ctx.run_gemini.return_value = MagicMock(returncode=0)
-        mock_executor, mock_future = self._make_mock_executor()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=["phase_1"]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
-             patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
-             patch("concurrent.futures.as_completed", return_value=[mock_future]), \
-             patch("builtins.open", mock_open(read_data='{"t":"v"}')):
-            Phase7BDAGReview().execute(ctx)
-
 
 class TestPhase6BreakDownTasksCoverage:
     def test_already_completed(self):
@@ -2368,69 +2319,6 @@ class TestPhase7AInner:
         assert ctx.state.get("dag_completed") is True
 
 
-class TestPhase7BInner:
-    """Tests that actually exercise the process_phase_review closure."""
-
-    def test_no_dag_file_inner(self):
-        from workflow_lib.phases import Phase7BDAGReview
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "dag review tmpl"
-
-        def exists_side(p):
-            if "dag.json" in p:
-                return False  # no dag file -> skip
-            return True
-
-        with patch("os.path.exists", side_effect=exists_side), \
-             patch("os.listdir", side_effect=lambda p: ["phase_1"] if "tasks" in p and "phase_1" not in p else []), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p):
-            Phase7BDAGReview().execute(ctx)
-        assert ctx.state.get("dag_reviewed") is True
-
-    def test_reviewed_dag_exists_inner(self):
-        from workflow_lib.phases import Phase7BDAGReview
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "dag review tmpl"
-
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", side_effect=lambda p: ["phase_1"] if "tasks" in p and "phase_1" not in p else []), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p):
-            Phase7BDAGReview().execute(ctx)
-        assert ctx.state.get("dag_reviewed") is True
-
-    def test_full_inner_success(self):
-        from workflow_lib.phases import Phase7BDAGReview
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "dag review tmpl"
-        ctx.format_prompt.return_value = "formatted"
-        ai_results = [0]
-
-        def run_gemini_side(*a, **kw):
-            ai_results[0] += 1
-            return MagicMock(returncode=0)
-
-        ctx.run_gemini.side_effect = run_gemini_side
-        exists_calls = [0]
-
-        def exists_side(p):
-            exists_calls[0] += 1
-            if "dag_reviewed.json" in p:
-                return exists_calls[0] > 4
-            if "dag.json" in p:
-                return True
-            return True
-
-        with patch("os.path.exists", side_effect=exists_side), \
-             patch("os.listdir", side_effect=lambda p: (
-                 ["phase_1"] if ("tasks" in p and "phase_1" not in p) else
-                 ["sub"] if "phase_1" in p and "sub" not in p else
-                 ["t.md"]
-             )), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or ("sub" in p and "t.md" not in p)), \
-             patch("builtins.open", mock_open(read_data='{"t":"v"}')):
-            Phase7BDAGReview().execute(ctx)
-        assert ctx.state.get("dag_reviewed") is True
-
 
 class TestPhase6BInner:
     """Tests that actually exercise process_phase_review closure."""
@@ -2892,7 +2780,10 @@ class TestDashboard:
         import io
         with Dashboard(log_file=io.StringIO()) as d:
             d.set_agent("t", "Impl", "running", "x" * 200)
-            assert len(d._agents["t"][2]) <= 80
+            # Agent lines are a deque of (timestamp, text) tuples; text truncated to 120 chars
+            lines = list(d._agents["t"][2])
+            assert len(lines) == 1
+            assert len(lines[0][1]) <= 120
 
     def test_all_status_styles_render(self):
         from workflow_lib.dashboard import Dashboard, _STATUS_STYLE
@@ -3237,7 +3128,8 @@ class TestDashboardUpdateLastLine:
         with Dashboard(log_file=io.StringIO()) as d:
             d.set_agent("t1", "Generate", "running", "")
             d.update_last_line("t1", "new output line")
-            assert d._agents["t1"][2] == "new output line"
+            lines = list(d._agents["t1"][2])
+            assert any("new output line" in t for _, t in lines)
 
     def test_update_last_line_preserves_command_and_status(self):
         from workflow_lib.dashboard import Dashboard
@@ -3245,10 +3137,11 @@ class TestDashboardUpdateLastLine:
         with Dashboard(log_file=io.StringIO()) as d:
             d.set_agent("t1", "Generate", "running", "old")
             d.update_last_line("t1", "new")
-            command, status, last_line = d._agents["t1"]
+            command, status, lines_deque = d._agents["t1"]
             assert command == "Generate"
             assert status == "running"
-            assert last_line == "new"
+            line_texts = [t for _, t in lines_deque]
+            assert "new" in line_texts
 
     def test_update_last_line_noop_if_task_not_found(self):
         from workflow_lib.dashboard import Dashboard
@@ -3256,25 +3149,25 @@ class TestDashboardUpdateLastLine:
         with Dashboard(log_file=io.StringIO()) as d:
             d.update_last_line("nonexistent", "line")  # must not raise
 
-    def test_update_last_line_truncates_to_80(self):
+    def test_update_last_line_truncates_to_120(self):
         from workflow_lib.dashboard import Dashboard
         import io
         with Dashboard(log_file=io.StringIO()) as d:
             d.set_agent("t1", "Generate", "running", "")
             d.update_last_line("t1", "x" * 200)
-            assert len(d._agents["t1"][2]) <= 80
+            lines = list(d._agents["t1"][2])
+            assert all(len(t) <= 120 for _, t in lines)
 
     def test_null_dashboard_update_last_line_is_noop(self):
         from workflow_lib.dashboard import NullDashboard
         d = NullDashboard()
         d.update_last_line("t1", "anything")  # must not raise
 
-    def test_set_agent_command_column_used_in_render(self):
+    def test_set_agent_command_stored(self):
         from workflow_lib.dashboard import Dashboard
         import io
         with Dashboard(log_file=io.StringIO()) as d:
             d.set_agent("t1", "MyCommand", "running", "output")
-            # verify command stored correctly
             assert d._agents["t1"][0] == "MyCommand"
 
     def test_log_shows_newest_first(self):
@@ -3323,7 +3216,7 @@ class TestContextCurrentPhase:
         ctx.current_phase = "Phase1: User Research"
 
         captured_on_line = []
-        def fake_run(cwd, prompt, ignore, ignore_file, images, on_line=None):
+        def fake_run(cwd, prompt, ignore, ignore_file, images, on_line=None, timeout=None):
             if on_line:
                 captured_on_line.append(on_line)
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -3344,7 +3237,7 @@ class TestContextCurrentPhase:
         ctx.current_phase = "Phase1: Doc"
 
         captured_on_line = []
-        def fake_run(cwd, prompt, ignore, ignore_file, images, on_line=None):
+        def fake_run(cwd, prompt, ignore, ignore_file, images, on_line=None, timeout=None):
             if on_line:
                 captured_on_line.append(on_line)
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -3478,7 +3371,8 @@ class TestOrchestratorWithDashboard:
         with pytest.raises(SystemExit):
             orc.run_phase_with_retry(phase, max_retries=1)
 
-    def test_run_calls_backup_and_restore(self):
+    @patch("workflow_lib.orchestrator.validate_all_prompts_exist", return_value=[])
+    def test_run_calls_backup_and_restore(self, _mock_validate):
         from workflow_lib.orchestrator import Orchestrator
         ctx = self._make_ctx()
         ctx.backup_ignore_file = MagicMock()

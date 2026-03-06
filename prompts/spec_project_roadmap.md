@@ -21,6 +21,12 @@ Before generating the final document, plan your approach:
 - Whenever you define a project phase, milestone, or strict dependency, you MUST prefix it with a unique identifier in bold (e.g., **[ROAD-001]**, **[ROAD-042]**).
 - You MUST save the generated document exactly to `{target_path}` using your file editing tools.
 
+
+# ERROR HANDLING
+- If a required input file is missing, print the exact path that was expected, then exit with a non-zero status. Do NOT create placeholder files or guess at content.
+- If a verification script fails, read the error output carefully, fix the specific issues listed, and re-run. Do NOT skip verification.
+- If you encounter malformed or unparseable content (broken JSON, invalid Markdown structure), report the exact location and nature of the error. Attempt to fix it if the fix is unambiguous; otherwise exit with a non-zero status.
+- Never silently ignore errors. Every error must either be fixed or explicitly reported.
 # ANTI-PATTERNS (WHAT NOT TO DO)
 - Do not assign arbitrary dates (e.g., "October 14th"); use relative timing or logical sequence (e.g., "Phase 1", "Week 2").
 - Do not sequence dependent systems in parallel without a clear mocking strategy.

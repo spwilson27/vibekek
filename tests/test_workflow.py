@@ -18,13 +18,25 @@ def test_get_gitlab_remote_url_found():
         assert url == "git@gitlab.lan:mrwilson/dreamer.git"
         
 def test_get_gitlab_remote_url_not_found():
+    """When no remotes exist, get_gitlab_remote_url raises RuntimeError."""
+    with patch('subprocess.run') as mock_run:
+        mock_res = MagicMock()
+        mock_res.stdout = ""
+        mock_run.return_value = mock_res
+
+        with pytest.raises(RuntimeError, match="No git remote found"):
+            workflow.get_gitlab_remote_url("/fake/root")
+
+
+def test_get_gitlab_remote_url_falls_back_to_origin():
+    """When origin exists but is not gitlab, it is still returned."""
     with patch('subprocess.run') as mock_run:
         mock_res = MagicMock()
         mock_res.stdout = "origin\tgit@github.com:foo/bar.git (fetch)\n"
         mock_run.return_value = mock_res
-        
+
         url = workflow.get_gitlab_remote_url("/fake/root")
-        assert url == "http://gitlab.lan/mrwilson/dreamer"
+        assert url == "git@github.com:foo/bar.git"
 
 def test_phase_sort_key():
     assert workflow.phase_sort_key("phase_1/01_foo") == (1, 1)

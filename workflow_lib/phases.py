@@ -42,8 +42,6 @@ Phase catalogue
 +-------------------+------------------------------------------------------+
 | Phase7ADAGGeneration      | Build per-phase dependency DAGs.              |
 +-------------------+------------------------------------------------------+
-| Phase7BDAGReview          | AI review and refinement of generated DAGs.  |
-+-------------------+------------------------------------------------------+
 """
 
 import concurrent.futures
@@ -1600,8 +1598,3 @@ class Phase6EIntegrationTestPlan(BasePhase):
         ctx.save_state()
         print("Successfully generated integration test plan.")
 
-
-# Backwards-compat stub — Phase7BDAGReview was removed from the orchestrator.
-class Phase7BDAGReview(BasePhase):
-    def execute(self, ctx: ProjectContext) -> None:  # pragma: no cover
-        pass

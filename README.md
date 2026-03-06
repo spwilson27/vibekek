@@ -21,11 +21,14 @@ flowchart TD
 
     B --> D["3. Plan<br/>workflow.py plan"]
 
-    D --> P1["Phase 3b - Adversarial review<br/>docs/plan/adversarial_review.md"]
-    P1 --> P2["Phase 4 - Merge + scope + order<br/>docs/plan/specs/<br/>docs/plan/research/"]
-    P2 --> P3["Phase 5 - Epics + shared components<br/>docs/plan/phases/phase_N.md<br/>docs/plan/shared_components.md"]
-    P3 --> P4["Phase 6 - Tasks + review + reorder<br/>docs/plan/tasks/phase_N/sub_epic/NN_task.md"]
-    P4 --> P5["Phase 7 - DAG<br/>docs/plan/tasks/phase_N/dag.json<br/>docs/plan/requirements.md"]
+    D --> P0["Phase 1-2 - Generate & flesh out docs<br/>docs/plan/specs/<br/>docs/plan/research/"]
+    P0 --> P1a["Phase 3 - Final review"]
+    P1a --> P1b["Phase 3A - Conflict resolution<br/>docs/plan/conflict_resolution.md"]
+    P1b --> P1["Phase 3B - Adversarial review<br/>docs/plan/adversarial_review.md"]
+    P1 --> P2["Phase 4 - Extract + merge + scope + order<br/>docs/plan/requirements/"]
+    P2 --> P3["Phase 5 - Epics + shared components + contracts<br/>docs/plan/phases/<br/>docs/plan/shared_components.md<br/>docs/plan/interface_contracts.md"]
+    P3 --> P4["Phase 6 - Tasks + review + reorder + integration tests<br/>docs/plan/tasks/phase_N/sub_epic/NN_task.md<br/>docs/plan/integration_test_plan.md"]
+    P4 --> P5["Phase 7 - DAG<br/>docs/plan/tasks/phase_N/dag.json"]
 
     P5 --> E["4. Implement<br/>workflow.py run --jobs N"]
 
@@ -50,7 +53,7 @@ flowchart TD
 |---|---|
 | Python 3.9+ | Runtime |
 | `git` | Worktree and branch management |
-| `gemini` CLI (or `claude` / `copilot`) | AI backend |
+| `gemini` CLI (or `claude` / `copilot` / `opencode`) | AI backend |
 | `uvx` *(optional)* | Serena MCP integration |
 
 ---
@@ -80,7 +83,7 @@ python .tools/workflow.py setup
 ```
 
 This creates `.tools/.venv/`, installs dependencies, and copies starter templates
-(`.agent/`, `do.py`, `ci.py`) into the project root.
+(`.agent/`, `do.py`, `ci.py`, `tests/`) into the project root.
 
 ### 3. Run the planning pipeline
 
@@ -106,8 +109,34 @@ docs/plan/
     phase_2/
       …
   shared_components.md
+  interface_contracts.md
+  conflict_resolution.md
+  adversarial_review.md
+  integration_test_plan.md
 requirements.md      # Master requirements list
 ```
+
+#### Planning phases
+
+| Phase | Description | Output |
+|---|---|---|
+| 1 | Generate planning documents (4 research + 9 specs) | `docs/plan/research/`, `docs/plan/specs/` |
+| 2 | Section-by-section expansion of spec documents | (updates spec files in-place) |
+| 3 | Final holistic consistency review | (updates spec files in-place) |
+| 3A | Conflict resolution between documents | `docs/plan/conflict_resolution.md` |
+| 3B | Adversarial scope-creep review | `docs/plan/adversarial_review.md` |
+| 4A | Extract requirements per document | `docs/plan/requirements/` |
+| 4B | Merge into master requirements + scope gate | `requirements.md` |
+| 4C | Order requirements by dependency | `requirements.md` (reordered) |
+| 5 | Generate implementation epics | `docs/plan/phases/` |
+| 5B | Identify shared components | `docs/plan/shared_components.md` |
+| 5C | Define interface contracts | `docs/plan/interface_contracts.md` |
+| 6 | Break epics into tasks | `docs/plan/tasks/` |
+| 6B | Review tasks for completeness | (updates task files) |
+| 6C | Cross-phase review (2 passes) | (updates task files) |
+| 6D | Task ordering validation (2 passes) | (validation report) |
+| 6E | Integration test plan | `docs/plan/integration_test_plan.md` |
+| 7A | Generate per-phase dependency DAGs | `docs/plan/tasks/phase_N/dag.json` |
 
 The pipeline is resumable — each phase records its completion state and is
 skipped on re-run.
@@ -118,16 +147,30 @@ skipped on re-run.
 python .tools/workflow.py plan --phase 6-tasks --force
 ```
 
-Phase slugs: `3b-adversarial`, `4-merge`, `4-scope`, `4-order`, `5-epics`,
-`5b-components`, `6-tasks`, `6b-review`, `6c-cross-review`, `6d-reorder`, `7-dag`.
+Phase slugs: `3a-conflicts`, `3b-adversarial`, `4-merge`, `4-scope`, `4-order`, `5-epics`,
+`5b-components`, `5c-contracts`, `6-tasks`, `6b-review`, `6c-cross-review`, `6d-reorder`,
+`6e-integration`, `7-dag`.
 
 **Use a different AI backend:**
 
 ```bash
-python .tools/workflow.py --backend claude plan
+python .tools/workflow.py plan --backend claude
 ```
 
-Available backends: `gemini` (default), `claude`, `copilot`.
+Available backends: `gemini` (default), `claude`, `copilot`, `opencode`.
+
+**Control retries and timeout:**
+
+```bash
+# No retries, 15-minute timeout per agent
+python .tools/workflow.py plan --retries 0 --timeout 900
+
+# Default: 3 retries, 10-minute (600s) timeout
+python .tools/workflow.py plan
+```
+
+On timeout, the agent is killed and the phase is auto-retried (no user prompt).
+On other failures, the user is prompted to retry, continue, or quit.
 
 ### 4. Implement in parallel
 
@@ -184,6 +227,59 @@ python .tools/workflow.py run --presubmit-cmd "pytest -x"
 agent's context. Use it to record architectural decisions, naming conventions,
 and brittle areas so agents stay consistent across tasks.
 
+The memory file is enforced to stay at 100 lines or fewer via `tests/test_memory_size.py`
+(run by `./do presubmit`).
+
+---
+
+## Validation & Quality
+
+### Requirement ID format
+
+All requirement IDs follow the format `[{DOC_PREFIX}-REQ-{NUM}]`, e.g.:
+- `[1_PRD-REQ-001]`, `[2_TAS-REQ-001]`, `[3_MCP_DESIGN-REQ-001]`
+
+The prefix matches the source document's ID. This is validated by:
+```bash
+python .tools/verify_requirements.py --verify-req-format requirements.md
+```
+
+### Verification modes
+
+| Flag | Purpose |
+|---|---|
+| `--verify-doc SOURCE EXTRACTED` | Check extracted requirements match source |
+| `--verify-master` | Check master list covers all per-doc requirements |
+| `--verify-phases MASTER PHASES_DIR` | Check all requirements are mapped to phases |
+| `--verify-ordered MASTER ORDERED` | Check ordered file matches active requirements |
+| `--verify-json PHASE JSON` | Check sub-epic grouping matches phase requirements |
+| `--verify-tasks PHASES_DIR TASKS_DIR` | Check tasks cover all phase requirements |
+| `--verify-dags TASKS_DIR` | Check DAGs are valid, consistent, and cycle-free |
+| `--verify-req-format FILE` | Check IDs follow `[DOC_PREFIX-REQ-NNN]` format |
+| `--verify-uniqueness DIR` | Check no requirement ID appears in multiple files |
+
+### Startup validation
+
+The orchestrator validates that all prompt template files exist before running any phase.
+Missing prompts are reported and the run is aborted immediately rather than failing
+hours into the pipeline.
+
+### Prompt placeholder validation
+
+Each prompt has a canonical set of required placeholders registered in
+`workflow_lib/prompt_registry.py`. When `format_prompt_for()` is used, missing
+placeholders are logged as warnings.
+
+### Artifact validation
+
+After key phases, the orchestrator validates that expected output files exist and are
+non-empty. Missing or empty artifacts halt the pipeline.
+
+### Per-phase DAG cycle detection
+
+DAG cycles are detected both within each phase's `dag.json` and across the merged
+master DAG. Orphan task files (`.md` files not tracked in any DAG) are treated as errors.
+
 ---
 
 ## Status & Replan Commands
@@ -210,7 +306,8 @@ Shows each task with a status icon:
 python .tools/workflow.py validate
 ```
 
-Runs all `verify_requirements.py` checks (master list, phase coverage, task coverage, DAGs).
+Runs all `verify_requirements.py` checks (master list, phase coverage, task coverage,
+DAGs, requirement format).
 
 ### Block / unblock a task
 
@@ -291,17 +388,19 @@ Rescans tasks, checks requirement coverage, rebuilds the DAG, and validates.
 .tools/
   workflow.py          # Entry point (delegates to workflow_lib/)
   workflow.jsonc       # Configuration (serena toggle, etc.)
+  verify_requirements.py  # Requirement verification script
   workflow_lib/        # Core library
     cli.py             # Argument parser + command dispatch
     orchestrator.py    # Planning phase sequencer
-    phases.py          # Phase implementations (Phase1 … Phase7B)
+    phases.py          # Phase implementations (Phase1 … Phase7A)
     executor.py        # Parallel DAG execution engine
     replan.py          # Mid-run replan commands
     context.py         # Shared project context + AI runner wrapper
-    runners.py         # AI backend adapters (Gemini, Claude, Copilot)
+    runners.py         # AI backend adapters (Gemini, Claude, Copilot, Opencode)
     state.py           # Workflow + replan state persistence
     config.py          # workflow.jsonc loader
     constants.py       # Paths + document catalogue
+    prompt_registry.py # Canonical prompt placeholder registry
   prompts/             # Prompt templates for every AI step
   input/
     project-description.md   # ← Edit this first
@@ -309,6 +408,7 @@ Rescans tasks, checks requirement coverage, rebuilds the DAG, and validates.
     .agent/MEMORY.md   # Agent memory template
     do.py              # Presubmit / build script template
     ci.py              # CI script template
+    tests/             # Template test suite (memory size check)
     .mcp.json          # Serena MCP server config template
   tests/               # pytest test suite
   requirements.txt     # Python dependencies (pytest, coverage, mypy)
@@ -350,6 +450,9 @@ Or via the test suite:
 **Planning stopped mid-run** — re-run `python .tools/workflow.py plan`. Completed phases
 are skipped automatically. Use `--phase <slug> --force` to re-run a specific phase.
 
+**An agent timed out** — by default agents have a 10-minute timeout. Increase with
+`--timeout 1200` (20 minutes). Timed-out agents are auto-retried up to `--retries` times.
+
 **A task is stuck in a clone** — the clone directory is left on disk on failure for inspection.
 Clean up with:
 
@@ -359,8 +462,16 @@ python .tools/clean-worktrees.py
 
 **DAG deadlock during `run`** — use `python .tools/workflow.py status` to see which tasks
 are waiting. Check for a cycle in the DAG or a blocked prerequisite, then use
-`block`, `remove`, or `regen-dag` to resolve it.
+`block`, `remove`, or `regen-dag` to resolve it. Per-phase cycle detection runs during
+`validate` to catch these early.
 
 **Scope creep in requirements** — run `python .tools/workflow.py validate` and review
 `docs/plan/adversarial_review.md`. Use `modify-req --remove` to prune requirements,
 then `cascade` to rebuild affected DAGs.
+
+**Duplicate requirement IDs** — run `python .tools/verify_requirements.py --verify-uniqueness docs/plan/requirements/`
+to find IDs that appear in multiple documents.
+
+**Conflict between documents** — review `docs/plan/conflict_resolution.md` which is
+generated by Phase 3A. Conflicts are resolved using a priority hierarchy:
+Description > PRD > TAS > Other Specs > Research.

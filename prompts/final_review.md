@@ -54,6 +54,12 @@ Before making any edits, silently plan your approach:
 - You MUST end your turn immediately once you have completed all reviews and updates.
 - If no changes are needed, you may end your turn without modifying any files.
 
+
+# ERROR HANDLING
+- If a required input file is missing, print the exact path that was expected, then exit with a non-zero status. Do NOT create placeholder files or guess at content.
+- If a verification script fails, read the error output carefully, fix the specific issues listed, and re-run. Do NOT skip verification.
+- If you encounter malformed or unparseable content (broken JSON, invalid Markdown structure), report the exact location and nature of the error. Attempt to fix it if the fix is unambiguous; otherwise exit with a non-zero status.
+- Never silently ignore errors. Every error must either be fixed or explicitly reported.
 # OUTPUT FORMAT
 - Your text output should be minimal and only explain what inconsistencies you resolved, including:
   - Which documents conflicted

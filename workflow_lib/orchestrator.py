@@ -12,11 +12,13 @@ Typical usage::
 """
 
 import os
+import subprocess
 import sys
 from typing import Any, Optional
 
 from .constants import DOCS
 from .context import ProjectContext
+from .prompt_registry import validate_all_prompts_exist
 from .phases import *
 
 
@@ -31,16 +33,21 @@ class Orchestrator:
         ``sys.stdout`` via ``print``.
     """
 
-    def __init__(self, ctx: ProjectContext, dashboard: Optional[Any] = None) -> None:
+    def __init__(self, ctx: ProjectContext, dashboard: Optional[Any] = None,
+                 max_retries: int = 3, timeout: int = 600) -> None:
         """Initialise the orchestrator with a project context.
 
         :param ctx: The :class:`~workflow_lib.context.ProjectContext` instance
             that phases will read and mutate.
         :type ctx: ProjectContext
         :param dashboard: Optional dashboard.
+        :param max_retries: Maximum retry attempts per phase (0 = no retries).
+        :param timeout: Timeout in seconds per AI agent invocation.
         """
         self.ctx = ctx
         self.dashboard = dashboard
+        self.max_retries = max(max_retries, 1)  # At least 1 attempt
+        self.ctx.agent_timeout = timeout if timeout > 0 else None
 
     def _log(self, message: str) -> None:
         if self.dashboard:
@@ -48,11 +55,16 @@ class Orchestrator:
         else:
             print(message)
 
-    def _set_phase(self, name: str, status: str, command: str = "") -> None:
+    def _set_phase(self, name: str, status: str, stage: str = "") -> None:
         if self.dashboard:
-            self.dashboard.set_agent(f"plan/{name}", command, status)
+            self.dashboard.set_agent(f"plan/{name}", stage, status)
 
-    def run_phase_with_retry(self, phase: "BasePhase", max_retries: int = 3) -> None:  # type: ignore[name-defined]
+    def _prompt(self, message: str) -> str:
+        if self.dashboard:
+            return self.dashboard.prompt_input(message)
+        return input(message + ": ")
+
+    def run_phase_with_retry(self, phase: "BasePhase", max_retries: int = -1) -> None:  # type: ignore[name-defined]
         """Execute a phase, retrying on failure up to *max_retries* times.
 
         On each failure the user is prompted to retry, skip (``c`` — continue,
@@ -62,36 +74,52 @@ class Orchestrator:
         :param phase: The phase object to execute.  Must implement
             ``execute(ctx: ProjectContext)``.
         :param max_retries: Maximum number of attempts before giving up.
-            Defaults to ``3``.
+            When ``0`` (default), uses ``self.max_retries``.
         :type max_retries: int
         :raises SystemExit: When the user chooses ``q`` or the phase exhausts
             all retry attempts.
         """
+        if max_retries <= 0:
+            max_retries = self.max_retries
         name = phase.display_name
-        command = phase.operation
+        stage = phase.operation
         for attempt in range(1, max_retries + 1):
             if attempt > 1:
                 self._log(f"[Retry {attempt}/{max_retries}] Retrying {name}...")
 
             self.ctx.current_phase = name
-            self._set_phase(name, "running", command)
+            self._set_phase(name, "running", stage)
             try:
                 phase.execute(self.ctx)
                 self.ctx.current_phase = ""
                 self._log(f"-> Phase {name} completed.")
-                self._set_phase(name, "done", command)
+                self._set_phase(name, "done", stage)
                 return
+            except subprocess.TimeoutExpired:
+                self.ctx.current_phase = ""
+                timeout_secs = self.ctx.agent_timeout or "?"
+                self._log(f"[!] Phase {name} timed out after {timeout_secs}s on attempt {attempt}/{max_retries}.")
+                self._set_phase(name, "failed", stage)
+                if attempt >= max_retries:
+                    break
+                self._log(f"    Auto-retrying...")
+                self.ctx.state = self.ctx._load_state()
+                continue
             except SystemExit as e:
                 # Some verify scripts might return 0 through sys.exit() on success
                 if e.code == 0:
                     self.ctx.current_phase = ""
-                    self._set_phase(name, "done", command)
+                    self._set_phase(name, "done", stage)
                     return
                 self.ctx.current_phase = ""
                 self._log(f"[!] Phase {name} failed on attempt {attempt}.")
-                self._set_phase(name, "failed", command)
+                self._set_phase(name, "failed", stage)
                 if attempt < max_retries:
-                    action = input("Press ENTER to retry, 'c' to continue (if manually resolved), or 'q' to quit: ")
+                    self._set_phase(name, "waiting", stage)
+                    action = self._prompt(
+                        f"Phase '{name}' failed (attempt {attempt}/{max_retries}). "
+                        "Press ENTER to retry, 'c' to continue (if manually resolved), or 'q' to quit"
+                    )
                     if action.lower() == 'q':
                         sys.exit(1)
                     elif action.lower() == 'c':
@@ -102,9 +130,13 @@ class Orchestrator:
             except Exception as e:
                 self.ctx.current_phase = ""
                 self._log(f"[!] Phase {name} encountered an error on attempt {attempt}: {e}")
-                self._set_phase(name, "failed", command)
+                self._set_phase(name, "failed", stage)
                 if attempt < max_retries:
-                    action = input("Press ENTER to retry, 'c' to continue (if manually resolved), or 'q' to quit: ")
+                    self._set_phase(name, "waiting", stage)
+                    action = self._prompt(
+                        f"Phase '{name}' errored (attempt {attempt}/{max_retries}): {e}\n"
+                        "Press ENTER to retry, 'c' to continue (if manually resolved), or 'q' to quit"
+                    )
                     if action.lower() == 'q':
                         sys.exit(1)
                     elif action.lower() == 'c':
@@ -162,6 +194,15 @@ class Orchestrator:
             phase exhausts its retry budget.
         """
         self._log("Beginning multi-phase document generation and lifecycle orchestration...")
+
+        # Startup validation: ensure all prompt files exist before running any phase
+        missing = validate_all_prompts_exist(self.ctx.prompts_dir)
+        if missing:
+            for m in missing:
+                self._log(f"[!] Missing prompt file: {m}")
+            self._log(f"[!] {len(missing)} prompt file(s) missing from {self.ctx.prompts_dir}. Aborting.")
+            sys.exit(1)
+
         self.ctx.backup_ignore_file()
         try:
             # Phase 1 and 2 for each document

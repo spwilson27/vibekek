@@ -22,6 +22,12 @@ Before generating the final document, plan your approach:
 - Whenever you define a specific risk and its corresponding mitigation plan, you MUST prefix it with a unique identifier in bold (e.g., **[RISK-001]**).
 - You MUST save the generated document exactly to `{target_path}` using your file editing tools.
 
+
+# ERROR HANDLING
+- If a required input file is missing, print the exact path that was expected, then exit with a non-zero status. Do NOT create placeholder files or guess at content.
+- If a verification script fails, read the error output carefully, fix the specific issues listed, and re-run. Do NOT skip verification.
+- If you encounter malformed or unparseable content (broken JSON, invalid Markdown structure), report the exact location and nature of the error. Attempt to fix it if the fix is unambiguous; otherwise exit with a non-zero status.
+- Never silently ignore errors. Every error must either be fixed or explicitly reported.
 # ANTI-PATTERNS (WHAT NOT TO DO)
 - Do not invent risks that contradict the established context (e.g., if the TAS specifies a monolithic architecture, do not list "Microservice coordination" as a risk).
 - Do not offer vague mitigations (e.g., "We will work harder"); list specific architectural fallbacks or operational changes.

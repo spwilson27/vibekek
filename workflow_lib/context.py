@@ -53,7 +53,9 @@ class ProjectContext:
         
         self.runner = runner or GeminiRunner()
         self.dashboard = dashboard
+        self.ignore_sandbox = False
         self.current_phase: str = ""
+        self.agent_timeout: Optional[int] = None
 
         self.ignore_file = os.path.join(root_dir, self.runner.ignore_file_name)
         self.backup_ignore = self.ignore_file + ".bak"
@@ -200,7 +202,28 @@ class ProjectContext:
         :rtype: str
         """
         pattern = re.compile(r'\{(' + '|'.join(re.escape(k) for k in kwargs) + r')\}')
-        return pattern.sub(lambda m: str(kwargs[m.group(1)]), tmpl)
+        result = pattern.sub(lambda m: str(kwargs[m.group(1)]), tmpl)
+        return result
+
+    def format_prompt_for(self, prompt_filename: str, tmpl: str, **kwargs: Any) -> str:
+        """Like :meth:`format_prompt` but also validates required placeholders.
+
+        Uses the prompt registry to check that all required placeholders for
+        *prompt_filename* were provided in *kwargs*.  Missing ones are logged
+        as warnings.
+
+        :param prompt_filename: The prompt file name (e.g. ``"spec_prd.md"``).
+        :param tmpl: Template string.
+        :param kwargs: Substitution values.
+        :returns: Formatted prompt string.
+        """
+        from .prompt_registry import get_required_placeholders
+        required = get_required_placeholders(prompt_filename)
+        missing = required - set(kwargs.keys())
+        if missing:
+            print(f"  [WARNING] Missing required placeholders for {prompt_filename}: "
+                  f"{', '.join('{' + p + '}' for p in sorted(missing))}")
+        return self.format_prompt(tmpl, **kwargs)
 
     def backup_ignore_file(self) -> None:
         """Back up the AI runner's ignore file if it already exists.
@@ -339,6 +362,8 @@ class ProjectContext:
         :type allowed_files: list[str]
         :raises SystemExit: On any sandbox violation.
         """
+        if self.ignore_sandbox:
+            return
         after = self.get_workspace_snapshot()
         allowed_set = set(os.path.abspath(f) for f in allowed_files)
         allowed_dirs = [
@@ -361,6 +386,8 @@ class ProjectContext:
                         os.path.abspath(self.state_file),
                         os.path.abspath(self.ignore_file),
                         os.path.abspath(self.backup_ignore),
+                        os.path.abspath(os.path.join(self.root_dir, ".last_failed_command.sh")),
+                        os.path.abspath(os.path.join(self.root_dir, ".last_failed_prompt.txt")),
                     ]:
                         continue
                     print(f"\n[SANDBOX VIOLATION] Unauthorized change detected: {path}")
@@ -414,6 +441,7 @@ class ProjectContext:
         ignore_content: str,
         allowed_files: Optional[List[str]] = None,
         sandbox: bool = True,
+        timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Invoke the configured AI runner and optionally enforce sandbox rules.
 
@@ -432,6 +460,9 @@ class ProjectContext:
             called after the AI runs.  Set to ``False`` for phases that
             intentionally write to many files.
         :type sandbox: bool
+        :param timeout: Maximum seconds to wait for the AI process.
+            ``None`` means no limit.
+        :type timeout: int or None
         :returns: The completed process result from the underlying runner.
         :rtype: subprocess.CompletedProcess
         """
@@ -446,7 +477,8 @@ class ProjectContext:
                 _dash.log(prefixed)
                 if _task_id:
                     _dash.update_last_line(_task_id, line)
-        result = self.runner.run(self.root_dir, full_prompt, ignore_content, self.ignore_file, self.image_paths, on_line=on_line)
+        effective_timeout = timeout if timeout is not None else self.agent_timeout
+        result = self.runner.run(self.root_dir, full_prompt, ignore_content, self.ignore_file, self.image_paths, on_line=on_line, timeout=effective_timeout)
         self._write_last_failed_command(full_prompt, ignore_content)
         if allowed_files is not None:
             if sandbox:
@@ -480,6 +512,7 @@ class ProjectContext:
         ignore_content: str,
         allowed_files: Optional[List[str]] = None,
         sandbox: bool = True,
+        timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Alias for :meth:`run_ai` retained for backwards compatibility.
 
@@ -491,10 +524,12 @@ class ProjectContext:
         :type allowed_files: list[str] or None
         :param sandbox: Enforce sandbox rules when ``True``.
         :type sandbox: bool
+        :param timeout: Maximum seconds to wait for the AI process.
+        :type timeout: int or None
         :returns: The completed process result.
         :rtype: subprocess.CompletedProcess
         """
-        return self.run_ai(full_prompt, ignore_content, allowed_files, sandbox)
+        return self.run_ai(full_prompt, ignore_content, allowed_files, sandbox, timeout=timeout)
 
     def count_task_files(self, directory: str) -> int:
         count = 0

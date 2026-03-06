@@ -44,12 +44,15 @@ PROMPT_NAMES = [
     "spec_project_roadmap.md",
     "flesh_out.md",
     "adversarial_review.md",
+    "conflict_resolution_review.md",
     "final_review.md",
     "extract_requirements.md",
     "merge_requirements.md",
     "order_requirements.md",
     "phases.md",
     "shared_components.md",
+    "interface_contracts.md",
+    "integration_test_plan.md",
     "group_tasks.md",
     "tasks.md",
     "review_tasks_in_phase.md",
@@ -57,6 +60,11 @@ PROMPT_NAMES = [
     "reorder_tasks.md",
     "dag_tasks.md",
     "dag_tasks_review.md",
+    "implement_task.md",
+    "review_task.md",
+    "add_task.md",
+    "merge_task.md",
+    "requirements.md",
 ]
 
 STUB_PROMPT = "Write {target_path} based on {description_ctx}."
@@ -233,11 +241,19 @@ class TestPlanningE2E:
             (tasks_dir / "reorder_tasks_summary_pass_1.md").write_text(review_stub)
             (tasks_dir / "reorder_tasks_summary_pass_2.md").write_text(review_stub)
 
+            # Phase3A conflict resolution: pre-create stub
+            plan_dir = tmp_path / "docs" / "plan"
+            (plan_dir / "conflict_resolution.md").write_text("# Conflict Resolution\nNo conflicts.\n")
+
             # Phase3B adversarial review: stub file with no "scope creep" hits
-            adversarial_file = (tmp_path / "docs" / "plan" / "specs"
-                                / "adversarial_review.md")
-            adversarial_file.parent.mkdir(parents=True, exist_ok=True)
+            adversarial_file = (plan_dir / "adversarial_review.md")
             adversarial_file.write_text("# Adversarial Review\nLooks good.\n")
+
+            # Phase5C interface contracts: pre-create stub
+            (plan_dir / "interface_contracts.md").write_text("# Interface Contracts\n")
+
+            # Phase6E integration test plan: pre-create stub
+            (plan_dir / "integration_test_plan.md").write_text("# Integration Test Plan\n")
 
             orc = Orchestrator(ctx)
             orc.run()
@@ -260,8 +276,28 @@ class TestPlanningE2E:
         subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=False,
                        capture_output=True)
 
-        # Pre-populate the tasks dir with a dag so Phase7A has something to do
-        tasks_dir = tmp_path / "docs" / "plan" / "tasks" / "phase_1"
+        # Pre-populate all expected artifact files so validation passes
+        plan_dir = tmp_path / "docs" / "plan"
+        (plan_dir / "specs").mkdir(parents=True, exist_ok=True)
+        (plan_dir / "research").mkdir(parents=True, exist_ok=True)
+        (plan_dir / "phases").mkdir(parents=True, exist_ok=True)
+
+        # Create all doc artifacts
+        from workflow_lib.constants import DOCS
+        for doc in DOCS:
+            folder = "specs" if doc["type"] == "spec" else "research"
+            (plan_dir / folder / f"{doc['id']}.md").write_text(f"# {doc['name']}\nStub.\n")
+
+        # Create phase/task/review artifacts
+        (plan_dir / "conflict_resolution.md").write_text("# Stub\n")
+        (plan_dir / "adversarial_review.md").write_text("# Stub\n")
+        (plan_dir / "shared_components.md").write_text("# Stub\n")
+        (plan_dir / "interface_contracts.md").write_text("# Stub\n")
+        (plan_dir / "integration_test_plan.md").write_text("# Stub\n")
+        (plan_dir / "phases" / "phase_1.md").write_text("# Phase 1\n")
+        (tmp_path / "requirements.md").write_text("# Requirements\n")
+
+        tasks_dir = plan_dir / "tasks" / "phase_1"
         tasks_dir.mkdir(parents=True)
         dag_file = tasks_dir / "dag.json"
         dag_file.write_text(json.dumps({"sub/01_task.md": []}))
@@ -292,6 +328,7 @@ class TestPlanningE2E:
 
             ctx.state.update({
                 "final_review_completed": True,
+                "conflict_resolution_completed": True,
                 "adversarial_review_completed": True,
                 "requirements_extracted": True,
                 "requirements_merged": True,
@@ -299,12 +336,14 @@ class TestPlanningE2E:
                 "requirements_ordered": True,
                 "phases_completed": True,
                 "shared_components_completed": True,
+                "interface_contracts_completed": True,
                 "tasks_completed": True,
                 "tasks_reviewed": True,
                 "cross_phase_reviewed_pass_1": True,
                 "cross_phase_reviewed_pass_2": True,
                 "tasks_reordered_pass_1": True,
                 "tasks_reordered_pass_2": True,
+                "integration_test_plan_completed": True,
                 "dag_completed": True,
             })
 
@@ -399,10 +438,12 @@ class TestPlanningE2E:
             ]:
                 (tasks_dir / suffix).write_text(review_stub)
 
-            adversarial_file = (tmp_path / "docs" / "plan" / "specs"
-                                / "adversarial_review.md")
-            adversarial_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_dir = tmp_path / "docs" / "plan"
+            (plan_dir / "conflict_resolution.md").write_text("# Conflict Resolution\nNo conflicts.\n")
+            adversarial_file = (plan_dir / "adversarial_review.md")
             adversarial_file.write_text("# Adversarial Review\nLooks good.\n")
+            (plan_dir / "interface_contracts.md").write_text("# Interface Contracts\n")
+            (plan_dir / "integration_test_plan.md").write_text("# Integration Test Plan\n")
 
             orc = Orchestrator(ctx)
             orc.run()
