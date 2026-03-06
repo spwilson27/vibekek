@@ -16,7 +16,7 @@ import subprocess
 import sys
 import json
 import re
-from typing import List, Dict, Any, Optional
+from typing import Any, Callable, List, Dict, Optional
 
 from .constants import TOOLS_DIR, INPUT_DIR, GEN_STATE_FILE, DOCS
 from .runners import AIRunner, GeminiRunner, IMAGE_EXTENSIONS
@@ -38,7 +38,7 @@ class ProjectContext:
     :type jobs: int
     """
 
-    def __init__(self, root_dir: str, runner: Optional[AIRunner] = None, jobs: int = 1):
+    def __init__(self, root_dir: str, runner: Optional[AIRunner] = None, jobs: int = 1, dashboard: Optional[Any] = None):
         self.root_dir = root_dir
         self.jobs = jobs
         self.sandbox_dir = os.path.join(root_dir, ".sandbox")
@@ -52,7 +52,9 @@ class ProjectContext:
         self.requirements_dir = os.path.join(self.plan_dir, "requirements")
         
         self.runner = runner or GeminiRunner()
-        
+        self.dashboard = dashboard
+        self.current_phase: str = ""
+
         self.ignore_file = os.path.join(root_dir, self.runner.ignore_file_name)
         self.backup_ignore = self.ignore_file + ".bak"
         
@@ -434,7 +436,17 @@ class ProjectContext:
         :rtype: subprocess.CompletedProcess
         """
         before = self.get_workspace_snapshot()
-        result = self.runner.run(self.root_dir, full_prompt, ignore_content, self.ignore_file, self.image_paths)
+        on_line: Optional[Callable[[str], None]] = None
+        if self.dashboard is not None:
+            _dash = self.dashboard
+            _phase = self.current_phase
+            _task_id = f"plan/{_phase}" if _phase else ""
+            def on_line(line: str) -> None:
+                prefixed = f"[{_phase}] {line}" if _phase else line
+                _dash.log(prefixed)
+                if _task_id:
+                    _dash.update_last_line(_task_id, line)
+        result = self.runner.run(self.root_dir, full_prompt, ignore_content, self.ignore_file, self.image_paths, on_line=on_line)
         self._write_last_failed_command(full_prompt, ignore_content)
         if allowed_files is not None:
             if sandbox:

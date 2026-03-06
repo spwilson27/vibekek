@@ -62,6 +62,7 @@ from .orchestrator import Orchestrator
 from .context import ProjectContext
 from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade
 from .executor import execute_dag, Logger, signal_handler
+from .dashboard import make_dashboard, _DashboardStream
 from .config import get_serena_enabled
 from .state import load_workflow_state, load_dags, get_tasks_dir
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner
@@ -121,7 +122,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
             shutil.copy2(src, dst)
             print(f"Copied: {src} -> {dst}")
 
-    for name in [".agent", "do.py", "ci.py"]:
+    for name in [".agent", "do.py", "ci.py", "tests"]:
         src = os.path.join(templates_dir, name)
         dst = os.path.join(ROOT_DIR, name)
         if not os.path.exists(src):
@@ -142,6 +143,9 @@ def cmd_setup(args: argparse.Namespace) -> None:
 def cmd_plan(args: argparse.Namespace) -> None:
     """Run the multi-phase planning orchestrator.
 
+    Sets up :class:`~workflow_lib.executor.Logger` on ``stdout``/``stderr``
+    mirroring all output to ``plan_workflow.log`` in the project root.
+
     When ``--phase`` and ``--force`` are both supplied, the state flag for the
     specified phase is reset so it will re-run even if it was previously
     completed.
@@ -154,35 +158,50 @@ def cmd_plan(args: argparse.Namespace) -> None:
         - ``force`` (bool) — reset the specified phase's state before running.
     :type args: argparse.Namespace
     """
+    log_file = os.path.join(ROOT_DIR, "plan_workflow.log")
+    log_stream = open(log_file, "a", encoding="utf-8")
+
     runner = _make_runner(args.backend)
-    ctx = ProjectContext(ROOT_DIR, runner=runner, jobs=args.jobs)
 
-    if args.phase and args.force:
-        phase_state_keys = {
-            "3b-adversarial": ["adversarial_review_completed"],
-            "4-merge": ["requirements_merged"],
-            "4-scope": ["scope_gate_passed"],
-            "4-order": ["requirements_ordered"],
-            "5-epics": ["phases_completed"],
-            "5b-components": ["shared_components_completed"],
-            "6-tasks": ["tasks_completed"],
-            "6b-review": ["tasks_reviewed"],
-            "6c-cross-review": ["cross_phase_reviewed_pass_1", "cross_phase_reviewed_pass_2"],
-            "6d-reorder": ["tasks_reordered_pass_1", "tasks_reordered_pass_2"],
-            "7-dag": ["dag_completed"],
-        }
-        keys = phase_state_keys.get(args.phase)
-        if keys:
-            for k in keys:
-                if ctx.state.get(k, False):
-                    print(f"--force: Resetting state for phase '{args.phase}' ({k}).")
-                    ctx.state[k] = False
-            ctx.save_state()
-        else:
-            print(f"Warning: unknown phase '{args.phase}' for --force, ignoring.")
+    with make_dashboard(log_file=log_stream) as dashboard:
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        sys.stdout = _DashboardStream(dashboard, original_stdout)
+        sys.stderr = _DashboardStream(dashboard, original_stderr)
+        try:
+            ctx = ProjectContext(ROOT_DIR, runner=runner, jobs=args.jobs, dashboard=dashboard)
+            if args.phase and args.force:
+                phase_state_keys = {
+                    "3a-conflicts": ["conflict_resolution_completed"],
+                    "3b-adversarial": ["adversarial_review_completed"],
+                    "4-merge": ["requirements_merged"],
+                    "4-scope": ["scope_gate_passed"],
+                    "4-order": ["requirements_ordered"],
+                    "5-epics": ["phases_completed"],
+                    "5b-components": ["shared_components_completed"],
+                    "5c-contracts": ["interface_contracts_completed"],
+                    "6-tasks": ["tasks_completed"],
+                    "6b-review": ["tasks_reviewed"],
+                    "6c-cross-review": ["cross_phase_reviewed_pass_1", "cross_phase_reviewed_pass_2"],
+                    "6d-reorder": ["tasks_reordered_pass_1", "tasks_reordered_pass_2"],
+                    "6e-integration": ["integration_test_plan_completed"],
+                    "7-dag": ["dag_completed"],
+                }
+                keys = phase_state_keys.get(args.phase)
+                if keys:
+                    for k in keys:
+                        if ctx.state.get(k, False):
+                            dashboard.log(f"--force: Resetting state for phase '{args.phase}' ({k}).")
+                            ctx.state[k] = False
+                    ctx.save_state()
+                else:
+                    dashboard.log(f"Warning: unknown phase '{args.phase}' for --force, ignoring.")
 
-    orchestrator = Orchestrator(ctx)
-    orchestrator.run()
+            orchestrator = Orchestrator(ctx, dashboard=dashboard)
+            orchestrator.run()
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
 
 def cmd_run(args: argparse.Namespace) -> None:
     """Execute the parallel implementation workflow.
@@ -201,19 +220,15 @@ def cmd_run(args: argparse.Namespace) -> None:
     """
     signal.signal(signal.SIGINT, signal_handler)
     tasks_dir = get_tasks_dir()
-    log_file = os.path.join(TOOLS_DIR, "run_workflow.log")
+    log_path = os.path.join(ROOT_DIR, "run_workflow.log")
 
-    log_stream = open(log_file, "a", encoding="utf-8")
-    log_lock = threading.Lock()
-    sys.stdout = Logger(sys.stdout, log_stream, log_lock)
-    sys.stderr = Logger(sys.stderr, log_stream, log_lock)
+    log_stream = open(log_path, "a", encoding="utf-8")
 
     master_dag = load_dags(tasks_dir)
     state = load_workflow_state()
 
     serena_status = "enabled" if get_serena_enabled() else "disabled"
-    print(f"Loaded {len(master_dag)} tasks across all phases. [Serena] {serena_status}")
-    execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, args.backend)
+    execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, args.backend, log_file=log_stream)
 
 def main() -> None:
     """Parse CLI arguments and dispatch to the appropriate command handler.

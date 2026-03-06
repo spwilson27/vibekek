@@ -13,7 +13,7 @@ You are a Lead AI Technical Project Manager. Your job is to read a high-level ph
    - Do NOT omit any requirement.
 4. Determine the strict logical execution order of these Sub-Epics. Foundational Sub-Epics (e.g., Database, auth, core logic) MUST be executed before dependent ones (e.g., UI, dashboards).
 5. Output your mapped groupings directly to `docs/plan/tasks/{group_filename}` in standard JSON format. The keys of this JSON object MUST be strictly ordered from the absolute first Sub-Epic to execute, down to the last.
-5. You MUST verify that 100% of the requirements for this phase were correctly grouped by running `python scripts/verify_requirements.py --verify-json ../phases/{phase_filename} ../tasks/{group_filename}`.
+5. You MUST verify that 100% of the requirements for this phase were correctly grouped by running `python .tools/verify_requirements.py --verify-json ../phases/{phase_filename} ../tasks/{group_filename}`.
 6. If the script reports any missing or hallucinated requirements, you MUST update `docs/plan/tasks/{group_filename}` to correct the groupings and run the verification script again until it passes perfectly.
 
 # CHAIN OF THOUGHT

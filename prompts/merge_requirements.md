@@ -10,7 +10,7 @@ You are a Lead Product Manager. Your job is to review all individual requirement
 3. Identify and resolve any conflicting requirements across the different documents.
 4. IMPORTANT: If you resolve a conflict that affects the original design or research, you MUST update the corresponding files in `specs/` or `research/` to reflect the resolution.
 5. You MUST document all requirements from the input documents that are intentionally removed, skipped, or modified during the merge process to ensure no requirements are lost without explanation.
-6. MANDATORY VERIFICATION: Once `requirements.md` is updated, you MUST run `python scripts/verify_requirements.py --verify-master`.
+6. MANDATORY VERIFICATION: Once `requirements.md` is updated, you MUST run `python .tools/verify_requirements.py --verify-master`.
 7. If the script reports missing requirements, you MUST update `requirements.md` to either include them or document them in the "Removed or Modified Requirements" section, then rerun the script until it passes.
 
 # CHAIN OF THOUGHT
@@ -20,7 +20,7 @@ Before generating the final document, plan your approach:
 3. Look for contradictions. Decide on the most logical resolution based on the project context.
 4. Document the rationale for any requirements that are intentionally removed, skipped, or significantly modified.
 5. Create the master `requirements.md` file, including a dedicated section for removed or modified requirements.
-6. Verify your work by running `python scripts/verify_requirements.py --verify-master` and fix any omissions it reports.
+6. Verify your work by running `python .tools/verify_requirements.py --verify-master` and fix any omissions it reports.
 7. If a source document (in `specs/` or `research/`) contained a conflicting idea that was overruled or modified, edit that source document to remain consistent with the new master requirements.
 
 # CONSTRAINTS

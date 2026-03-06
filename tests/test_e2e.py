@@ -462,11 +462,11 @@ class TestImplementationE2E:
         state = {"completed_tasks": [], "merged_tasks": []}
 
         def _fake_process_task(root_dir, task_id, presubmit_cmd,
-                               backend, serena=False):
+                               backend, serena=False, **kwargs):
             return True
 
         def _fake_merge_task(root_dir, task_id, presubmit_cmd,
-                             backend, cache_lock=None, serena=False):
+                             backend, cache_lock=None, serena=False, **kwargs):
             return True
 
         with patch("workflow_lib.executor.process_task",
@@ -506,12 +506,12 @@ class TestImplementationE2E:
         completion_order = []
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False):
+                          serena=False, **kwargs):
             completion_order.append(task_id)
             return True
 
         def _fake_merge(root_dir, task_id, presubmit_cmd, backend,
-                        cache_lock=None, serena=False):
+                        cache_lock=None, serena=False, **kwargs):
             return True
 
         with patch("workflow_lib.executor.process_task",
@@ -557,12 +557,12 @@ class TestImplementationE2E:
         processed = []
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False):
+                          serena=False, **kwargs):
             processed.append(task_id)
             return True
 
         def _fake_merge(root_dir, task_id, presubmit_cmd, backend,
-                        cache_lock=None, serena=False):
+                        cache_lock=None, serena=False, **kwargs):
             return True
 
         with patch("workflow_lib.executor.process_task",
@@ -684,7 +684,7 @@ class TestImplementationE2E:
         processed = []
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False):
+                          serena=False, **kwargs):
             processed.append(task_id)
             return True
 
@@ -756,7 +756,7 @@ class TestImplementationE2E:
         lock = threading.Lock()
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False):
+                          serena=False, **kwargs):
             with lock:
                 processed.append(task_id)
             return True

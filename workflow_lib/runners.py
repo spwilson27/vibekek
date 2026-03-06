@@ -11,7 +11,8 @@ and :mod:`workflow_lib.replan` via ``_make_runner()``.
 import os
 import subprocess
 import tempfile
-from typing import List, Dict, Any, Optional
+import threading
+from typing import Callable, List, Dict, Any, Optional
 
 from .constants import ignore_file_lock
 
@@ -50,6 +51,63 @@ class AIRunner:
                 with open(ignore_file, "w", encoding="utf-8") as f:
                     f.write(ignore_content)
 
+    def _run_streaming(
+        self,
+        cmd: List[str],
+        prompt: str,
+        cwd: str,
+        on_line: Callable[[str], None],
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Run *cmd* with *prompt* on stdin, calling *on_line* for each output line.
+
+        Uses :class:`subprocess.Popen` to stream stdout in real time.  stderr is
+        collected and appended to stdout in the returned object (so callers that
+        check ``result.stdout`` still see it).
+
+        :param cmd: Command list to execute.
+        :param prompt: Text written to the process stdin.
+        :param cwd: Working directory for the subprocess.
+        :param on_line: Callback invoked once per output line (newline stripped).
+        :returns: Completed process with combined stdout (streamed lines) and
+            stderr captured separately.
+        :rtype: subprocess.CompletedProcess
+        """
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd,
+        )
+        stdout_lines: List[str] = []
+
+        def _read_stdout() -> None:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                stripped = line.rstrip("\n")
+                stdout_lines.append(stripped)
+                if stripped.strip():
+                    on_line(stripped)
+
+        reader = threading.Thread(target=_read_stdout, daemon=True)
+        reader.start()
+
+        assert proc.stdin is not None
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+
+        reader.join()
+        stderr_raw = proc.stderr.read() if proc.stderr else ""
+        proc.wait()
+
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=proc.returncode,
+            stdout="\n".join(stdout_lines),
+            stderr=stderr_raw,
+        )
+
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
         """Return the CLI command list (without prompt). Subclasses must override."""
         raise NotImplementedError()
@@ -61,6 +119,7 @@ class AIRunner:
         ignore_content: str,
         ignore_file: str,
         image_paths: Optional[List[str]] = None,
+        on_line: Optional[Callable[[str], None]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Invoke the AI CLI and return its completed process result.
 
@@ -109,6 +168,7 @@ class GeminiRunner(AIRunner):
         ignore_content: str,
         ignore_file: str,
         image_paths: Optional[List[str]] = None,
+        on_line: Optional[Callable[[str], None]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``gemini -y`` with *full_prompt* on stdin.
 
@@ -125,6 +185,10 @@ class GeminiRunner(AIRunner):
         :type ignore_file: str
         :param image_paths: Absolute paths to image files to attach.
         :type image_paths: list[str] or None
+        :param on_line: Optional callback invoked with each output line for
+            real-time streaming.  When provided, uses :class:`subprocess.Popen`
+            instead of :func:`subprocess.run`.
+        :type on_line: callable or None
         :returns: Completed process with ``returncode``, ``stdout``, ``stderr``.
         :rtype: subprocess.CompletedProcess
         """
@@ -133,13 +197,10 @@ class GeminiRunner(AIRunner):
         if image_paths:
             refs = "\n".join(f"@{p}" for p in image_paths)
             prompt = f"{prompt}\n\n{refs}"
-        return subprocess.run(
-            ["gemini", "-y"],
-            input=prompt,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-        )
+        cmd = ["gemini", "-y"]
+        if on_line is not None:
+            return self._run_streaming(cmd, prompt, cwd, on_line)
+        return subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True)
 
     @property
     def ignore_file_name(self) -> str:
@@ -167,36 +228,22 @@ class ClaudeRunner(AIRunner):
         ignore_content: str,
         ignore_file: str,
         image_paths: Optional[List[str]] = None,
+        on_line: Optional[Callable[[str], None]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``claude -p --dangerously-skip-permissions`` with *full_prompt* on stdin.
 
         Images are delivered via ``--image <path>`` flags appended to the
         command, one flag pair per image.
 
-        :param cwd: Working directory for the subprocess.
-        :type cwd: str
-        :param full_prompt: Prompt text written to stdin.
-        :type full_prompt: str
-        :param ignore_content: Content written to ``.claudeignore``.
-        :type ignore_content: str
-        :param ignore_file: Path to the ``.claudeignore`` file.
-        :type ignore_file: str
-        :param image_paths: Absolute paths to image files to attach.
-        :type image_paths: list[str] or None
-        :returns: Completed process with ``returncode``, ``stdout``, ``stderr``.
-        :rtype: subprocess.CompletedProcess
+        :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
         """
         self.write_ignore_file(ignore_file, ignore_content)
         cmd = ["claude", "-p", "--dangerously-skip-permissions"]
         for path in (image_paths or []):
             cmd += ["--image", path]
-        return subprocess.run(
-            cmd,
-            input=full_prompt,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-        )
+        if on_line is not None:
+            return self._run_streaming(cmd, full_prompt, cwd, on_line)
+        return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True)
 
     @property
     def ignore_file_name(self) -> str:
@@ -224,35 +271,18 @@ class OpencodeRunner(AIRunner):
         ignore_content: str,
         ignore_file: str,
         image_paths: Optional[List[str]] = None,
+        on_line: Optional[Callable[[str], None]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``opencode run`` with *full_prompt* on stdin.
 
-        Images are delivered via ``-f <path>`` flags appended to the
-        command, one flag pair per image.
-
-        :param cwd: Working directory for the subprocess.
-        :type cwd: str
-        :param full_prompt: Prompt text written to stdin.
-        :type full_prompt: str
-        :param ignore_content: Unused; present for interface compatibility.
-        :type ignore_content: str
-        :param ignore_file: Unused; present for interface compatibility.
-        :type ignore_file: str
-        :param image_paths: Absolute paths to image files to attach.
-        :type image_paths: list[str] or None
-        :returns: Completed process with ``returncode``, ``stdout``, ``stderr``.
-        :rtype: subprocess.CompletedProcess
+        :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
         """
         cmd = ["opencode", "run"]
         for path in (image_paths or []):
             cmd += ["-f", path]
-        return subprocess.run(
-            cmd,
-            input=full_prompt,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-        )
+        if on_line is not None:
+            return self._run_streaming(cmd, full_prompt, cwd, on_line)
+        return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True)
 
     @property
     def ignore_file_name(self) -> str:
@@ -278,12 +308,15 @@ class CopilotRunner(AIRunner):
         ignore_content: str,
         ignore_file: str,
         image_paths: Optional[List[str]] = None,
+        on_line: Optional[Callable[[str], None]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run the Copilot CLI with *full_prompt* written to a temp file.
 
         Tries the ``copilot -p @<tempfile> --yolo`` invocation.  If the
         binary is not found, moves on and ultimately re-raises the last
         :exc:`FileNotFoundError` or raises :exc:`RuntimeError`.
+
+        :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
 
         :param cwd: Working directory for the subprocess.
         :type cwd: str
@@ -318,9 +351,12 @@ class CopilotRunner(AIRunner):
             last_result: Optional[subprocess.CompletedProcess] = None  # type: ignore[type-arg]
             for cmd in candidates:
                 try:
-                    last_result = subprocess.run(
-                        cmd, input=prompt, cwd=cwd, capture_output=True, text=True
-                    )
+                    if on_line is not None:
+                        last_result = self._run_streaming(cmd, prompt, cwd, on_line)
+                    else:
+                        last_result = subprocess.run(
+                            cmd, input=prompt, cwd=cwd, capture_output=True, text=True
+                        )
                     if last_result.returncode == 0:
                         return last_result
                 except FileNotFoundError as e:

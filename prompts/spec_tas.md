@@ -20,7 +20,7 @@ Before generating the final document, plan your approach:
 - You may use a `<thinking>...</thinking>` block at the very beginning of your response to plan your approach. After the thinking block, output ONLY the raw Markdown document. Do not include any conversational filler.
 - Ensure the document is highly specific. List exact frameworks, library versions, database technologies, and deployment targets.
 - For any diagrams (like Architecture Diagrams or Entity-Relationship Diagrams), use code blocks with Mermaid markup (`mermaid`) exclusively.
-- Whenever you define a distinct architectural constraint or technical rule, you MUST prefix it with a unique identifier in bold (e.g., **[TAS-001]**, **[TAS-042]**). This ensures down-stream agents can build a traceability matrix.
+- Whenever you define a distinct architectural constraint or technical rule, you MUST prefix it with a unique identifier in bold using the format **[2_TAS-REQ-001]**, **[2_TAS-REQ-002]**, etc. The prefix `2_TAS` matches this document's ID. This ensures down-stream agents can build a traceability matrix without ID collisions across documents.
 - You MUST save the generated document exactly to `{target_path}` using your file editing tools.
 
 # ANTI-PATTERNS (WHAT NOT TO DO)

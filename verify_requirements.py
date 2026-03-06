@@ -400,6 +400,36 @@ def _find_cycle(dag):
                 return cycle
     return None
 
+def verify_req_format(file_path):
+    """Verifies that all requirement IDs in a file follow the standard format [DOC_PREFIX-REQ-NNN]."""
+    print(f"Verifying requirement ID format in {file_path}...")
+
+    if not os.path.exists(file_path):
+        print(f"Error: File not found: {file_path}")
+        return 1
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    all_ids = set(REQ_REGEX.findall(content))
+    # Standard format: DOC_PREFIX-REQ-NNN where DOC_PREFIX is like 1_PRD, 2_TAS, etc.
+    standard_format = re.compile(r'^[A-Z0-9_]+-REQ-\d{3,}$')
+
+    non_standard = []
+    for req_id in sorted(all_ids):
+        if not standard_format.match(req_id):
+            non_standard.append(req_id)
+
+    if non_standard:
+        print(f"FAILED: The following {len(non_standard)} requirement IDs do not follow the standard format [DOC_PREFIX-REQ-NNN]:")
+        for req_id in non_standard:
+            print(f"  - [{req_id}] (expected format: [DOC_PREFIX-REQ-001])")
+        return 1
+
+    print(f"Success: All {len(all_ids)} requirement IDs in {file_path} follow the standard format.")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Verify requirement extraction consistency.")
     parser.add_argument("--verify-doc", nargs=2, metavar=("SOURCE_FILE", "EXTRACTED_FILE"),
@@ -416,6 +446,8 @@ def main():
                         help="Verify that all requirements in PHASES_DIR are mapped within TASKS_DIR")
     parser.add_argument("--verify-dags", metavar="TASKS_DIR",
                         help="Verify that all dag.json files in TASKS_DIR are traversable and consistent")
+    parser.add_argument("--verify-req-format", metavar="FILE",
+                        help="Verify that all requirement IDs in FILE follow the standard format [DOC_PREFIX-REQ-NNN]")
     
     args = parser.parse_args()
     
@@ -455,7 +487,10 @@ def main():
     elif args.verify_dags:
         tasks_dir = args.verify_dags
         exit_code = verify_dags(tasks_dir)
-        
+
+    elif args.verify_req_format:
+        exit_code = verify_req_format(args.verify_req_format)
+
     else:
         parser.print_help()
         sys.exit(1)

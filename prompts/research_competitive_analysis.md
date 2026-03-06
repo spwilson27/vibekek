@@ -17,6 +17,15 @@ Before generating the final document, plan your approach:
 5. Outline the strategic gaps that 'devs' can exploit to win market share.
 6. Structure the final document according to the required `OUTPUT FORMAT`, ensuring you provide and verify references for all factual claims.
 
+# RESEARCH METHODOLOGY
+1. **Source Credibility**: Prefer official product websites, pricing pages, G2/Capterra reviews, press releases, and SEC filings. Avoid unverified blog posts.
+2. **Citation Format**: Use inline citations as `[Source Name](URL)`. Every competitor claim MUST have a citation.
+3. **Verification**: Cross-reference competitor features across at least 2 sources (e.g., official site + review platform).
+4. **Recency**: Prefer sources from the last 2 years. Flag any data older than 2 years with `(as of YYYY)`.
+5. **Assumptions**: When competitor data is unavailable, state assumptions explicitly with an `[ASSUMPTION]` tag.
+6. **Search Strategy**: Search for each competitor by name + "features", "pricing", "reviews". Search for "{product category} alternatives" to discover competitors. Perform at least 3 distinct searches per competitor.
+7. **Competitor Count**: Identify 3-5 direct competitors minimum. If fewer exist, include indirect competitors or adjacent products.
+
 # CONSTRAINTS
 - You may use a `<thinking>...</thinking>` block at the very beginning of your response to plan your approach. After the thinking block, output ONLY the raw Markdown document. Do not include any conversational filler.
 - You MUST use search to ground your document in real-world facts and data.

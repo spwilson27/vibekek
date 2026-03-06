@@ -17,6 +17,18 @@ Before generating the final document, plan your approach:
 5. Draft a core user journey for each persona showing how they interact with the product to solve their problem.
 6. Structure the final document according to the required `OUTPUT FORMAT`, ensuring you provide and verify references for all factual claims.
 
+# RESEARCH METHODOLOGY
+1. **Source Credibility**: Prefer published UX research, Nielsen Norman Group studies, Pew Research demographics, industry-specific user behavior studies. Avoid anecdotal evidence.
+2. **Citation Format**: Use inline citations as `[Source Name](URL)`. Every demographic claim or behavior pattern MUST have a citation.
+3. **Verification**: Cross-reference user behavior claims across at least 2 independent sources.
+4. **Recency**: Prefer user research from the last 3 years. User behavior shifts rapidly; flag any older data with `(as of YYYY)`.
+5. **Assumptions**: When user data is unavailable for this specific product category, state assumptions explicitly with an `[ASSUMPTION]` tag and reference the closest analogous product category.
+6. **Search Strategy**: Search for "{target user type} pain points", "{product category} user behavior", "{industry} demographics {year}". Perform at least 3 distinct searches.
+7. **Persona Validation**: Each persona MUST include:
+   - Demographics grounded in real data (age range, occupation, tech proficiency)
+   - At least 2 cited pain points from real user research or reviews of similar products
+   - A realistic usage frequency estimate
+
 # CONSTRAINTS
 - You may use a `<thinking>...</thinking>` block at the very beginning of your response to plan your approach. After the thinking block, output ONLY the raw Markdown document. Do not include any conversational filler.
 - You MUST use search to ground your document in real-world facts and data.

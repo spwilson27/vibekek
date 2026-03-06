@@ -17,6 +17,19 @@ Before generating the final document, plan your approach:
 5. Identify 2-3 major technical risks or integration challenges.
 6. Structure the final document according to the required `OUTPUT FORMAT`, ensuring you provide and verify references for all factual claims.
 
+# RESEARCH METHODOLOGY
+1. **Source Credibility**: Prefer official documentation, GitHub repositories (star count, last commit date), StackOverflow Developer Survey, ThoughtWorks Technology Radar. Avoid outdated tutorials.
+2. **Citation Format**: Use inline citations as `[Source Name](URL)`. Every technology recommendation MUST have a citation.
+3. **Verification**: Cross-reference technology choices across at least 2 sources (e.g., official docs + benchmark/comparison).
+4. **Recency**: Only recommend actively maintained technologies (last release within 12 months). Flag any technology with infrequent updates.
+5. **Assumptions**: When benchmark data is unavailable, state assumptions explicitly with an `[ASSUMPTION]` tag.
+6. **Search Strategy**: For each technology choice, search for "{tech} vs {alternative} {year}", "{tech} production usage", "{tech} benchmarks". Perform at least 3 distinct searches.
+7. **Evaluation Criteria**: For each technology recommendation, provide:
+   - Maturity (years in production, major adopters)
+   - Community size (GitHub stars, npm downloads, Stack Overflow questions)
+   - Performance characteristics (benchmarks where available)
+   - License compatibility
+
 # CONSTRAINTS
 - You may use a `<thinking>...</thinking>` block at the very beginning of your response to plan your approach. After the thinking block, output ONLY the raw Markdown document. Do not include any conversational filler.
 - You MUST use search to ground your document in real-world facts and data.

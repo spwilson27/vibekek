@@ -69,6 +69,33 @@ class BasePhase:
     transient failures themselves.
     """
 
+    @property
+    def operation(self) -> str:
+        """Short operation label shown in the dashboard Command column.
+
+        Derives a readable label from the class name by stripping the leading
+        ``Phase\\d+[A-Z]?`` prefix and splitting CamelCase into words.
+        Override to provide a custom label.
+        """
+        import re
+        name = self.__class__.__name__
+        # Strip "PhaseNX" prefix where X is a sub-letter (e.g. "Phase6C" in
+        # "Phase6CCrossPhaseReview") — only strip the letter when it's followed
+        # by another uppercase (meaning it's an abbreviation, not a word start).
+        name = re.sub(r"^Phase\d+(?:[A-Z](?=[A-Z]))?", "", name) or name
+        # Split CamelCase into words (e.g. "FinalReview" → "Final Review")
+        name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
+        return name
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable name used in dashboard status rows.
+
+        Defaults to the class name.  Subclasses that operate on a specific
+        document or phase should override this to include the target name.
+        """
+        return self.__class__.__name__
+
     def execute(self, ctx: ProjectContext) -> None:
         """Execute the phase using the shared project context.
 
@@ -97,6 +124,14 @@ class Phase1GenerateDoc(BasePhase):
         :type doc: dict
         """
         self.doc = doc
+
+    @property
+    def operation(self) -> str:
+        return "Generate"
+
+    @property
+    def display_name(self) -> str:
+        return f"Phase1: {self.doc.get('name', self.doc.get('id', '?'))}"
 
     def execute(self, ctx: ProjectContext) -> None:
         """Generate the document using the document-specific prompt template.
@@ -173,6 +208,14 @@ class Phase2FleshOutDoc(BasePhase):
         :type doc: dict
         """
         self.doc = doc
+
+    @property
+    def operation(self) -> str:
+        return "Flesh Out"
+
+    @property
+    def display_name(self) -> str:
+        return f"Phase2: {self.doc.get('name', self.doc.get('id', '?'))}"
 
     def execute(self, ctx: ProjectContext) -> None:
         """Iterate over document sections and expand each with an AI pass.
@@ -360,6 +403,14 @@ class Phase4AExtractRequirements(BasePhase):
         :type doc: dict
         """
         self.doc = doc
+
+    @property
+    def operation(self) -> str:
+        return "Extract Reqs"
+
+    @property
+    def display_name(self) -> str:
+        return f"Phase4A: {self.doc.get('name', self.doc.get('id', '?'))}"
 
     def execute(self, ctx: ProjectContext) -> None:
         """Extract requirements and verify coverage against the source document.
@@ -1072,10 +1123,10 @@ class Phase6CCrossPhaseReview(BasePhase):
 
 
 class Phase6DReorderTasks(BasePhase):
-    """Reorder tasks across all phases for a logical implementation progression.
+    """Validate task ordering across all phases (validation-only, no file moves).
 
-    Gathers all tasks and prompts the AI to rename/renumber them for a better
-    implementation order.  Produces ``reorder_tasks_summary_pass_<N>.md``.
+    Gathers all tasks and prompts the AI to validate logical ordering.
+    Produces ``task_order_validation.md``.
     Idempotent via ``ctx.state["tasks_reordered_pass_<N>"]``.
 
     :param pass_num: Pass number (1 or 2).  Defaults to ``1``.
@@ -1430,111 +1481,127 @@ class Phase7ADAGGeneration(BasePhase):
         print("Successfully generated task DAGs.")
 
 
-class Phase7BDAGReview(BasePhase):
-    """AI review and refinement of generated DAGs.
+class Phase3AConflictResolution(BasePhase):
+    """Systematic conflict resolution between planning documents.
 
-    For each phase that has a ``dag.json``, runs an AI review pass to produce
-    ``dag_reviewed.json`` — a human-in-the-loop quality check on the
-    dependency graph.  Runs in parallel across phases.  Idempotent via
-    ``ctx.state["dag_reviewed"]``.
-
-    .. note::
-        This phase is commented out in the default orchestrator run but is
-        kept as an optional step for projects that want AI-reviewed DAGs.
+    Compares all spec and research documents for contradictions and resolves
+    them using a defined priority hierarchy.  Produces
+    ``docs/plan/conflict_resolution.md``.  Idempotent via
+    ``ctx.state["conflict_resolution_completed"]``.
     """
 
     def execute(self, ctx: ProjectContext) -> None:
-        """Review generated DAGs and produce human-reviewed versions.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: On AI runner failure after 3 attempts for any
-            phase.
-        """
-        if ctx.state.get("dag_reviewed", False):
-            print("DAG Review already completed.")
+        if ctx.state.get("conflict_resolution_completed", False):
+            print("Conflict resolution review already completed.")
             return
 
-        print("\n=> [Phase 7B: DAG Review] Reviewing and refining dependency graphs...")
-        
-        tasks_dir = os.path.join(ctx.plan_dir, "tasks")
-        if not os.path.exists(tasks_dir):
-            sys.exit(0)
+        print("\n=> [Phase 3A: Conflict Resolution] Resolving contradictions between documents...")
+        target_path = "docs/plan/conflict_resolution.md"
+        expected_file = os.path.join(ctx.plan_dir, "conflict_resolution.md")
 
-        phase_dirs = [d for d in os.listdir(tasks_dir) if os.path.isdir(os.path.join(tasks_dir, d)) and d.startswith("phase_")]
-        review_prompt_tmpl = ctx.load_prompt("dag_tasks_review.md")
+        prompt_tmpl = ctx.load_prompt("conflict_resolution_review.md")
+        prompt = ctx.format_prompt(prompt_tmpl,
+            description_ctx=ctx.description_ctx,
+            target_path=target_path
+        )
 
-        def process_phase_review(phase_id):
-            phase_dir_path = os.path.join(tasks_dir, phase_id)
-            dag_file_path = os.path.join(phase_dir_path, "dag.json")
-            reviewed_dag_file_path = os.path.join(phase_dir_path, "dag_reviewed.json")
-            
-            if not os.path.exists(dag_file_path):
-                return True
-                
-            if os.path.exists(reviewed_dag_file_path):
-                 print(f"   -> Skipping DAG Review for {phase_id} (already reviewed).")
-                 return True
+        ignore_content = "/*\n!/.sandbox/\n!/docs/plan/specs/\n!/docs/plan/research/\n!/docs/plan/conflict_resolution.md\n"
+        allowed_files = [expected_file]
+        allowed_files.extend([ctx.get_document_path(d) for d in DOCS])
+        result = ctx.run_ai(prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
 
-            with open(dag_file_path, "r", encoding="utf-8") as f:
-                proposed_dag = f.read()
+        if result.returncode != 0 or not os.path.exists(expected_file):
+            print("\n[!] Error during conflict resolution review.")
+            if result.returncode != 0:
+                print(result.stdout)
+                print(result.stderr)
+            sys.exit(1)
 
-            # Gather tasks
-            sub_epics = [d for d in os.listdir(phase_dir_path) if os.path.isdir(os.path.join(phase_dir_path, d))]
-            tasks_content = ""
-            for sub_epic in sorted(sub_epics):
-                sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-                md_files = [f for f in os.listdir(sub_epic_dir) if f.endswith(".md")]
-                
-                for md_file in sorted(md_files):
-                     task_id = f"{sub_epic}/{md_file}"
-                     tasks_content += f"### Task ID: {task_id}\n"
-                     with open(os.path.join(sub_epic_dir, md_file), "r", encoding="utf-8") as f:
-                          content = f.read()
-                          tasks_content += "\n".join([f"    {line}" for line in content.split("\n")]) + "\n\n"
-            
-            print(f"   -> Reviewing DAG for {phase_id}...")
-            
-            prompt = ctx.format_prompt(
-                review_prompt_tmpl,
-                phase_filename=phase_id,
-                target_path=f"docs/plan/tasks/{phase_id}/dag_reviewed.json",
-                description_ctx=ctx.description_ctx,
-                tasks_content=tasks_content,
-                proposed_dag=proposed_dag
-            )
-
-            ignore_content = f"/*\n!/.sandbox/\n!/docs/plan/tasks/{phase_id}/dag_reviewed.json\n"
-            allowed_files = [reviewed_dag_file_path]
-            
-            for attempt in range(1, 4):
-                result = ctx.run_gemini(prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
-                
-                if result.returncode == 0 and os.path.exists(reviewed_dag_file_path):
-                    return True
-                    
-                print(f"\n[!] Error reviewing DAG for {phase_id} (Attempt {attempt}/3).")
-                if result.returncode != 0:
-                    print(result.stdout)
-                    print(result.stderr)
-                elif not os.path.exists(reviewed_dag_file_path):
-                    print(f"\n[!] Error: Agent failed to generate reviewed DAG JSON file {reviewed_dag_file_path}.")
-                    
-            return False
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=ctx.jobs) as executor:
-            futures = [
-                executor.submit(process_phase_review, phase_id)
-                for phase_id in sorted(phase_dirs)
-            ]
-            
-            for future in concurrent.futures.as_completed(futures):
-                if not future.result():
-                    print("\n[!] Error encountered in parallel DAG review. Exiting.")
-                    os._exit(1)
-
-        ctx.stage_changes([tasks_dir])
-        ctx.state["dag_reviewed"] = True
+        ctx.stage_changes(allowed_files)
+        ctx.state["conflict_resolution_completed"] = True
         ctx.save_state()
-        print("Successfully reviewed and refined task DAGs.")
+        print("Successfully completed conflict resolution review.")
 
+
+class Phase5CInterfaceContracts(BasePhase):
+    """Generate interface contracts for shared components and cross-phase boundaries.
+
+    Produces ``docs/plan/interface_contracts.md``.  Idempotent via
+    ``ctx.state["interface_contracts_completed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        if ctx.state.get("interface_contracts_completed", False):
+            print("Interface contracts already generated.")
+            return
+
+        print("\n=> [Phase 5C: Interface Contracts] Defining API contracts for shared components...")
+        target_path = "docs/plan/interface_contracts.md"
+        expected_file = os.path.join(ctx.plan_dir, "interface_contracts.md")
+
+        prompt_tmpl = ctx.load_prompt("interface_contracts.md")
+        prompt = ctx.format_prompt(prompt_tmpl,
+            description_ctx=ctx.description_ctx,
+            target_path=target_path
+        )
+
+        ignore_content = "/*\n!/.sandbox/\n!/requirements.md\n!/docs/plan/phases/\n!/docs/plan/shared_components.md\n!/docs/plan/interface_contracts.md\n"
+        allowed_files = [expected_file]
+        result = ctx.run_ai(prompt, ignore_content, allowed_files=allowed_files)
+
+        if result.returncode != 0 or not os.path.exists(expected_file):
+            print("\n[!] Error generating interface contracts.")
+            if result.returncode != 0:
+                print(result.stdout)
+                print(result.stderr)
+            sys.exit(1)
+
+        ctx.stage_changes(allowed_files)
+        ctx.state["interface_contracts_completed"] = True
+        ctx.save_state()
+        print("Successfully generated interface contracts.")
+
+
+class Phase6EIntegrationTestPlan(BasePhase):
+    """Generate integration test plan for cross-task boundaries.
+
+    Produces ``docs/plan/integration_test_plan.md``.  Idempotent via
+    ``ctx.state["integration_test_plan_completed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        if ctx.state.get("integration_test_plan_completed", False):
+            print("Integration test plan already generated.")
+            return
+
+        print("\n=> [Phase 6E: Integration Test Plan] Defining cross-task integration tests...")
+        target_path = "docs/plan/integration_test_plan.md"
+        expected_file = os.path.join(ctx.plan_dir, "integration_test_plan.md")
+
+        prompt_tmpl = ctx.load_prompt("integration_test_plan.md")
+        prompt = ctx.format_prompt(prompt_tmpl,
+            description_ctx=ctx.description_ctx,
+            target_path=target_path
+        )
+
+        ignore_content = "/*\n!/.sandbox/\n!/docs/plan/tasks/\n!/docs/plan/shared_components.md\n!/docs/plan/interface_contracts.md\n!/docs/plan/integration_test_plan.md\n"
+        allowed_files = [expected_file]
+        result = ctx.run_ai(prompt, ignore_content, allowed_files=allowed_files)
+
+        if result.returncode != 0 or not os.path.exists(expected_file):
+            print("\n[!] Error generating integration test plan.")
+            if result.returncode != 0:
+                print(result.stdout)
+                print(result.stderr)
+            sys.exit(1)
+
+        ctx.stage_changes(allowed_files)
+        ctx.state["integration_test_plan_completed"] = True
+        ctx.save_state()
+        print("Successfully generated integration test plan.")
+
+
+# Backwards-compat stub — Phase7BDAGReview was removed from the orchestrator.
+class Phase7BDAGReview(BasePhase):
+    def execute(self, ctx: ProjectContext) -> None:  # pragma: no cover
+        pass

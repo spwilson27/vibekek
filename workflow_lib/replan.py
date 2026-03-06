@@ -161,6 +161,9 @@ def cmd_validate(args: "argparse.Namespace") -> None:  # type: ignore[name-defin
 
     checks = []
 
+    if os.path.exists(req_file):
+        checks.append(("verify-req-format", [sys.executable, verify_script, "--verify-req-format", "requirements.md"]))
+
     if os.path.exists(req_file) and os.path.isdir(os.path.join(plan_dir, "requirements")):
         checks.append(("verify-master", [sys.executable, verify_script, "--verify-master"]))
 
@@ -679,7 +682,7 @@ def cmd_regen_tasks(args: "argparse.Namespace") -> None:  # type: ignore[name-de
             shared_components_ctx=shared_components_ctx,
         )
 
-        ignore_content = f"/*\n!/.sandbox/\n!/requirements.md\n!/docs/plan/phases/\n!/docs/plan/tasks/\n!/scripts/verify_requirements.py\n"
+        ignore_content = f"/*\n!/.sandbox/\n!/requirements.md\n!/docs/plan/phases/\n!/docs/plan/tasks/\n!/.tools/verify_requirements.py\n"
         allowed_files = [se_dir + os.sep]
         result = ctx.run_ai(prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
 

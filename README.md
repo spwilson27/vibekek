@@ -147,7 +147,7 @@ For each ready task (prerequisites met, not blocked):
 Tasks in earlier phases act as a barrier — phase N must fully complete before
 phase N+1 begins.
 
-Progress is logged to `.tools/run_workflow.log`. Press **Ctrl-C** once for a
+Progress is logged to `run_workflow.log` in the project root. Press **Ctrl-C** once for a
 graceful drain (in-flight tasks finish); twice for immediate exit.
 
 ---

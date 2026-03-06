@@ -20,7 +20,7 @@ Before generating the final document, plan your approach:
 - You may use a `<thinking>...</thinking>` block at the very beginning of your response to plan your approach. After the thinking block, output ONLY the raw Markdown document. Do not include any conversational filler.
 - Ensure the document is self-contained and provides enough detail for an AI developer agent to understand the architectural and functional requirements.
 - For any diagrams, use code blocks with Mermaid markup (`mermaid`) exclusively.
-- Whenever you define a distinct functional requirement, security rule, or architectural constraint, you MUST prefix it with a unique identifier in bold (e.g., **[REQ-001]**, **[REQ-042]**). This ensures down-stream agents can build a traceability matrix.
+- Whenever you define a distinct functional requirement, security rule, or architectural constraint, you MUST prefix it with a unique identifier in bold using the format **[1_PRD-REQ-001]**, **[1_PRD-REQ-002]**, etc. The prefix `1_PRD` matches this document's ID. This ensures down-stream agents can build a traceability matrix without ID collisions across documents.
 - You MUST save the generated document exactly to `{target_path}` using your file editing tools.
 
 # ANTI-PATTERNS (WHAT NOT TO DO)

@@ -10,7 +10,7 @@ You are a Lead Product Manager. Your job is to read a specific project document 
 # TASK
 1. Extract the core requirements from the document into a new file at '{target_path}'.
 2. IMPORTANT: If the original document ('{document_path}') contains requirements that do not have `[REQ-...]` or `[TAS-...]` IDs, you MUST trace those requirements and edit '{document_path}' to insert these new tags natively into the source file.
-3. You MUST verify your extraction and tagging by running `python scripts/verify_requirements.py --verify-doc {document_path} {target_path}`.
+3. You MUST verify your extraction and tagging by running `python .tools/verify_requirements.py --verify-doc {document_path} {target_path}`.
 4. If the script reports missing requirements (either missing in source or extracted), you MUST continually fix '{document_path}' and '{target_path}' and run the validation again until it succeeds perfectly.
 
 # CHAIN OF THOUGHT

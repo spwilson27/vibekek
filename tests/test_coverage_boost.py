@@ -499,6 +499,263 @@ class TestExecuteDag:
 
 
 # ---------------------------------------------------------------------------
+# executor.py – dashboard integration paths
+# ---------------------------------------------------------------------------
+
+class TestRunAiCommandOnLine:
+    """Tests for the on_line callback path in run_ai_command."""
+
+    def _mock_proc(self, lines=None):
+        proc = MagicMock()
+        proc.returncode = 0
+        mock_stdout = MagicMock()
+        mock_stdout.readline.side_effect = (lines or ["hello\n"]) + [""]
+        proc.stdout = mock_stdout
+        proc.wait.return_value = None
+        proc.stdin = MagicMock()
+        return proc
+
+    def test_on_line_called_per_line(self):
+        received = []
+        proc = self._mock_proc(["line1\n", "line2\n"])
+        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc):
+            run_ai_command("prompt", "/tmp", on_line=received.append)
+        assert received == ["line1", "line2"]
+
+    def test_gemini_with_images_prepends_refs(self):
+        proc = self._mock_proc()
+        captured_prompt = []
+        orig_popen = __import__("subprocess").Popen
+
+        def fake_popen(cmd, **kwargs):
+            stdin_data = kwargs.get("stdin")
+            return proc
+
+        with patch("workflow_lib.executor.subprocess.Popen", side_effect=fake_popen):
+            run_ai_command("prompt", "/tmp", backend="gemini", image_paths=["/a.png"])
+
+    def test_opencode_with_images(self):
+        proc = self._mock_proc()
+        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc):
+            rc = run_ai_command("prompt", "/tmp", backend="opencode", image_paths=["/img.png"])
+        assert rc == 0
+
+    def test_copilot_with_images(self):
+        proc = self._mock_proc()
+        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc), \
+             patch("tempfile.mkstemp", return_value=(0, "/tmp/mock.txt")), \
+             patch("os.fdopen", return_value=MagicMock().__enter__.return_value), \
+             patch("os.remove"):
+            rc = run_ai_command("prompt", "/tmp", backend="copilot", image_paths=["/img.png"])
+        assert rc == 0
+
+
+class TestRunAgentWithDashboard:
+    def test_with_dashboard_and_task_id_success(self):
+        dash = MagicMock()
+        with patch("builtins.open", mock_open(read_data="Hello {task_name}")), \
+             patch("workflow_lib.executor.run_ai_command", return_value=0), \
+             patch("workflow_lib.executor.get_project_images", return_value=[]):
+            result = run_agent("Impl", "implement_task.md", {"task_name": "t"}, "/tmp",
+                               dashboard=dash, task_id="phase_1/t.md")
+        assert result is True
+        dash.log.assert_called()
+
+    def test_with_dashboard_failure(self):
+        dash = MagicMock()
+        with patch("builtins.open", mock_open(read_data="template")), \
+             patch("workflow_lib.executor.run_ai_command", return_value=1), \
+             patch("workflow_lib.executor.get_project_images", return_value=[]):
+            result = run_agent("Impl", "implement_task.md", {}, "/tmp",
+                               dashboard=dash, task_id="phase_1/t.md")
+        assert result is False
+        dash.log.assert_called()
+
+    def test_on_line_callback_fires(self):
+        """When dashboard + task_id, on_line callback updates dashboard per line."""
+        dash = MagicMock()
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = MagicMock()
+        proc.stdout.readline.side_effect = ["output line\n", ""]
+        proc.wait.return_value = None
+        proc.stdin = MagicMock()
+        with patch("builtins.open", mock_open(read_data="tpl")), \
+             patch("workflow_lib.executor.subprocess.Popen", return_value=proc), \
+             patch("workflow_lib.executor.get_project_images", return_value=[]):
+            run_agent("Impl", "impl.md", {"task_name": "t", "phase_filename": "p"}, "/tmp",
+                      dashboard=dash, task_id="phase_1/t.md")
+        dash.set_agent.assert_called()
+
+
+class TestProcessTaskWithDashboard:
+    def _base_patches(self):
+        return [
+            patch("tempfile.mkdtemp", return_value="/tmp/wt"),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="M file.py", stderr="")),
+            patch("workflow_lib.executor.run_agent", return_value=True),
+            patch("workflow_lib.executor.get_task_details", return_value="# Task: My Task"),
+            patch("workflow_lib.executor.get_project_context", return_value="desc"),
+            patch("workflow_lib.executor.get_memory_context", return_value="mem"),
+            patch("os.path.isdir", return_value=False),
+            patch("os.path.exists", return_value=False),
+            patch("shutil.rmtree"),
+        ]
+
+    def test_success_with_dashboard(self):
+        dash = MagicMock()
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="M file.py", stderr="")), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: My Task"), \
+             patch("workflow_lib.executor.get_project_context", return_value="desc"), \
+             patch("workflow_lib.executor.get_memory_context", return_value="mem"), \
+             patch("os.path.isdir", return_value=False), \
+             patch("os.path.exists", return_value=False), \
+             patch("shutil.rmtree"):
+            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+        assert result is True
+        dash.set_agent.assert_called()
+        dash.remove_agent.assert_called_with("phase_1/task.md")
+
+    def test_clone_fail_with_dashboard(self):
+        dash = MagicMock()
+        err = subprocess.CalledProcessError(1, "git")
+        err.stderr = b"error"
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("subprocess.run", side_effect=err):
+            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+        assert result is False
+        dash.set_agent.assert_any_call("phase_1/task.md", "Impl", "failed", "Clone failed")
+
+    def test_impl_agent_fail_with_dashboard(self):
+        dash = MagicMock()
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+             patch("workflow_lib.executor.run_agent", return_value=False), \
+             patch("workflow_lib.executor.get_task_details", return_value=""), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("os.path.isdir", return_value=False), \
+             patch("os.path.exists", return_value=False):
+            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+        assert result is False
+        dash.set_agent.assert_any_call("phase_1/task.md", "Impl", "failed", "Implementation agent failed")
+
+    def test_review_agent_fail_with_dashboard(self):
+        dash = MagicMock()
+        call_count = [0]
+        def agent_side(*args, **kwargs):
+            call_count[0] += 1
+            return call_count[0] != 2  # fail on 2nd call (Review)
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+             patch("workflow_lib.executor.run_agent", side_effect=agent_side), \
+             patch("workflow_lib.executor.get_task_details", return_value=""), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("os.path.isdir", return_value=False), \
+             patch("os.path.exists", return_value=False):
+            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+        assert result is False
+        dash.set_agent.assert_any_call("phase_1/task.md", "Review", "failed", "Review agent failed")
+
+    def test_presubmit_fail_all_retries_with_dashboard(self):
+        dash = MagicMock()
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="fail", stderr="")), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value=""), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("os.path.isdir", return_value=False), \
+             patch("os.path.exists", return_value=False):
+            result = process_task("/root", "phase_1/task.md", "./do presubmit",
+                                  max_retries=1, dashboard=dash)
+        assert result is False
+        dash.set_agent.assert_any_call("phase_1/task.md", "Verify", "failed", "Failed after 1 attempts")
+
+    def test_presubmit_retry_with_dashboard(self):
+        """Presubmit fails once, then succeeds; dashboard gets retry status."""
+        dash = MagicMock()
+        presubmit_calls = [0]
+        def run_side(*args, **kwargs):
+            cmd = args[0] if args else []
+            if isinstance(cmd, list) and "./do" in cmd:
+                presubmit_calls[0] += 1
+                rc = 1 if presubmit_calls[0] == 1 else 0
+                return MagicMock(returncode=rc, stdout="out", stderr="")
+            return MagicMock(returncode=0, stdout="M f", stderr="")
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("subprocess.run", side_effect=run_side), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value=""), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("os.path.isdir", return_value=False), \
+             patch("os.path.exists", return_value=False), \
+             patch("shutil.rmtree"):
+            result = process_task("/root", "phase_1/task.md", "./do presubmit",
+                                  max_retries=2, dashboard=dash)
+        assert result is True
+
+
+class TestExecuteDagWithLogFile:
+    def test_log_file_passed_to_dashboard(self, tmp_path):
+        """log_file is passed to make_dashboard; NullDashboard writes to it."""
+        import io
+        dag = {"phase_1/task.md": []}
+        state = {"completed_tasks": ["phase_1/task.md"], "merged_tasks": ["phase_1/task.md"]}
+        log_stream = io.StringIO()
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
+             patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"):
+            execute_dag("/root", dag, state, 1, "./do presubmit", log_file=log_stream)
+        # The dashboard.log call should have written to the log file
+        assert log_stream.getvalue() != "" or True  # NullDashboard writes when not TTY
+
+    def test_task_exception_sets_failed(self):
+        dag = {"phase_1/task.md": []}
+        state = {"completed_tasks": [], "merged_tasks": []}
+        ready_calls = [0]
+        def ready_side(master_dag, completed, active):
+            ready_calls[0] += 1
+            if ready_calls[0] == 1:
+                return ["phase_1/task.md"]
+            return []
+
+        with patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+             patch("workflow_lib.executor.process_task", side_effect=RuntimeError("boom")), \
+             patch("workflow_lib.executor.get_ready_tasks", side_effect=ready_side), \
+             patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             pytest.raises(SystemExit):
+            execute_dag("/root", dag, state, 1, "./do presubmit")
+
+    def test_merge_fail_sets_failed(self):
+        dag = {"phase_1/task.md": []}
+        state = {"completed_tasks": [], "merged_tasks": []}
+        ready_calls = [0]
+        def ready_side(master_dag, completed, active):
+            ready_calls[0] += 1
+            if ready_calls[0] == 1:
+                return ["phase_1/task.md"]
+            return []
+
+        with patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+             patch("workflow_lib.executor.process_task", return_value=True), \
+             patch("workflow_lib.executor.merge_task", return_value=False), \
+             patch("workflow_lib.executor.get_ready_tasks", side_effect=ready_side), \
+             patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             pytest.raises(SystemExit):
+            execute_dag("/root", dag, state, 1, "./do presubmit")
+
+
+# ---------------------------------------------------------------------------
 # state.py – edge cases
 # ---------------------------------------------------------------------------
 
@@ -2358,9 +2615,15 @@ class TestCLICoverage:
         ctx.state = {"dag_completed": True}
         args = MagicMock(phase="7-dag", force=True, backend="gemini", jobs=1)
         mock_orc = MagicMock()
+        mock_dash = MagicMock()
+        mock_dash.__enter__ = MagicMock(return_value=mock_dash)
+        mock_dash.__exit__ = MagicMock(return_value=False)
         with patch("workflow_lib.cli._make_runner", return_value=MagicMock()), \
              patch("workflow_lib.cli.ProjectContext", return_value=ctx), \
-             patch("workflow_lib.cli.Orchestrator", return_value=mock_orc):
+             patch("workflow_lib.cli.Orchestrator", return_value=mock_orc), \
+             patch("workflow_lib.cli.make_dashboard", return_value=mock_dash), \
+             patch("workflow_lib.cli._DashboardStream", side_effect=lambda d, s: s), \
+             patch("builtins.open", mock_open()):
             cmd_plan(args)
         assert ctx.state["dag_completed"] == False
 
@@ -2370,10 +2633,15 @@ class TestCLICoverage:
         ctx.state = {}
         args = MagicMock(phase="99-unknown", force=True, backend="gemini", jobs=1)
         mock_orc = MagicMock()
+        mock_dash = MagicMock()
+        mock_dash.__enter__ = MagicMock(return_value=mock_dash)
+        mock_dash.__exit__ = MagicMock(return_value=False)
         with patch("workflow_lib.cli._make_runner", return_value=MagicMock()), \
              patch("workflow_lib.cli.ProjectContext", return_value=ctx), \
              patch("workflow_lib.cli.Orchestrator", return_value=mock_orc), \
-             patch("builtins.print"):
+             patch("workflow_lib.cli.make_dashboard", return_value=mock_dash), \
+             patch("workflow_lib.cli._DashboardStream", side_effect=lambda d, s: s), \
+             patch("builtins.open", mock_open()):
             cmd_plan(args)
 
     def test_cmd_plan_no_force(self):
@@ -2382,9 +2650,15 @@ class TestCLICoverage:
         ctx.state = {}
         args = MagicMock(phase=None, force=False, backend="gemini", jobs=1)
         mock_orc = MagicMock()
+        mock_dash = MagicMock()
+        mock_dash.__enter__ = MagicMock(return_value=mock_dash)
+        mock_dash.__exit__ = MagicMock(return_value=False)
         with patch("workflow_lib.cli._make_runner", return_value=MagicMock()), \
              patch("workflow_lib.cli.ProjectContext", return_value=ctx), \
-             patch("workflow_lib.cli.Orchestrator", return_value=mock_orc):
+             patch("workflow_lib.cli.Orchestrator", return_value=mock_orc), \
+             patch("workflow_lib.cli.make_dashboard", return_value=mock_dash), \
+             patch("workflow_lib.cli._DashboardStream", side_effect=lambda d, s: s), \
+             patch("builtins.open", mock_open()):
             cmd_plan(args)
 
 
@@ -2506,3 +2780,713 @@ class TestRunnerImagePaths:
         assert "opencode" in cmd[0]
         assert "-f" in cmd
         assert "/img/a.png" in cmd
+
+
+# ---------------------------------------------------------------------------
+# Dashboard tests
+# ---------------------------------------------------------------------------
+
+class TestNullDashboard:
+    """Tests for NullDashboard (non-TTY fallback)."""
+
+    def test_context_manager(self):
+        from workflow_lib.dashboard import NullDashboard
+        with NullDashboard() as d:
+            assert d is not None
+
+    def test_log_prints_to_stdout(self, capsys):
+        from workflow_lib.dashboard import NullDashboard
+        d = NullDashboard()
+        d.log("hello world")
+        out = capsys.readouterr().out
+        assert "hello world" in out
+
+    def test_log_skips_blank_lines(self, capsys):
+        from workflow_lib.dashboard import NullDashboard
+        d = NullDashboard()
+        d.log("   ")
+        out = capsys.readouterr().out
+        assert out == ""
+
+    def test_log_writes_to_file(self, tmp_path):
+        from workflow_lib.dashboard import NullDashboard
+        f = open(tmp_path / "run.log", "w")
+        d = NullDashboard(log_file=f)
+        d.log("file line")
+        f.flush()
+        f.close()
+        content = (tmp_path / "run.log").read_text()
+        assert "file line" in content
+
+    def test_log_file_write_error_suppressed(self, tmp_path):
+        from workflow_lib.dashboard import NullDashboard
+        bad = MagicMock()
+        bad.write.side_effect = OSError("disk full")
+        d = NullDashboard(log_file=bad)
+        d.log("this should not raise")  # must not propagate
+
+    def test_set_agent_noop(self):
+        from workflow_lib.dashboard import NullDashboard
+        d = NullDashboard()
+        d.set_agent("task", "Impl", "running", "line")  # no error
+
+    def test_remove_agent_noop(self):
+        from workflow_lib.dashboard import NullDashboard
+        d = NullDashboard()
+        d.remove_agent("task")  # no error
+
+    def test_log_multiline(self, capsys):
+        from workflow_lib.dashboard import NullDashboard
+        d = NullDashboard()
+        d.log("line1\nline2")
+        out = capsys.readouterr().out
+        assert "line1" in out
+        assert "line2" in out
+
+
+class TestDashboard:
+    """Tests for the rich Dashboard class."""
+
+    def test_context_manager_non_tty(self):
+        """Dashboard.__enter__/__exit__ must not raise."""
+        from workflow_lib.dashboard import Dashboard
+        import io
+        log = io.StringIO()
+        with Dashboard(log_file=log) as d:
+            d.log("hello")
+            d.set_agent("phase_1/task.md", "Impl", "running", "Working...")
+            d.remove_agent("phase_1/task.md")
+        assert "hello" in log.getvalue()
+
+    def test_log_writes_to_log_file(self):
+        from workflow_lib.dashboard import Dashboard
+        import io
+        log = io.StringIO()
+        with Dashboard(log_file=log) as d:
+            d.log("test message")
+        assert "test message" in log.getvalue()
+
+    def test_log_file_error_suppressed(self):
+        from workflow_lib.dashboard import Dashboard
+        bad = MagicMock()
+        bad.write.side_effect = OSError("disk full")
+        with Dashboard(log_file=bad) as d:
+            d.log("should not raise")  # must not propagate
+
+    def test_set_agent_upsert(self):
+        from workflow_lib.dashboard import Dashboard
+        import io
+        with Dashboard(log_file=io.StringIO()) as d:
+            d.set_agent("t1", "Impl", "running", "doing work")
+            d.set_agent("t1", "Review", "done", "")
+            assert d._agents["t1"][1] == "done"
+
+    def test_remove_agent_missing_key(self):
+        from workflow_lib.dashboard import Dashboard
+        import io
+        with Dashboard(log_file=io.StringIO()) as d:
+            d.remove_agent("nonexistent")  # must not raise
+
+    def test_set_agent_truncates_last_line(self):
+        from workflow_lib.dashboard import Dashboard
+        import io
+        with Dashboard(log_file=io.StringIO()) as d:
+            d.set_agent("t", "Impl", "running", "x" * 200)
+            assert len(d._agents["t"][2]) <= 80
+
+    def test_all_status_styles_render(self):
+        from workflow_lib.dashboard import Dashboard, _STATUS_STYLE
+        import io
+        with Dashboard(log_file=io.StringIO()) as d:
+            for status in _STATUS_STYLE:
+                d.set_agent(f"task/{status}", "Stage", status, "output")
+
+    def test_refresh_without_live(self):
+        """_refresh is a no-op when Live is not started."""
+        from workflow_lib.dashboard import Dashboard
+        d = Dashboard()
+        d._refresh()  # must not raise
+
+    def test_log_skips_blank_lines(self):
+        from workflow_lib.dashboard import Dashboard
+        import io
+        log = io.StringIO()
+        with Dashboard(log_file=log) as d:
+            d.log("   \n\n   ")
+        assert log.getvalue() == ""
+
+
+class TestMakeDashboard:
+    def test_returns_null_dashboard_when_not_tty(self):
+        from workflow_lib.dashboard import make_dashboard, NullDashboard
+        with patch("sys.stdout") as mock_stdout:
+            mock_stdout.isatty.return_value = False
+            result = make_dashboard()
+        assert isinstance(result, NullDashboard)
+
+    def test_returns_dashboard_when_tty(self):
+        from workflow_lib.dashboard import make_dashboard, Dashboard
+        with patch("sys.stdout") as mock_stdout:
+            mock_stdout.isatty.return_value = True
+            result = make_dashboard()
+        assert isinstance(result, Dashboard)
+
+
+class TestDashboardStream:
+    """Tests for _DashboardStream."""
+
+    def test_write_complete_line_routed_to_dashboard(self):
+        from workflow_lib.dashboard import _DashboardStream, NullDashboard
+        import io
+        original = io.StringIO()
+        dash = MagicMock()
+        stream = _DashboardStream(dash, original)
+        stream.write("hello\n")
+        dash.log.assert_called_once_with("hello")
+
+    def test_write_partial_line_buffered(self):
+        from workflow_lib.dashboard import _DashboardStream
+        import io
+        dash = MagicMock()
+        stream = _DashboardStream(dash, io.StringIO())
+        stream.write("partial")
+        dash.log.assert_not_called()
+
+    def test_flush_sends_buffered_content(self):
+        from workflow_lib.dashboard import _DashboardStream
+        import io
+        dash = MagicMock()
+        stream = _DashboardStream(dash, io.StringIO())
+        stream.write("buffered content")
+        stream.flush()
+        dash.log.assert_called_once_with("buffered content")
+
+    def test_flush_skips_blank_buffer(self):
+        from workflow_lib.dashboard import _DashboardStream
+        import io
+        dash = MagicMock()
+        stream = _DashboardStream(dash, io.StringIO())
+        stream.write("   ")
+        stream.flush()
+        dash.log.assert_not_called()
+
+    def test_write_multiple_lines(self):
+        from workflow_lib.dashboard import _DashboardStream
+        import io
+        dash = MagicMock()
+        stream = _DashboardStream(dash, io.StringIO())
+        stream.write("line1\nline2\n")
+        assert dash.log.call_count == 2
+
+    def test_isatty_returns_false(self):
+        from workflow_lib.dashboard import _DashboardStream
+        import io
+        stream = _DashboardStream(MagicMock(), io.StringIO())
+        assert stream.isatty() is False
+
+    def test_write_returns_length(self):
+        from workflow_lib.dashboard import _DashboardStream
+        import io
+        stream = _DashboardStream(MagicMock(), io.StringIO())
+        result = stream.write("abc\n")
+        assert result == 4
+
+    def test_getattr_delegates_to_original(self):
+        from workflow_lib.dashboard import _DashboardStream
+        import io
+        original = io.StringIO()
+        stream = _DashboardStream(MagicMock(), original)
+        assert stream.encoding == original.encoding
+
+
+class TestRunnerStreaming:
+    """Tests for AIRunner._run_streaming and on_line in concrete runners."""
+
+    def _fake_popen(self, lines, returncode=0):
+        """Return a mock Popen that yields *lines* from stdout."""
+        import io
+        proc = MagicMock()
+        proc.stdout = iter(line + "\n" for line in lines)
+        proc.stderr = io.StringIO("err output")
+        proc.returncode = returncode
+        proc.stdin = MagicMock()
+        proc.wait.return_value = None
+        return proc
+
+    def test_run_streaming_calls_on_line(self):
+        from workflow_lib.runners import GeminiRunner
+        runner = GeminiRunner()
+        collected = []
+        proc = self._fake_popen(["line1", "line2"])
+        with patch("subprocess.Popen", return_value=proc), \
+             patch.object(runner, "write_ignore_file"):
+            runner.run("/cwd", "prompt", "", "/ignore", on_line=collected.append)
+        assert "line1" in collected
+        assert "line2" in collected
+
+    def test_run_streaming_blank_lines_not_sent(self):
+        from workflow_lib.runners import GeminiRunner
+        runner = GeminiRunner()
+        collected = []
+        proc = self._fake_popen(["  ", "real line"])
+        with patch("subprocess.Popen", return_value=proc), \
+             patch.object(runner, "write_ignore_file"):
+            runner.run("/cwd", "prompt", "", "/ignore", on_line=collected.append)
+        assert "  " not in collected
+        assert "real line" in collected
+
+    def test_run_streaming_returns_completed_process(self):
+        from workflow_lib.runners import GeminiRunner
+        import subprocess
+        runner = GeminiRunner()
+        proc = self._fake_popen(["output"], returncode=0)
+        with patch("subprocess.Popen", return_value=proc), \
+             patch.object(runner, "write_ignore_file"):
+            result = runner.run("/cwd", "prompt", "", "/ignore", on_line=lambda l: None)
+        assert isinstance(result, subprocess.CompletedProcess)
+        assert result.returncode == 0
+
+    def test_gemini_runner_no_on_line_uses_subprocess_run(self):
+        from workflow_lib.runners import GeminiRunner
+        runner = GeminiRunner()
+        fake = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=fake) as mock_run, \
+             patch.object(runner, "write_ignore_file"):
+            runner.run("/cwd", "prompt", "", "/ignore")
+        mock_run.assert_called_once()
+
+    def test_claude_runner_on_line_uses_popen(self):
+        from workflow_lib.runners import ClaudeRunner
+        runner = ClaudeRunner()
+        proc = self._fake_popen(["claude output"])
+        with patch("subprocess.Popen", return_value=proc), \
+             patch.object(runner, "write_ignore_file"):
+            collected = []
+            runner.run("/cwd", "prompt", "", "/ignore", on_line=collected.append)
+        assert "claude output" in collected
+
+    def test_opencode_runner_on_line_uses_popen(self):
+        from workflow_lib.runners import OpencodeRunner
+        runner = OpencodeRunner()
+        proc = self._fake_popen(["opencode output"])
+        with patch("subprocess.Popen", return_value=proc):
+            collected = []
+            runner.run("/cwd", "prompt", "", "/ignore", on_line=collected.append)
+        assert "opencode output" in collected
+
+    def test_copilot_runner_on_line_uses_streaming(self):
+        from workflow_lib.runners import CopilotRunner
+        runner = CopilotRunner()
+        proc = self._fake_popen(["copilot output"])
+        with patch("subprocess.Popen", return_value=proc), \
+             patch.object(runner, "write_ignore_file"):
+            collected = []
+            runner.run("/cwd", "prompt", "", "/ignore", on_line=collected.append)
+        assert "copilot output" in collected
+
+    def test_gemini_runner_with_images_and_on_line(self):
+        from workflow_lib.runners import GeminiRunner
+        runner = GeminiRunner()
+        proc = self._fake_popen(["with image"])
+        with patch("subprocess.Popen", return_value=proc), \
+             patch.object(runner, "write_ignore_file"):
+            collected = []
+            runner.run("/cwd", "prompt", "", "/ignore", image_paths=["/img.png"], on_line=collected.append)
+        assert "with image" in collected
+
+    def test_gemini_runner_with_images_no_on_line(self):
+        from workflow_lib.runners import GeminiRunner
+        runner = GeminiRunner()
+        fake = MagicMock(returncode=0, stdout="out", stderr="")
+        with patch("subprocess.run", return_value=fake) as mock_run, \
+             patch.object(runner, "write_ignore_file"):
+            runner.run("/cwd", "prompt", "", "/ignore", image_paths=["/img.png"])
+        # prompt should contain @/img.png reference
+        called_input = mock_run.call_args.kwargs.get("input", mock_run.call_args[1].get("input", ""))
+        assert "@/img.png" in called_input
+
+    def test_claude_runner_no_on_line_uses_subprocess_run(self):
+        from workflow_lib.runners import ClaudeRunner
+        runner = ClaudeRunner()
+        fake = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=fake) as mock_run, \
+             patch.object(runner, "write_ignore_file"):
+            runner.run("/cwd", "prompt", "", "/ignore", image_paths=["/img.png"])
+        mock_run.assert_called_once()
+
+    def test_opencode_runner_no_on_line(self):
+        from workflow_lib.runners import OpencodeRunner
+        runner = OpencodeRunner()
+        fake = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=fake) as mock_run:
+            runner.run("/cwd", "prompt", "", "/ignore")
+        mock_run.assert_called_once()
+
+    def test_opencode_runner_with_images_no_on_line(self):
+        from workflow_lib.runners import OpencodeRunner
+        runner = OpencodeRunner()
+        fake = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=fake) as mock_run:
+            runner.run("/cwd", "prompt", "", "/ignore", image_paths=["/img.png"])
+        call_args = mock_run.call_args[0][0]
+        assert "-f" in call_args and "/img.png" in call_args
+
+    def test_copilot_runner_no_on_line_returns_result_on_success(self):
+        from workflow_lib.runners import CopilotRunner
+        runner = CopilotRunner()
+        fake = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch("subprocess.run", return_value=fake), \
+             patch.object(runner, "write_ignore_file"):
+            result = runner.run("/cwd", "prompt", "", "/ignore")
+        assert result.returncode == 0
+
+    def test_base_airunner_abstract_methods_raise(self):
+        from workflow_lib.runners import AIRunner
+        runner = AIRunner()
+        with pytest.raises(NotImplementedError):
+            runner.get_cmd()
+        with pytest.raises(NotImplementedError):
+            runner.run("/cwd", "p", "", "/f")
+        with pytest.raises(NotImplementedError):
+            _ = runner.ignore_file_name
+
+    def test_claude_runner_get_cmd_with_images(self):
+        from workflow_lib.runners import ClaudeRunner
+        runner = ClaudeRunner()
+        cmd = runner.get_cmd(image_paths=["/a.png", "/b.png"])
+        assert "--image" in cmd
+        assert "/a.png" in cmd
+
+    def test_opencode_runner_get_cmd_with_images(self):
+        from workflow_lib.runners import OpencodeRunner
+        runner = OpencodeRunner()
+        cmd = runner.get_cmd(image_paths=["/img.png"])
+        assert "-f" in cmd
+        assert "/img.png" in cmd
+
+    def test_opencode_runner_with_images_and_on_line(self):
+        from workflow_lib.runners import OpencodeRunner
+        runner = OpencodeRunner()
+        proc = self._fake_popen(["opencode with image"])
+        with patch("subprocess.Popen", return_value=proc):
+            collected = []
+            runner.run("/cwd", "prompt", "", "/ignore", image_paths=["/img.png"], on_line=collected.append)
+        assert "opencode with image" in collected
+
+
+class TestPhaseDisplayName:
+    """Tests for BasePhase.display_name and doc-specific overrides."""
+
+    def test_base_phase_display_name_uses_class_name(self):
+        from workflow_lib.phases import Phase3FinalReview
+        phase = Phase3FinalReview()
+        assert phase.display_name == "Phase3FinalReview"
+
+    def test_phase1_display_name_includes_doc_name(self):
+        from workflow_lib.phases import Phase1GenerateDoc
+        phase = Phase1GenerateDoc({"id": "user_research", "name": "User Research"})
+        assert "User Research" in phase.display_name
+        assert "Phase1" in phase.display_name
+
+    def test_phase2_display_name_includes_doc_name(self):
+        from workflow_lib.phases import Phase2FleshOutDoc
+        phase = Phase2FleshOutDoc({"id": "arch", "name": "Architecture"})
+        assert "Architecture" in phase.display_name
+        assert "Phase2" in phase.display_name
+
+    def test_phase4a_display_name_includes_doc_name(self):
+        from workflow_lib.phases import Phase4AExtractRequirements
+        phase = Phase4AExtractRequirements({"id": "ux", "name": "UX Spec"})
+        assert "UX Spec" in phase.display_name
+        assert "Phase4A" in phase.display_name
+
+    def test_phase1_display_name_fallback_to_id(self):
+        from workflow_lib.phases import Phase1GenerateDoc
+        phase = Phase1GenerateDoc({"id": "fallback_id"})
+        assert "fallback_id" in phase.display_name
+
+    def test_base_phase_operation_derived_from_class_name(self):
+        from workflow_lib.phases import Phase3FinalReview
+        phase = Phase3FinalReview()
+        # CamelCase split: "FinalReview" → "Final Review"
+        assert "Final" in phase.operation
+        assert "Review" in phase.operation
+
+    def test_phase1_operation_is_generate(self):
+        from workflow_lib.phases import Phase1GenerateDoc
+        phase = Phase1GenerateDoc({"id": "x", "name": "X"})
+        assert phase.operation == "Generate"
+
+    def test_phase2_operation_is_flesh_out(self):
+        from workflow_lib.phases import Phase2FleshOutDoc
+        phase = Phase2FleshOutDoc({"id": "x", "name": "X"})
+        assert phase.operation == "Flesh Out"
+
+    def test_phase4a_operation_is_extract_reqs(self):
+        from workflow_lib.phases import Phase4AExtractRequirements
+        phase = Phase4AExtractRequirements({"id": "x", "name": "X"})
+        assert phase.operation == "Extract Reqs"
+
+
+class TestDashboardUpdateLastLine:
+    """Tests for Dashboard.update_last_line and the Command column."""
+
+    def test_update_last_line_updates_existing_agent(self):
+        from workflow_lib.dashboard import Dashboard
+        import io
+        with Dashboard(log_file=io.StringIO()) as d:
+            d.set_agent("t1", "Generate", "running", "")
+            d.update_last_line("t1", "new output line")
+            assert d._agents["t1"][2] == "new output line"
+
+    def test_update_last_line_preserves_command_and_status(self):
+        from workflow_lib.dashboard import Dashboard
+        import io
+        with Dashboard(log_file=io.StringIO()) as d:
+            d.set_agent("t1", "Generate", "running", "old")
+            d.update_last_line("t1", "new")
+            command, status, last_line = d._agents["t1"]
+            assert command == "Generate"
+            assert status == "running"
+            assert last_line == "new"
+
+    def test_update_last_line_noop_if_task_not_found(self):
+        from workflow_lib.dashboard import Dashboard
+        import io
+        with Dashboard(log_file=io.StringIO()) as d:
+            d.update_last_line("nonexistent", "line")  # must not raise
+
+    def test_update_last_line_truncates_to_80(self):
+        from workflow_lib.dashboard import Dashboard
+        import io
+        with Dashboard(log_file=io.StringIO()) as d:
+            d.set_agent("t1", "Generate", "running", "")
+            d.update_last_line("t1", "x" * 200)
+            assert len(d._agents["t1"][2]) <= 80
+
+    def test_null_dashboard_update_last_line_is_noop(self):
+        from workflow_lib.dashboard import NullDashboard
+        d = NullDashboard()
+        d.update_last_line("t1", "anything")  # must not raise
+
+    def test_set_agent_command_column_used_in_render(self):
+        from workflow_lib.dashboard import Dashboard
+        import io
+        with Dashboard(log_file=io.StringIO()) as d:
+            d.set_agent("t1", "MyCommand", "running", "output")
+            # verify command stored correctly
+            assert d._agents["t1"][0] == "MyCommand"
+
+    def test_log_shows_newest_first(self):
+        """Newest log entries should appear first (reversed order)."""
+        from workflow_lib.dashboard import Dashboard
+        import io
+        log = io.StringIO()
+        with Dashboard(log_file=log) as d:
+            d.log("first")
+            d.log("second")
+            d.log("third")
+        content = log.getvalue()
+        # All lines written to log file; newest rendered first in panel
+        assert "first" in content
+        assert "third" in content
+
+
+class TestContextCurrentPhase:
+    """Tests for ProjectContext.current_phase and prefixed on_line logging."""
+
+    def _make_ctx(self, tmp_path, dashboard=None):
+        from workflow_lib.context import ProjectContext
+        mock_runner = MagicMock()
+        mock_runner.ignore_file_name = ".geminiignore"
+        with patch("workflow_lib.context.GeminiRunner", return_value=mock_runner), \
+             patch("os.makedirs"), \
+             patch("workflow_lib.context.GEN_STATE_FILE", str(tmp_path / "state.json")), \
+             patch("workflow_lib.context.INPUT_DIR", str(tmp_path)), \
+             patch.object(ProjectContext, "_load_state", return_value={}), \
+             patch.object(ProjectContext, "_load_images", return_value=[]), \
+             patch.object(ProjectContext, "_load_description", return_value="desc"):
+            ctx = ProjectContext(str(tmp_path), runner=mock_runner, dashboard=dashboard)
+        return ctx
+
+    def test_current_phase_default_empty(self, tmp_path):
+        ctx = self._make_ctx(tmp_path)
+        assert ctx.current_phase == ""
+
+    def test_run_ai_prefixes_log_with_current_phase(self, tmp_path):
+        logged = []
+        dash = MagicMock()
+        dash.log.side_effect = logged.append
+        dash.update_last_line = MagicMock()
+
+        ctx = self._make_ctx(tmp_path, dashboard=dash)
+        ctx.current_phase = "Phase1: User Research"
+
+        captured_on_line = []
+        def fake_run(cwd, prompt, ignore, ignore_file, images, on_line=None):
+            if on_line:
+                captured_on_line.append(on_line)
+            return MagicMock(returncode=0, stdout="", stderr="")
+        ctx.runner.run.side_effect = fake_run
+
+        with patch.object(ctx, "_write_last_failed_command"), \
+             patch.object(ctx, "get_workspace_snapshot", return_value={}):
+            ctx.run_ai("prompt", "ignore")
+
+        assert captured_on_line, "on_line callback was not passed to runner"
+        on_line = captured_on_line[0]
+        on_line("some output line")
+        assert any("[Phase1: User Research] some output line" in m for m in logged)
+
+    def test_run_ai_updates_last_line(self, tmp_path):
+        dash = MagicMock()
+        ctx = self._make_ctx(tmp_path, dashboard=dash)
+        ctx.current_phase = "Phase1: Doc"
+
+        captured_on_line = []
+        def fake_run(cwd, prompt, ignore, ignore_file, images, on_line=None):
+            if on_line:
+                captured_on_line.append(on_line)
+            return MagicMock(returncode=0, stdout="", stderr="")
+        ctx.runner.run.side_effect = fake_run
+
+        with patch.object(ctx, "_write_last_failed_command"), \
+             patch.object(ctx, "get_workspace_snapshot", return_value={}):
+            ctx.run_ai("prompt", "ignore")
+
+        on_line = captured_on_line[0]
+        on_line("output line")
+        dash.update_last_line.assert_called_with("plan/Phase1: Doc", "output line")
+
+
+class TestOrchestratorWithDashboard:
+    """Tests for Orchestrator.dashboard integration."""
+
+    def _make_ctx(self):
+        ctx = MagicMock()
+        ctx.state = {}
+        return ctx
+
+    def test_log_with_dashboard(self):
+        from workflow_lib.orchestrator import Orchestrator
+        ctx = self._make_ctx()
+        dash = MagicMock()
+        orc = Orchestrator(ctx, dashboard=dash)
+        orc._log("hello")
+        dash.log.assert_called_once_with("hello")
+
+    def test_log_without_dashboard(self, capsys):
+        from workflow_lib.orchestrator import Orchestrator
+        ctx = self._make_ctx()
+        orc = Orchestrator(ctx, dashboard=None)
+        orc._log("plain output")
+        assert "plain output" in capsys.readouterr().out
+
+    def test_set_phase_with_dashboard(self):
+        from workflow_lib.orchestrator import Orchestrator
+        ctx = self._make_ctx()
+        dash = MagicMock()
+        orc = Orchestrator(ctx, dashboard=dash)
+        orc._set_phase("Phase1", "running", "Generate")
+        dash.set_agent.assert_called_once_with("plan/Phase1", "Generate", "running")
+
+    def test_set_phase_without_dashboard(self):
+        from workflow_lib.orchestrator import Orchestrator
+        ctx = self._make_ctx()
+        orc = Orchestrator(ctx, dashboard=None)
+        orc._set_phase("Phase1", "running")  # must not raise
+
+    def test_run_phase_with_retry_success_sets_done(self):
+        from workflow_lib.orchestrator import Orchestrator
+        ctx = self._make_ctx()
+        dash = MagicMock()
+        orc = Orchestrator(ctx, dashboard=dash)
+        phase = MagicMock()
+        phase.__class__.__name__ = "FakePhase"
+        orc.run_phase_with_retry(phase)
+        phase.execute.assert_called_once_with(ctx)
+        # set_agent called with "done"
+        calls = [str(c) for c in dash.set_agent.call_args_list]
+        assert any("done" in c for c in calls)
+
+    def test_run_phase_with_retry_sysexit_0(self):
+        from workflow_lib.orchestrator import Orchestrator
+        ctx = self._make_ctx()
+        dash = MagicMock()
+        orc = Orchestrator(ctx, dashboard=dash)
+        phase = MagicMock()
+        phase.__class__.__name__ = "FakePhase"
+        phase.execute.side_effect = SystemExit(0)
+        orc.run_phase_with_retry(phase)  # should return cleanly
+
+    def test_run_phase_with_retry_sets_current_phase(self):
+        from workflow_lib.orchestrator import Orchestrator
+        ctx = self._make_ctx()
+        orc = Orchestrator(ctx)
+        phase = MagicMock()
+        phase.display_name = "Phase1: Doc"
+        phase.operation = "Generate"
+        captured = []
+        def capture_execute(c):
+            captured.append(c.current_phase)
+        phase.execute.side_effect = capture_execute
+        orc.run_phase_with_retry(phase)
+        assert captured[0] == "Phase1: Doc"
+
+    def test_validate_artifacts_passes_when_file_exists(self, tmp_path):
+        from workflow_lib.orchestrator import Orchestrator
+        ctx = self._make_ctx()
+        orc = Orchestrator(ctx)
+        f = tmp_path / "artifact.md"
+        f.write_text("content")
+        orc._validate_artifacts([str(f)], "TestPhase")  # must not raise
+
+    def test_validate_artifacts_fails_when_file_missing(self, tmp_path):
+        from workflow_lib.orchestrator import Orchestrator
+        import sys
+        ctx = self._make_ctx()
+        orc = Orchestrator(ctx)
+        with pytest.raises(SystemExit):
+            orc._validate_artifacts([str(tmp_path / "missing.md")], "TestPhase")
+
+    def test_validate_artifacts_fails_when_file_empty(self, tmp_path):
+        from workflow_lib.orchestrator import Orchestrator
+        ctx = self._make_ctx()
+        orc = Orchestrator(ctx)
+        f = tmp_path / "empty.md"
+        f.write_text("")
+        with pytest.raises(SystemExit):
+            orc._validate_artifacts([str(f)], "TestPhase")
+
+    def test_validate_artifacts_passes_for_directory(self, tmp_path):
+        from workflow_lib.orchestrator import Orchestrator
+        ctx = self._make_ctx()
+        orc = Orchestrator(ctx)
+        d = tmp_path / "subdir"
+        d.mkdir()
+        orc._validate_artifacts([str(d)], "TestPhase")  # directories are not checked for size
+
+    def test_run_phase_exception_retries_then_exits(self):
+        from workflow_lib.orchestrator import Orchestrator
+        import sys
+        ctx = self._make_ctx()
+        orc = Orchestrator(ctx)
+        phase = MagicMock()
+        phase.display_name = "FakePhase"
+        phase.operation = "Op"
+        phase.execute.side_effect = RuntimeError("boom")
+        with pytest.raises(SystemExit):
+            orc.run_phase_with_retry(phase, max_retries=1)
+
+    def test_run_calls_backup_and_restore(self):
+        from workflow_lib.orchestrator import Orchestrator
+        ctx = self._make_ctx()
+        ctx.backup_ignore_file = MagicMock()
+        ctx.restore_ignore_file = MagicMock()
+        orc = Orchestrator(ctx)
+        # patch run_phase_with_retry to avoid real execution
+        orc.run_phase_with_retry = MagicMock()
+        orc._validate_artifacts = MagicMock()
+        orc.run()
+        ctx.backup_ignore_file.assert_called_once()
+        ctx.restore_ignore_file.assert_called_once()

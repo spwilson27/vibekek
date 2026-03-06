@@ -16,6 +16,14 @@ Before generating the final document, plan your approach:
 4. Cross-reference your planned points against any provided `<previous_document>` tags. If previous documents mention specific target audiences or constraints, ensure your market analysis directly addresses them.
 5. Structure the final document according to the required `OUTPUT FORMAT`, ensuring you provide and verify references for all factual claims.
 
+# RESEARCH METHODOLOGY
+1. **Source Credibility**: Prefer official documentation, peer-reviewed studies, established industry reports (Gartner, Forrester, Statista, IDC). Avoid blogs, forums, or unverified sources.
+2. **Citation Format**: Use inline citations as `[Source Name](URL)`. Every factual claim, statistic, or market figure MUST have a citation.
+3. **Verification**: Cross-reference key claims across at least 2 independent sources. If only one source exists, prefix with `[Single Source]`.
+4. **Recency**: Prefer sources from the last 2 years. If using older data, explicitly note the date: `(as of YYYY)`.
+5. **Assumptions**: When real data is unavailable, state assumptions explicitly with an `[ASSUMPTION]` tag and provide your reasoning.
+6. **Search Strategy**: Use specific, targeted queries. For market size, search for "{industry} market size {year}". For trends, search for "{industry} trends {year}". Perform at least 3 distinct searches.
+
 # CONSTRAINTS
 - You may use a `<thinking>...</thinking>` block at the very beginning of your response to plan your approach. After the thinking block, output ONLY the raw Markdown document. Do not include any conversational filler.
 - You MUST use search to ground your document in real-world facts and data.
