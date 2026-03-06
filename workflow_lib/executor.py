@@ -6,7 +6,7 @@ dependency order at runtime, and executes tasks concurrently using
 
 Key responsibilities:
 
-* **process_task** — sets up a git worktree, runs implementation and review
+* **process_task** — clones the repo, runs implementation and review
   AI agents, verifies the result with a presubmit command, and commits.
 * **merge_task** — clones the repo into a temp directory, squash-merges the
   task branch into ``dev``, verifies again, and pushes to the local origin.
@@ -388,7 +388,7 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
     :param task_context: Key/value substitution map applied to the template.
     :type task_context: dict
     :param cwd: Working directory in which to run the AI subprocess (typically
-        the task worktree path).
+        the task clone path).
     :type cwd: str
     :param backend: AI backend to use.  Passed through to
         :func:`run_ai_command`.  Defaults to ``"gemini"``.
@@ -471,49 +471,13 @@ def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.L
     print(f"      [Serena] Cache updated at {cache_dst}.")
 
 
-def get_existing_worktree(root_dir: str, branch_name: str) -> Optional[str]:
-    """Return the path of an existing git worktree for *branch_name*, or ``None``.
-
-    Parses the ``git worktree list --porcelain`` output to find a live worktree
-    whose checked-out branch matches *branch_name*.  Stale entries (where the
-    worktree directory no longer exists) trigger a ``git worktree prune`` and
-    are reported as ``None``.
-
-    :param root_dir: Absolute path to the main git repository.
-    :type root_dir: str
-    :param branch_name: Short branch name to search for (without
-        ``refs/heads/`` prefix).
-    :type branch_name: str
-    :returns: Absolute path to the existing worktree directory, or ``None``
-        when none is found.
-    :rtype: Optional[str]
-    """
-    try:
-        res = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=root_dir, capture_output=True, text=True, check=True)
-        current_wt = None
-        for line in res.stdout.splitlines():
-            if line.startswith("worktree "):
-                current_wt = line[9:].strip()
-            elif line.startswith("branch ") and line[7:].endswith(f"refs/heads/{branch_name}"):
-                if current_wt and os.path.isdir(current_wt):
-                    return current_wt
-                else:
-                    # Stale worktree detected, prune it
-                    print(f"      Cleaning stale worktree metadata for {branch_name}...")
-                    subprocess.run(["git", "worktree", "prune"], cwd=root_dir, check=False)
-                    # Also try to delete the branch if it's not merged, or just let add -B handle it
-                    return None
-    except subprocess.CalledProcessError:
-        pass
-    return None
-
 
 def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False) -> bool:
     """Run the full implementation lifecycle for one task.
 
     Steps performed:
 
-    1. Create (or reuse and reset) a git worktree on a dedicated branch.
+    1. Clone the repo into a temp directory on a dedicated branch.
     2. Optionally seed the Serena cache and copy ``.mcp.json`` (when
        *serena* is ``True``).
     3. Run the **Implementation** AI agent.
@@ -522,7 +486,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
        output back to the Review agent on each retry.
     6. Commit changes if the presubmit passes.
 
-    The worktree is removed on success.  On failure it is left in place so the
+    The clone is removed on success.  On failure it is left in place so the
     developer can inspect or manually fix the state.
 
     :param root_dir: Absolute path to the project root git repository.
@@ -539,7 +503,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
     :param max_retries: Maximum number of presubmit verification attempts
         before giving up.  Defaults to ``3``.
     :type max_retries: int
-    :param serena: When ``True``, seed the Serena cache into the worktree and
+    :param serena: When ``True``, seed the Serena cache into the clone and
         copy ``.mcp.json`` so the Claude CLI can discover the Serena MCP
         server.  Defaults to ``False``.
     :type serena: bool
@@ -556,24 +520,14 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
     tmpdir = ""
     success = False
     try:
-        existing_wt = get_existing_worktree(root_dir, branch_name)
-        if existing_wt:
-            tmpdir = existing_wt
-            print(f"      Found existing worktree at {tmpdir} on branch {branch_name}. Resetting to dev...")
-            try:
-                subprocess.run(["git", "reset", "--hard", "dev"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                subprocess.run(["git", "clean", "-fd"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            except subprocess.CalledProcessError as e:
-                print(f"      [!] Failed to reset existing worktree:\n{e.stderr.decode('utf-8')}")
-                return False
-        else:
-            tmpdir = tempfile.mkdtemp(prefix=f"ai_{safe_task_id}_")
-            print(f"      Creating git worktree at {tmpdir} on branch {branch_name}...")
-            try:
-                subprocess.run(["git", "worktree", "add", "-B", branch_name, tmpdir, "dev"], cwd=root_dir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            except subprocess.CalledProcessError as e:
-                print(f"      [!] Failed to create worktree:\n{e.stderr.decode('utf-8')}")
-                return False
+        tmpdir = tempfile.mkdtemp(prefix=f"ai_{safe_task_id}_")
+        print(f"      Cloning repository to {tmpdir} on branch {branch_name}...")
+        try:
+            subprocess.run(["git", "clone", root_dir, tmpdir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            subprocess.run(["git", "checkout", "-B", branch_name, "origin/dev"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as e:
+            print(f"      [!] Failed to create clone:\n{e.stderr.decode('utf-8')}")
+            return False
 
         if serena:
             # Seed Serena cache from main repo so agents don't start cold
@@ -582,7 +536,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
             if os.path.isdir(serena_cache_src) and not os.path.isdir(serena_cache_dst):
                 shutil.copytree(serena_cache_src, serena_cache_dst)
 
-            # Copy .mcp.json so Claude CLI picks up Serena in the worktree
+            # Copy .mcp.json so Claude CLI picks up Serena in the clone
             mcp_src = os.path.join(root_dir, ".mcp.json")
             mcp_dst = os.path.join(tmpdir, ".mcp.json")
             if os.path.exists(mcp_src) and not os.path.exists(mcp_dst):
@@ -599,7 +553,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
             "task_details": task_details,
             "description_ctx": description_ctx,
             "memory_ctx": memory_ctx,
-            "worktree_dir": tmpdir
+            "clone_dir": tmpdir
         }
 
         # 1. Implementation Agent
@@ -648,11 +602,11 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
         
     finally:
         if success:
-            # Cleanup worktree
-            print(f"      Cleaning up worktree {tmpdir}...")
-            subprocess.run(["git", "worktree", "remove", "-f", tmpdir], cwd=root_dir, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Cleanup clone
+            print(f"      Cleaning up clone {tmpdir}...")
+            shutil.rmtree(tmpdir, ignore_errors=True)
         else:
-            print(f"      [!] Task failed. Leaving worktree {tmpdir} and branch {branch_name} for investigation.")
+            print(f"      [!] Task failed. Leaving clone {tmpdir} and branch {branch_name} for investigation.")
 
 
 def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False) -> bool:
@@ -997,14 +951,15 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
         serena_cache = os.path.join(root_dir, ".serena", "cache")
         if not os.path.isdir(serena_cache):
             print("=> [Serena] No cache found. Bootstrapping index from dev branch...")
-            init_wt = tempfile.mkdtemp(prefix="serena_init_")
+            init_clone = tempfile.mkdtemp(prefix="serena_init_")
             try:
-                subprocess.run(["git", "worktree", "add", "--detach", init_wt, "dev"],
-                               cwd=root_dir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                rebuild_serena_cache(init_wt, root_dir, cache_lock)
+                subprocess.run(["git", "clone", root_dir, init_clone],
+                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                subprocess.run(["git", "checkout", "dev"],
+                               cwd=init_clone, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                rebuild_serena_cache(init_clone, root_dir, cache_lock)
             finally:
-                subprocess.run(["git", "worktree", "remove", "-f", init_wt],
-                               cwd=root_dir, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                shutil.rmtree(init_clone, ignore_errors=True)
 
     active_tasks: set = set()
     failed_tasks: set = set()

@@ -30,7 +30,7 @@ The verification script is `./do presubmit`. It runs formatting, linting, buildi
 
 # Instructions
 
-You are operating inside of a git worktree checked out specifically for you.
+You are operating inside of a clean, isolated `git clone` of the repository, checked out to a dedicated branch for you.
 
 1.  **Analyze the Task:** Carefully read the requirements, context, and any previous code in your workspace.
 2.  **Test-Driven Development (TDD):** 

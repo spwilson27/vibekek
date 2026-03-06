@@ -461,12 +461,15 @@ def test_run_ai_writes_last_failed_on_failure(tmp_path):
     assert (tmp_path / ".last_failed_prompt.txt").exists()
 
 
-def test_run_ai_no_failed_file_on_success(tmp_path):
+def test_run_ai_writes_last_command_on_success_too(tmp_path):
+    """The debug script is always written so sandbox violations can be reproduced."""
     runner = GeminiRunner()
     mock_result = MagicMock()
     mock_result.returncode = 0
 
     with patch.object(runner, "run", return_value=mock_result), \
+         patch("builtins.open", _real_open_for_tmp(tmp_path)), \
+         patch("os.chmod"), \
          patch("builtins.print"):
         ctx = ProjectContext.__new__(ProjectContext)
         ctx.root_dir = str(tmp_path)
@@ -477,7 +480,8 @@ def test_run_ai_no_failed_file_on_success(tmp_path):
         result = ctx.run_ai("my prompt", "ignore stuff")
 
     assert result.returncode == 0
-    assert not (tmp_path / ".last_failed_command.sh").exists()
+    assert (tmp_path / ".last_failed_command.sh").exists()
+    assert (tmp_path / ".last_failed_prompt.txt").exists()
 
 
 def _real_open_for_tmp(tmp_path):

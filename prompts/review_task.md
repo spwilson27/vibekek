@@ -31,9 +31,9 @@ The verification script is `./do presubmit`. It runs formatting, linting, buildi
 
 # Instructions
 
-You are operating inside of a git worktree checked out specifically for you. The previous implementation agent has written code but it may be flawed, un-idiomatic, or failing presubmit.
+You are operating inside of a clean, isolated `git clone` of the repository. The previous implementation agent has written code but it may be flawed, un-idiomatic, or failing presubmit.
 
-1.  **Analyze the Codebase:** Review the code touched by the implementation agent inside this worktree against the task requirements.
+1.  **Analyze the Codebase:** Review the code touched by the implementation agent inside this clone against the task requirements.
 2.  **Refactor and Fix:**
     - Improve the code quality, making it more robust and idiomatic.
     - Add or improve any missing inline documentation or docstrings.

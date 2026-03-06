@@ -435,8 +435,7 @@ class ProjectContext:
         """
         before = self.get_workspace_snapshot()
         result = self.runner.run(self.root_dir, full_prompt, ignore_content, self.ignore_file, self.image_paths)
-        if result.returncode != 0:
-            self._write_last_failed_command(full_prompt, ignore_content)
+        self._write_last_failed_command(full_prompt, ignore_content)
         if allowed_files is not None:
             if sandbox:
                 self.verify_changes(before, allowed_files)

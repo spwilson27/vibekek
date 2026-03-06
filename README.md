@@ -6,7 +6,7 @@ idea to a fully-planned, parallel-executed codebase. It has two main phases:
 1. **Plan** — multi-phase AI pipeline that produces research documents, specs, requirements,
    epics, tasks, and dependency DAGs.
 2. **Run** — parallel implementation loop where AI agents work on tasks concurrently,
-   each in an isolated git worktree, with automatic squash-merge into `dev`.
+   each in an isolated git clone, with automatic squash-merge into `dev`.
 
 ---
 
@@ -30,7 +30,7 @@ flowchart TD
     P5 --> E["4. Implement<br/>workflow.py run --jobs N"]
 
     E --> R1["Pick next ready task<br/>prerequisites met, not blocked"]
-    R1 --> R2["Create git worktree<br/>ai-phase-task branch"]
+    R1 --> R2["Clone repo<br/>ai-phase-task branch"]
     R2 --> R3["Implementation agent<br/>Review agent"]
     R3 --> R4["Run ./do presubmit<br/>up to 3 attempts"]
     R4 -->|Pass| R5["Squash-merge into dev<br/>task marked complete"]
@@ -137,7 +137,7 @@ python .tools/workflow.py run --jobs 4
 
 For each ready task (prerequisites met, not blocked):
 
-1. Creates a git worktree on a dedicated branch (`ai-phase-<task>`).
+1. Clones the repo into a temp directory on a dedicated branch (`ai-phase-<task>`).
 2. Runs the **Implementation** agent, then the **Review** agent.
 3. Runs `./do presubmit` (configurable via `--presubmit-cmd`) up to 3 times,
    feeding failures back to the Review agent.
@@ -159,14 +159,14 @@ graceful drain (in-flight tasks finish); twice for immediate exit.
 ```jsonc
 {
   // Enable Serena MCP server integration for agent code intelligence.
-  // When true, workflow seeds each worktree with a Serena cache and rebuilds
+  // When true, workflow seeds each clone with a Serena cache and rebuilds
   // it after each successful merge so agents have up-to-date code search.
   "serena": false
 }
 ```
 
 Set `"serena": true` to enable [Serena](https://github.com/oraios/serena) code-intelligence
-in every task worktree. Requires `uvx` on `PATH`. On first run, the Serena index is
+in every task clone. Requires `uvx` on `PATH`. On first run, the Serena index is
 bootstrapped from `dev`; it is refreshed after each successful merge.
 
 ### Presubmit command
@@ -350,7 +350,7 @@ Or via the test suite:
 **Planning stopped mid-run** — re-run `python .tools/workflow.py plan`. Completed phases
 are skipped automatically. Use `--phase <slug> --force` to re-run a specific phase.
 
-**A task is stuck in a worktree** — the worktree is left on disk on failure for inspection.
+**A task is stuck in a clone** — the clone directory is left on disk on failure for inspection.
 Clean up with:
 
 ```bash

@@ -171,7 +171,7 @@ class TestPlanningE2E:
              patch("workflow_lib.constants.ROOT_DIR", str(tmp_path)), \
              patch("workflow_lib.context.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.context.GEN_STATE_FILE",
-                   str(tools_dir / ".gen_state.json")), \
+                   str(tmp_path / ".gen_state.json")), \
              patch("workflow_lib.phases.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.executor.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
@@ -270,7 +270,7 @@ class TestPlanningE2E:
              patch("workflow_lib.constants.ROOT_DIR", str(tmp_path)), \
              patch("workflow_lib.context.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.context.GEN_STATE_FILE",
-                   str(tools_dir / ".gen_state.json")), \
+                   str(tmp_path / ".gen_state.json")), \
              patch("workflow_lib.phases.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.context.ProjectContext.stage_changes"), \
              patch("workflow_lib.context.ProjectContext.verify_changes"), \
@@ -355,7 +355,7 @@ class TestPlanningE2E:
              patch("workflow_lib.constants.ROOT_DIR", str(tmp_path)), \
              patch("workflow_lib.context.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.context.GEN_STATE_FILE",
-                   str(tools_dir / ".gen_state.json")), \
+                   str(tmp_path / ".gen_state.json")), \
              patch("workflow_lib.phases.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.context.ProjectContext.run_gemini",
                    _tracking_run_gemini), \

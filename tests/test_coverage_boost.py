@@ -27,7 +27,7 @@ from workflow import (
     Phase7ADAGGeneration,
     Logger, run_ai_command,
     get_task_details, get_memory_context, get_project_context,
-    run_agent, rebuild_serena_cache, get_existing_worktree,
+    run_agent, rebuild_serena_cache,
     process_task, merge_task, execute_dag,
     load_blocked_tasks, get_ready_tasks,
     load_replan_state, save_replan_state,
@@ -241,34 +241,6 @@ class TestRebuildSerenaCache:
 
 
 # ---------------------------------------------------------------------------
-# executor.py – get_existing_worktree
-# ---------------------------------------------------------------------------
-
-class TestGetExistingWorktree:
-    def test_found(self):
-        output = "worktree /tmp/wt\nbranch refs/heads/ai-phase-task\n"
-        with patch("subprocess.run") as mock_run, \
-             patch("os.path.isdir", return_value=True):
-            mock_run.return_value = MagicMock(stdout=output)
-            result = get_existing_worktree("/root", "ai-phase-task")
-        assert result == "/tmp/wt"
-
-    def test_stale_prune(self):
-        """Branch found but directory missing → prune and return None."""
-        output = "worktree /nonexistent/path\nbranch refs/heads/ai-phase-task\n"
-        with patch("subprocess.run") as mock_run, \
-             patch("os.path.isdir", return_value=False):
-            mock_run.return_value = MagicMock(stdout=output)
-            result = get_existing_worktree("/root", "ai-phase-task")
-        assert result is None
-
-    def test_error(self):
-        with patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "git")):
-            result = get_existing_worktree("/root", "branch")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
 # executor.py – load_blocked_tasks
 # ---------------------------------------------------------------------------
 
@@ -297,50 +269,31 @@ class TestLoadBlockedTasks:
 # ---------------------------------------------------------------------------
 
 class TestProcessTask:
-    def _base_patches(self):
-        return {
-            "workflow_lib.executor.get_existing_worktree": None,
-            "workflow_lib.executor.run_agent": True,
-            "workflow_lib.executor.get_task_details": "# Task: My Task",
-            "workflow_lib.executor.get_project_context": "desc",
-            "workflow_lib.executor.get_memory_context": "mem",
-        }
-
-    def test_worktree_creation_fails(self):
+    def test_clone_fails(self):
         err = subprocess.CalledProcessError(1, "git")
         err.stderr = b"error"
-        with patch("workflow_lib.executor.get_existing_worktree", return_value=None), \
-             patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("subprocess.run", side_effect=err):
             result = process_task("/root", "phase_1/task.md", "./do presubmit")
         assert result is False
 
-    def test_success_with_new_worktree(self):
+    def test_success(self):
         mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="M file.py", stderr=""))
-        with patch("workflow_lib.executor.get_existing_worktree", return_value=None), \
-             patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("subprocess.run", mock_run), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value="# Task: My Task"), \
              patch("workflow_lib.executor.get_project_context", return_value="desc"), \
              patch("workflow_lib.executor.get_memory_context", return_value="mem"), \
              patch("os.path.isdir", return_value=False), \
-             patch("os.path.exists", return_value=False):
+             patch("os.path.exists", return_value=False), \
+             patch("shutil.rmtree"):
             result = process_task("/root", "phase_1/task.md", "./do presubmit")
         assert result is True
 
-    def test_existing_worktree_reset_fails(self):
-        err = subprocess.CalledProcessError(1, "git")
-        err.stderr = b"reset error"
-        with patch("workflow_lib.executor.get_existing_worktree", return_value="/tmp/existing"), \
-             patch("subprocess.run", side_effect=err):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit")
-        assert result is False
-
     def test_implementation_agent_fails(self):
         mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
-        with patch("workflow_lib.executor.get_existing_worktree", return_value=None), \
-             patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("subprocess.run", mock_run), \
              patch("workflow_lib.executor.run_agent", return_value=False), \
              patch("workflow_lib.executor.get_task_details", return_value=""), \
@@ -362,23 +315,22 @@ class TestProcessTask:
                 return MagicMock(returncode=0, stdout="M file.py", stderr="")
             return MagicMock(returncode=0, stdout="M file.py", stderr="")
 
-        with patch("workflow_lib.executor.get_existing_worktree", return_value=None), \
-             patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("subprocess.run", side_effect=mock_run_side_effect), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value=""), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
              patch("os.path.isdir", return_value=False), \
-             patch("os.path.exists", return_value=False):
+             patch("os.path.exists", return_value=False), \
+             patch("shutil.rmtree"):
             result = process_task("/root", "phase_1/task.md", "./do presubmit", max_retries=2)
         assert result is True
 
     def test_serena_seeding(self):
         """With serena=True: cache is copied and .mcp.json is copied."""
         mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="M f", stderr=""))
-        with patch("workflow_lib.executor.get_existing_worktree", return_value=None), \
-             patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("subprocess.run", mock_run), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value=""), \
@@ -387,7 +339,8 @@ class TestProcessTask:
              patch("os.path.isdir", side_effect=lambda p: ".serena" in p and "/tmp/wt" not in p), \
              patch("os.path.exists", side_effect=lambda p: ".mcp.json" in p and "/tmp/wt" not in p), \
              patch("workflow_lib.executor.shutil.copytree") as mock_copytree, \
-             patch("workflow_lib.executor.shutil.copy2") as mock_copy2:
+             patch("workflow_lib.executor.shutil.copy2") as mock_copy2, \
+             patch("workflow_lib.executor.shutil.rmtree"):
             result = process_task("/root", "phase_1/task.md", "./do presubmit", serena=True)
         mock_copytree.assert_called_once()
         mock_copy2.assert_called_once()
@@ -678,7 +631,7 @@ class TestContextCoverage:
             ctx.requirements_dir = "/fake/root/docs/plan/requirements"
             ctx.sandbox_dir = "/fake/root/.sandbox"
             ctx.prompts_dir = "/fake/.tools/prompts"
-            ctx.state_file = "/fake/.tools/.gen_state.json"
+            ctx.state_file = "/fake/.gen_state.json"
             ctx.input_dir = "/fake/.tools/input"
             ctx.shared_components_file = "/fake/root/docs/plan/shared_components.md"
             ctx.ignore_file = "/fake/root/.geminiignore"
