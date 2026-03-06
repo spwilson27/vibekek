@@ -1,3 +1,56 @@
+"""Command-line interface for the AI project planning and execution workflow.
+
+This module is the entry point for ``workflow.py`` (invoked as
+``python workflow.py <command> [options]``).  It defines the argument parser,
+dispatches to command handlers, and wires up supporting infrastructure such as
+the :class:`~workflow_lib.executor.Logger` and signal handling.
+
+Available commands
+------------------
+
+``setup``
+    Create a virtual environment, install requirements, and copy project
+    templates into the workspace.
+
+``plan``
+    Run the multi-phase planning orchestrator to generate all planning
+    documents, requirements, epics, tasks, and DAGs.
+
+``run``
+    Execute the parallel implementation workflow, processing tasks from the
+    generated DAGs and merging results into ``dev``.
+
+``status``
+    Show current plan and execution progress.
+
+``validate``
+    Run all verification scripts against the plan artefacts.
+
+``block`` / ``unblock``
+    Mark or unmark a task as blocked so it is skipped during ``run``.
+
+``remove``
+    Delete a task file and update the phase DAG accordingly.
+
+``add``
+    AI-generate a new task in a specific phase/sub-epic.
+
+``modify-req``
+    Add, remove, or edit requirements interactively.
+
+``regen-dag``
+    Rebuild the dependency DAG for a specific phase.
+
+``regen-tasks``
+    Regenerate task files for a phase or sub-epic.
+
+``regen-components``
+    Regenerate the shared components manifest.
+
+``cascade``
+    After manual task edits, rescan tasks, rebuild the DAG, and validate.
+"""
+
 import os
 import sys
 import threading
@@ -12,7 +65,21 @@ from .executor import execute_dag, Logger, signal_handler
 from .config import get_serena_enabled
 from .state import load_workflow_state, load_dags, get_tasks_dir
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner
-def cmd_setup(args):
+
+
+def cmd_setup(args: argparse.Namespace) -> None:
+    """Create a virtualenv, install requirements, and copy project templates.
+
+    Steps:
+
+    1. Creates ``.tools/.venv/`` (skipped when it already exists).
+    2. Installs packages from ``.tools/requirements.txt`` using the venv pip.
+    3. Copies template files (``.agent``, ``do.py``, ``ci.py``) from
+       ``.tools/templates/`` to the project root (skipped when already present).
+
+    :param args: Parsed :mod:`argparse` namespace (no relevant attributes).
+    :type args: argparse.Namespace
+    """
     venv_dir = os.path.join(TOOLS_DIR, ".venv")
     requirements = os.path.join(TOOLS_DIR, "requirements.txt")
     templates_dir = os.path.join(TOOLS_DIR, "templates")
@@ -56,7 +123,21 @@ def cmd_setup(args):
     print("\nSetup complete.")
 
 
-def cmd_plan(args):
+def cmd_plan(args: argparse.Namespace) -> None:
+    """Run the multi-phase planning orchestrator.
+
+    When ``--phase`` and ``--force`` are both supplied, the state flag for the
+    specified phase is reset so it will re-run even if it was previously
+    completed.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``backend`` (str) — AI backend to use.
+        - ``jobs`` (int) — maximum parallel AI agents.
+        - ``phase`` (Optional[str]) — target phase slug for ``--force``.
+        - ``force`` (bool) — reset the specified phase's state before running.
+    :type args: argparse.Namespace
+    """
     runner = _make_runner(args.backend)
     ctx = ProjectContext(ROOT_DIR, runner=runner, jobs=args.jobs)
 
@@ -87,7 +168,21 @@ def cmd_plan(args):
     orchestrator = Orchestrator(ctx)
     orchestrator.run()
 
-def cmd_run(args):
+def cmd_run(args: argparse.Namespace) -> None:
+    """Execute the parallel implementation workflow.
+
+    Sets up :class:`~workflow_lib.executor.Logger` on ``stdout``/``stderr``,
+    installs a ``SIGINT`` handler for graceful shutdown, loads the merged DAG
+    and workflow state from disk, prints the Serena integration status, and
+    calls :func:`~workflow_lib.executor.execute_dag`.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``jobs`` (int) — number of parallel worker threads.
+        - ``presubmit_cmd`` (str) — verification command.
+        - ``backend`` (str) — AI backend to use.
+    :type args: argparse.Namespace
+    """
     signal.signal(signal.SIGINT, signal_handler)
     tasks_dir = get_tasks_dir()
     log_file = os.path.join(TOOLS_DIR, "run_workflow.log")
@@ -104,7 +199,13 @@ def cmd_run(args):
     print(f"Loaded {len(master_dag)} tasks across all phases. [Serena] {serena_status}")
     execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, args.backend)
 
-def main():
+def main() -> None:
+    """Parse CLI arguments and dispatch to the appropriate command handler.
+
+    Builds the top-level :mod:`argparse` argument parser with subparsers for
+    every supported command, then calls the matching handler function from
+    the ``commands`` dispatch table.
+    """
     parser = argparse.ArgumentParser(description="AI Project Planning and Execution Workflow")
     parser.add_argument("--backend", choices=["gemini", "claude", "copilot"], default="gemini", help="AI CLI backend to use (default: gemini)")
     sub = parser.add_subparsers(dest="command", required=True)

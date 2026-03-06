@@ -1,3 +1,40 @@
+"""Package-wide constants and shared state for the workflow library.
+
+Defines file-system paths derived from the location of this package, the
+master document catalogue (``DOCS``), and imports the requirement-parsing
+utilities from the project-level ``verify_requirements`` script.
+
+Module-level constants
+-----------------------
+
+.. data:: TOOLS_DIR
+    Absolute path to the ``.tools/`` directory (parent of this package).
+
+.. data:: ROOT_DIR
+    Absolute path to the project root (parent of ``TOOLS_DIR``).
+
+.. data:: GEN_STATE_FILE
+    Path to the JSON file that persists planning-phase state
+    (``ProjectContext.state``).
+
+.. data:: WORKFLOW_STATE_FILE
+    Path to the JSON file that persists implementation-run state
+    (completed / merged tasks).
+
+.. data:: REPLAN_STATE_FILE
+    Path to the JSON file that persists replan metadata (blocked tasks,
+    history, etc.).
+
+.. data:: ignore_file_lock
+    :class:`threading.Lock` that serialises writes to AI runner ignore files
+    so concurrent agents do not corrupt them.
+
+.. data:: DOCS
+    Ordered list of planning document descriptors.  Each entry is a dict
+    with keys: ``id``, ``type`` (``"research"`` or ``"spec"``), ``name``,
+    ``desc``, and ``prompt_file``.
+"""
+
 import os
 import sys
 import threading

@@ -1,3 +1,51 @@
+"""Planning workflow phase implementations.
+
+Each class in this module represents one discrete step in the multi-phase
+planning pipeline.  All phases inherit from :class:`BasePhase` and implement
+a single :meth:`~BasePhase.execute` method that receives the shared
+:class:`~workflow_lib.context.ProjectContext` instance.
+
+Phase catalogue
+---------------
+
++-------------------+------------------------------------------------------+
+| Class             | Purpose                                              |
++===================+======================================================+
+| Phase1GenerateDoc | Initial AI generation of a planning document.        |
++-------------------+------------------------------------------------------+
+| Phase2FleshOutDoc | Section-by-section expansion of a generated spec.   |
++-------------------+------------------------------------------------------+
+| Phase3FinalReview | Holistic consistency review of all documents.        |
++-------------------+------------------------------------------------------+
+| Phase3BAdversarialReview | Scope-creep / gaps review against the original |
+|                          | project description.                            |
++-------------------+------------------------------------------------------+
+| Phase4AExtractRequirements | Extract structured requirements from a doc.  |
++-------------------+------------------------------------------------------+
+| Phase4BMergeRequirements  | Consolidate per-doc requirements into master. |
++-------------------+------------------------------------------------------+
+| Phase4BScopeGate  | Human checkpoint to review requirements scope.       |
++-------------------+------------------------------------------------------+
+| Phase4COrderRequirements  | Sequence and prioritise requirements.         |
++-------------------+------------------------------------------------------+
+| Phase5GenerateEpics       | Generate implementation epics/phases.         |
++-------------------+------------------------------------------------------+
+| Phase5BSharedComponents   | Identify shared modules and ownership.        |
++-------------------+------------------------------------------------------+
+| Phase6BreakDownTasks      | Decompose epics into atomic task files.       |
++-------------------+------------------------------------------------------+
+| Phase6BReviewTasks        | Review tasks within each phase for coverage. |
++-------------------+------------------------------------------------------+
+| Phase6CCrossPhaseReview   | Global duplicate/coverage review (2 passes). |
++-------------------+------------------------------------------------------+
+| Phase6DReorderTasks       | Reorder tasks for logical progression.        |
++-------------------+------------------------------------------------------+
+| Phase7ADAGGeneration      | Build per-phase dependency DAGs.              |
++-------------------+------------------------------------------------------+
+| Phase7BDAGReview          | AI review and refinement of generated DAGs.  |
++-------------------+------------------------------------------------------+
+"""
+
 import concurrent.futures
 import os
 import shutil
@@ -10,15 +58,54 @@ from typing import List, Dict, Any, Optional
 
 from .constants import TOOLS_DIR, DOCS, parse_requirements
 from .context import ProjectContext
+
+
 class BasePhase:
-    def execute(self, ctx: ProjectContext):
+    """Abstract base class for all planning phases.
+
+    Subclasses must override :meth:`execute`.  The
+    :class:`~workflow_lib.orchestrator.Orchestrator` calls ``execute`` and
+    wraps it with retry logic so that individual phases do not need to handle
+    transient failures themselves.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Execute the phase using the shared project context.
+
+        :param ctx: The :class:`~workflow_lib.context.ProjectContext` instance
+            providing filesystem paths, AI runner access, and persisted state.
+        :type ctx: ProjectContext
+        :raises NotImplementedError: Always, unless overridden by a subclass.
+        """
         raise NotImplementedError()
 
 class Phase1GenerateDoc(BasePhase):
-    def __init__(self, doc: dict):
+    """Generate the initial draft of a single planning document.
+
+    Idempotent: skipped when the document's ID already appears in
+    ``ctx.state["generated"]``.
+
+    :param doc: Document descriptor dict from :data:`~workflow_lib.constants.DOCS`
+        with keys ``id``, ``type``, ``name``, ``desc``, and ``prompt_file``.
+    :type doc: dict
+    """
+
+    def __init__(self, doc: dict) -> None:
+        """Initialise the phase for a specific document.
+
+        :param doc: Document descriptor.
+        :type doc: dict
+        """
         self.doc = doc
 
-    def execute(self, ctx: ProjectContext):
+    def execute(self, ctx: ProjectContext) -> None:
+        """Generate the document using the document-specific prompt template.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: When the AI runner fails or the expected output
+            file is not produced.
+        """
         if self.doc["id"] in ctx.state.get("generated", []):
             print(f"Skipping initial generation for {self.doc['name']} (already generated).")
             return
@@ -68,10 +155,32 @@ class Phase1GenerateDoc(BasePhase):
         ctx.save_state()
 
 class Phase2FleshOutDoc(BasePhase):
-    def __init__(self, doc: dict):
+    """Expand each section of a spec document with additional AI passes.
+
+    Only runs for spec-type documents (skipped for research).  Each markdown
+    header in the document gets its own focused AI pass.  Sections that have
+    already been expanded are skipped via ``ctx.state["fleshed_out_headers"]``.
+
+    :param doc: Document descriptor dict (same structure as
+        :class:`Phase1GenerateDoc`).
+    :type doc: dict
+    """
+
+    def __init__(self, doc: dict) -> None:
+        """Initialise the phase for a specific document.
+
+        :param doc: Document descriptor.
+        :type doc: dict
+        """
         self.doc = doc
 
-    def execute(self, ctx: ProjectContext):
+    def execute(self, ctx: ProjectContext) -> None:
+        """Iterate over document sections and expand each with an AI pass.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner failure for any section.
+        """
         if self.doc["type"] != "spec":
             return
             
@@ -125,7 +234,20 @@ class Phase2FleshOutDoc(BasePhase):
         ctx.save_state()
 
 class Phase3FinalReview(BasePhase):
-    def execute(self, ctx: ProjectContext):
+    """Holistic alignment review of all planning documents.
+
+    Checks all generated specs and research documents for consistency with
+    the original project description.  Idempotent via
+    ``ctx.state["final_review_completed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Run the final alignment review across all documents.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner failure.
+        """
         if ctx.state.get("final_review_completed", False):
             print("Final alignment review already completed.")
             return
@@ -152,8 +274,22 @@ class Phase3FinalReview(BasePhase):
 
 
 class Phase3BAdversarialReview(BasePhase):
-    """Devil's advocate review comparing specs against original description."""
-    def execute(self, ctx: ProjectContext):
+    """Devil's advocate review comparing specs against the original description.
+
+    Produces ``docs/plan/adversarial_review.md`` listing scope-creep findings
+    and clarification needs.  Prompts the user to review the report before
+    continuing when issues are found.  Idempotent via
+    ``ctx.state["adversarial_review_completed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Run the adversarial review and optionally open the editor on findings.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner failure or when the user chooses to
+            quit (``'q'``).
+        """
         if ctx.state.get("adversarial_review_completed", False):
             print("Adversarial review already completed.")
             return
@@ -206,10 +342,32 @@ class Phase3BAdversarialReview(BasePhase):
 
 
 class Phase4AExtractRequirements(BasePhase):
-    def __init__(self, doc: dict):
+    """Extract structured requirements from a single planning document.
+
+    Produces ``docs/plan/requirements/<doc_id>.md``.  Skipped for research
+    documents and for docs already recorded in
+    ``ctx.state["extracted_requirements"]``.  Runs automated verification
+    via ``verify_requirements.py --verify-doc`` after each extraction.
+
+    :param doc: Document descriptor dict.
+    :type doc: dict
+    """
+
+    def __init__(self, doc: dict) -> None:
+        """Initialise the phase for a specific document.
+
+        :param doc: Document descriptor.
+        :type doc: dict
+        """
         self.doc = doc
 
-    def execute(self, ctx: ProjectContext):
+    def execute(self, ctx: ProjectContext) -> None:
+        """Extract requirements and verify coverage against the source document.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner failure or verification failure.
+        """
         if self.doc["type"] == "research":
             print(f"   -> Skipping extraction for research doc: {self.doc['name']}...")
             return
@@ -260,7 +418,19 @@ class Phase4AExtractRequirements(BasePhase):
         ctx.save_state()
 
 class Phase4BMergeRequirements(BasePhase):
-    def execute(self, ctx: ProjectContext):
+    """Consolidate all per-document requirement files into ``requirements.md``.
+
+    Runs ``verify_requirements.py --verify-master`` after merging.  Idempotent
+    via ``ctx.state["requirements_merged"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Merge per-doc requirement files and verify the master list.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner or verification failure.
+        """
         if ctx.state.get("requirements_merged", False):
             print("Requirements merging already completed.")
             return
@@ -297,8 +467,20 @@ class Phase4BMergeRequirements(BasePhase):
         ctx.save_state()
 
 class Phase4BScopeGate(BasePhase):
-    """Human checkpoint to review requirements scope before proceeding."""
-    def execute(self, ctx: ProjectContext):
+    """Human checkpoint to review the requirements scope before proceeding.
+
+    Displays a summary of unique requirement count and line count, then
+    prompts the user to continue (``c``), edit ``requirements.md`` (``e``),
+    or abort (``q``).  Idempotent via ``ctx.state["scope_gate_passed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Present the scope gate prompt and wait for user confirmation.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: When the user chooses to quit.
+        """
         if ctx.state.get("scope_gate_passed", False):
             print("Scope gate already passed.")
             return
@@ -349,7 +531,20 @@ class Phase4BScopeGate(BasePhase):
 
 
 class Phase4COrderRequirements(BasePhase):
-    def execute(self, ctx: ProjectContext):
+    """Sequence and prioritise requirements by dependency and implementation order.
+
+    Produces ``ordered_requirements.md``, verifies it with
+    ``verify_requirements.py --verify-ordered``, then renames it to
+    ``requirements.md``.  Idempotent via ``ctx.state["requirements_ordered"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Generate and verify the ordered requirements document.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner or verification failure.
+        """
         if ctx.state.get("requirements_ordered", False):
             print("Requirements ordering already completed.")
             return
@@ -392,7 +587,20 @@ class Phase4COrderRequirements(BasePhase):
         ctx.save_state()
 
 class Phase5GenerateEpics(BasePhase):
-    def execute(self, ctx: ProjectContext):
+    """Generate the ``docs/plan/phases/`` epic/phase documents.
+
+    Each phase file groups related requirements into an implementation epic.
+    Runs ``verify_requirements.py --verify-phases`` after generation.
+    Idempotent via ``ctx.state["phases_completed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Generate phase documents and verify requirement coverage.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner or verification failure.
+        """
         if ctx.state.get("phases_completed", False):
             print("Phase generation already completed.")
             return
@@ -431,8 +639,21 @@ class Phase5GenerateEpics(BasePhase):
 
 
 class Phase5BSharedComponents(BasePhase):
-    """Generate a shared components manifest to coordinate parallel agents."""
-    def execute(self, ctx: ProjectContext):
+    """Generate a shared components manifest to coordinate parallel agents.
+
+    Produces ``docs/plan/shared_components.md`` listing modules that are owned
+    or consumed by multiple implementation tasks.  Idempotent via
+    ``ctx.state["shared_components_completed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Generate the shared components manifest.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner failure or when the output file is
+            not produced.
+        """
         if ctx.state.get("shared_components_completed", False):
             print("Shared components manifest already generated.")
             return
@@ -464,7 +685,26 @@ class Phase5BSharedComponents(BasePhase):
 
 
 class Phase6BreakDownTasks(BasePhase):
-    def execute(self, ctx: ProjectContext):
+    """Decompose each phase epic into atomic task markdown files.
+
+    Uses two AI passes per phase: a grouping pass (Project Manager) that
+    clusters requirements into sub-epics, and a task-generation pass (Lead
+    Developer) that produces the individual ``<NN>_<name>.md`` task files.
+    The task-generation pass runs in parallel across sub-epics up to
+    ``ctx.jobs`` workers.
+
+    Runs ``verify_requirements.py --verify-tasks`` at the end.  Idempotent
+    via ``ctx.state["tasks_completed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Generate sub-epic groupings and atomic task files for all phases.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner or verification failure, or when
+            required directories do not exist.
+        """
         if ctx.state.get("tasks_completed", False):
             print("Task generation already completed.")
             return
@@ -606,7 +846,22 @@ class Phase6BreakDownTasks(BasePhase):
         print("Successfully generated atomic tasks.")
 
 class Phase6BReviewTasks(BasePhase):
-    def execute(self, ctx: ProjectContext):
+    """Review tasks within each phase for duplicates and coverage gaps.
+
+    For each phase directory, produces a ``review_summary.md`` file.  The
+    review is expected to be *subtractive* — a warning is emitted if the task
+    count increases.  Runs phases in parallel up to ``ctx.jobs`` workers.
+    Idempotent via ``ctx.state["tasks_reviewed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Run per-phase task review in parallel.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner failure after 3 attempts for any
+            phase.
+        """
         if ctx.state.get("tasks_reviewed", False):
             print("Task review already completed.")
             return
@@ -706,10 +961,33 @@ class Phase6BReviewTasks(BasePhase):
         print("Successfully reviewed tasks.")
 
 class Phase6CCrossPhaseReview(BasePhase):
-    def __init__(self, pass_num: int = 1):
+    """Global cross-phase duplicate and coverage review (configurable pass number).
+
+    Gathers all tasks across all phases and submits them in a single prompt
+    to find global duplication or missing coverage.  Produces
+    ``cross_phase_review_summary_pass_<N>.md`` in the tasks directory.
+    Idempotent via ``ctx.state["cross_phase_reviewed_pass_<N>"]``.
+
+    :param pass_num: Pass number (1 or 2).  Two passes are run by the
+        :class:`~workflow_lib.orchestrator.Orchestrator`.  Defaults to ``1``.
+    :type pass_num: int
+    """
+
+    def __init__(self, pass_num: int = 1) -> None:
+        """Initialise for a specific pass number.
+
+        :param pass_num: Pass number (1-based).
+        :type pass_num: int
+        """
         self.pass_num = pass_num
 
-    def execute(self, ctx: ProjectContext):
+    def execute(self, ctx: ProjectContext) -> None:
+        """Execute the cross-phase review for this pass.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner failure after 3 attempts.
+        """
         state_key = f"cross_phase_reviewed_pass_{self.pass_num}"
         if ctx.state.get(state_key, False):
             print(f"Cross-phase task review (Pass {self.pass_num}) already completed.")
@@ -794,10 +1072,31 @@ class Phase6CCrossPhaseReview(BasePhase):
 
 
 class Phase6DReorderTasks(BasePhase):
-    def __init__(self, pass_num: int = 1):
+    """Reorder tasks across all phases for a logical implementation progression.
+
+    Gathers all tasks and prompts the AI to rename/renumber them for a better
+    implementation order.  Produces ``reorder_tasks_summary_pass_<N>.md``.
+    Idempotent via ``ctx.state["tasks_reordered_pass_<N>"]``.
+
+    :param pass_num: Pass number (1 or 2).  Defaults to ``1``.
+    :type pass_num: int
+    """
+
+    def __init__(self, pass_num: int = 1) -> None:
+        """Initialise for a specific pass number.
+
+        :param pass_num: Pass number (1-based).
+        :type pass_num: int
+        """
         self.pass_num = pass_num
 
-    def execute(self, ctx: ProjectContext):
+    def execute(self, ctx: ProjectContext) -> None:
+        """Execute the task reordering pass.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner failure after 3 attempts.
+        """
         state_key = f"tasks_reordered_pass_{self.pass_num}"
         if ctx.state.get(state_key, False):
             print(f"Task reordering across phases (Pass {self.pass_num}) already completed.")
@@ -876,13 +1175,29 @@ class Phase6DReorderTasks(BasePhase):
         sys.exit(1)
 
 class Phase7ADAGGeneration(BasePhase):
-    """Hybrid DAG generation: programmatic from task metadata + AI fallback."""
+    """Hybrid DAG generation: programmatic from task metadata with AI fallback.
+
+    For each phase directory, attempts to build the dependency DAG by parsing
+    ``depends_on`` and ``shared_components`` metadata fields directly from task
+    files (no AI needed).  Falls back to an AI inference pass for phases where
+    any task is missing the metadata.
+
+    Produces ``dag.json`` in each phase directory.  Idempotent via
+    ``ctx.state["dag_completed"]``.
+    """
 
     @staticmethod
     def _parse_depends_on(content: str) -> Optional[List[str]]:
-        """Extract depends_on list from task markdown content.
+        """Extract the ``depends_on`` list from task markdown front-matter.
 
-        Returns list of dependency task filenames, or None if no depends_on field found.
+        Looks for a line matching ``- depends_on: [...]`` in *content*.
+
+        :param content: Full text of a task markdown file.
+        :type content: str
+        :returns: List of dependency filenames, an empty list when the field
+            is present but empty/``none``, or ``None`` when the field is absent
+            entirely (indicating AI fallback is required).
+        :rtype: Optional[List[str]]
         """
         match = re.search(r'- depends_on:\s*\[([^\]]*)\]', content, re.IGNORECASE)
         if not match:
@@ -896,7 +1211,14 @@ class Phase7ADAGGeneration(BasePhase):
 
     @staticmethod
     def _parse_shared_components(content: str) -> List[str]:
-        """Extract shared_components list from task markdown content."""
+        """Extract the ``shared_components`` list from task markdown front-matter.
+
+        :param content: Full text of a task markdown file.
+        :type content: str
+        :returns: List of shared component name strings, or an empty list when
+            the field is absent or empty.
+        :rtype: List[str]
+        """
         match = re.search(r'- shared_components:\s*\[([^\]]*)\]', content, re.IGNORECASE)
         if not match:
             return []
@@ -908,10 +1230,21 @@ class Phase7ADAGGeneration(BasePhase):
 
     @staticmethod
     def _build_programmatic_dag(phase_dir_path: str) -> Optional[Dict[str, List[str]]]:
-        """Build DAG from depends_on metadata in task files.
+        """Build a DAG from ``depends_on`` and ``shared_components`` task metadata.
 
-        Returns the DAG dict if all tasks have depends_on metadata,
-        or None if any task is missing it (requiring AI fallback).
+        Scans every ``.md`` file under *phase_dir_path*, parses their
+        ``depends_on`` fields, and augments the result with implicit
+        shared-component dependencies (the first task to reference a component
+        is treated as its creator; all later tasks that reference the same
+        component implicitly depend on it).
+
+        :param phase_dir_path: Absolute path to a phase task directory, e.g.
+            ``docs/plan/tasks/phase_1/``.
+        :type phase_dir_path: str
+        :returns: ``{task_id: [prerequisite_task_ids]}`` mapping when all
+            tasks have ``depends_on`` metadata, or ``None`` when any task is
+            missing the field (triggering AI fallback).
+        :rtype: Optional[Dict[str, List[str]]]
         """
         dag = {}
         task_files = {}  # filename -> sub_epic/filename mapping
@@ -962,7 +1295,7 @@ class Phase7ADAGGeneration(BasePhase):
         # Add shared component dependencies: if task A creates component X
         # and task B consumes component X, B depends on A
         component_creators = {}  # component_name -> task_id
-        component_consumers = {}  # component_name -> [task_ids]
+        component_consumers: Dict[str, List[str]] = {}  # component_name -> [task_ids]
 
         for sub_epic in sorted(sub_epics):
             sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
@@ -990,7 +1323,16 @@ class Phase7ADAGGeneration(BasePhase):
 
         return dag
 
-    def execute(self, ctx: ProjectContext):
+    def execute(self, ctx: ProjectContext) -> None:
+        """Generate per-phase DAGs, using programmatic build with AI fallback.
+
+        Phase DAGs are generated in parallel (up to ``ctx.jobs`` workers).
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner failure after 3 attempts for any
+            phase, or when required directories are missing.
+        """
         if ctx.state.get("dag_completed", False):
             print("DAG Generation already completed.")
             return
@@ -1089,7 +1431,26 @@ class Phase7ADAGGeneration(BasePhase):
 
 
 class Phase7BDAGReview(BasePhase):
-    def execute(self, ctx: ProjectContext):
+    """AI review and refinement of generated DAGs.
+
+    For each phase that has a ``dag.json``, runs an AI review pass to produce
+    ``dag_reviewed.json`` — a human-in-the-loop quality check on the
+    dependency graph.  Runs in parallel across phases.  Idempotent via
+    ``ctx.state["dag_reviewed"]``.
+
+    .. note::
+        This phase is commented out in the default orchestrator run but is
+        kept as an optional step for projects that want AI-reviewed DAGs.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Review generated DAGs and produce human-reviewed versions.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner failure after 3 attempts for any
+            phase.
+        """
         if ctx.state.get("dag_reviewed", False):
             print("DAG Review already completed.")
             return

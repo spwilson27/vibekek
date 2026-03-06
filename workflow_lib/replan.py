@@ -1,3 +1,44 @@
+"""Replan command implementations for mid-execution plan adjustments.
+
+This module provides the CLI command handlers that allow developers to modify
+the implementation plan after execution has started — blocking/unblocking tasks,
+removing tasks, adding new ones, modifying requirements, regenerating DAGs or
+task files, and cascading changes.
+
+All write operations are logged to the replan audit trail via
+:func:`~workflow_lib.state.log_action` and persisted with
+:func:`~workflow_lib.state.save_replan_state`.
+
+Command summary
+---------------
+
++-------------------+----------------------------------------------------------+
+| Function          | Purpose                                                  |
++===================+==========================================================+
+| cmd_status        | Display plan progress grouped by phase.                  |
++-------------------+----------------------------------------------------------+
+| cmd_validate      | Run all verification scripts against plan artefacts.     |
++-------------------+----------------------------------------------------------+
+| cmd_block         | Mark a task as blocked (excluded from ``run``).          |
++-------------------+----------------------------------------------------------+
+| cmd_unblock       | Remove a blocked status from a task.                     |
++-------------------+----------------------------------------------------------+
+| cmd_remove        | Delete a task file and update the phase DAG.             |
++-------------------+----------------------------------------------------------+
+| cmd_add           | AI-generate a new task file and rebuild the DAG.         |
++-------------------+----------------------------------------------------------+
+| cmd_modify_req    | Add, remove, or edit requirements interactively.         |
++-------------------+----------------------------------------------------------+
+| cmd_regen_dag     | Rebuild the dependency DAG for one phase.                |
++-------------------+----------------------------------------------------------+
+| cmd_regen_tasks   | Regenerate task files for a phase or sub-epic.           |
++-------------------+----------------------------------------------------------+
+| cmd_regen_components | Regenerate the shared components manifest.            |
++-------------------+----------------------------------------------------------+
+| cmd_cascade       | Rescan tasks, rebuild DAG, and validate after manual edits. |
++-------------------+----------------------------------------------------------+
+"""
+
 import os
 import subprocess
 import sys
@@ -12,8 +53,26 @@ from .executor import phase_sort_key
 from .context import ProjectContext
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner
 from .phases import Phase5BSharedComponents, Phase7ADAGGeneration
-def cmd_status(args):
-    """Show current plan and execution status."""
+
+
+def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Show current plan and execution status grouped by phase.
+
+    Prints a summary line with overall counts (completed, blocked, pending),
+    then lists each task with an icon:
+
+    * ``[x]`` — merged into ``dev``
+    * ``[~]`` — completed but not yet merged
+    * ``[B]`` — blocked (with reason)
+    * ``[ ]`` — ready (all prerequisites met)
+    * ``[.]`` — waiting on prerequisites
+
+    Also prints any task files found on disk that are not in any DAG
+    ("orphan" tasks).
+
+    :param args: Parsed :mod:`argparse` namespace (no relevant attributes).
+    :type args: argparse.Namespace
+    """
     tasks_dir = get_tasks_dir()
     master_dag = load_dags(tasks_dir)
     wf_state = load_workflow_state()
@@ -24,7 +83,7 @@ def cmd_status(args):
     blocked = set(rp_state.get("blocked_tasks", {}).keys())
 
     # Group by phase
-    phases = {}
+    phases: Dict[str, List[str]] = {}
     for task_id in sorted(master_dag.keys()):
         phase = task_id.split("/")[0]
         phases.setdefault(phase, []).append(task_id)
@@ -82,8 +141,18 @@ def cmd_status(args):
     print()
 
 
-def cmd_validate(args):
-    """Run all verification checks."""
+def cmd_validate(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Run all applicable verification checks against the current plan artefacts.
+
+    Determines which checks are relevant based on what artefacts exist on disk
+    (``requirements.md``, ``docs/plan/phases/``, ``docs/plan/tasks/``), then
+    runs each via ``verify_requirements.py``.  Exits with code 1 if any check
+    fails.
+
+    :param args: Parsed :mod:`argparse` namespace (no relevant attributes).
+    :type args: argparse.Namespace
+    :raises SystemExit: Exits ``0`` on all-pass or ``1`` on any failure.
+    """
     verify_script = os.path.join(TOOLS_DIR, "verify_requirements.py")
     plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
     req_file = os.path.join(ROOT_DIR, "requirements.md")
@@ -121,8 +190,21 @@ def cmd_validate(args):
     sys.exit(0 if all_pass else 1)
 
 
-def cmd_block(args):
-    """Mark a task as blocked."""
+def cmd_block(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Mark a task as blocked so it is skipped by the ``run`` command.
+
+    Validates that the task exists on disk and has not already been completed
+    or merged.  Supports ``--dry-run`` to preview the operation without
+    writing state.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``task`` (str) — relative task ref, e.g. ``"phase_1/api/01_setup.md"``.
+        - ``reason`` (str) — human-readable reason for blocking.
+        - ``dry_run`` (bool) — preview mode.
+    :type args: argparse.Namespace
+    :raises SystemExit: When the task is already completed or not found.
+    """
     task_ref = args.task
     reason = args.reason
     wf_state = load_workflow_state()
@@ -153,8 +235,18 @@ def cmd_block(args):
     print(f"Blocked: {task_ref}")
 
 
-def cmd_unblock(args):
-    """Remove a block from a task."""
+def cmd_unblock(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Remove a blocked status from a task.
+
+    If the task is not currently blocked, prints a message and returns without
+    modifying state.  Supports ``--dry-run``.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``task`` (str) — relative task ref.
+        - ``dry_run`` (bool) — preview mode.
+    :type args: argparse.Namespace
+    """
     task_ref = args.task
     rp_state = load_replan_state()
 
@@ -172,8 +264,29 @@ def cmd_unblock(args):
     print(f"Unblocked: {task_ref}")
 
 
-def cmd_remove(args):
-    """Remove a task and update its phase DAG."""
+def cmd_remove(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Remove a task file, update the phase DAG, and log orphaned requirements.
+
+    Steps:
+
+    1. Validate the task is not completed/merged and exists on disk.
+    2. Parse requirement IDs from the task file.
+    3. Delete the file.
+    4. Remove the task entry and all references to it from ``dag.json``
+       (or ``dag_reviewed.json``).
+    5. Remove the task from the blocked list if present.
+    6. Log the removal and orphaned requirements to the replan audit trail.
+    7. Print a warning for any requirements that are now uncovered.
+
+    Supports ``--dry-run``.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``task`` (str) — relative task ref.
+        - ``dry_run`` (bool) — preview mode.
+    :type args: argparse.Namespace
+    :raises SystemExit: When the task is already completed or not found.
+    """
     task_ref = args.task
     wf_state = load_workflow_state()
 
@@ -246,8 +359,26 @@ def cmd_remove(args):
         print("Consider: replan.py add, or replan.py modify-req --remove")
 
 
-def cmd_add(args):
-    """AI-generate a new task in a sub-epic."""
+def cmd_add(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """AI-generate a new task file in a phase/sub-epic and rebuild the DAG.
+
+    Determines the next sequential task number, gathers existing task content
+    as context, renders the ``add_task.md`` prompt, and runs the AI agent to
+    create the file.  Then calls :func:`_rebuild_phase_dag`.
+
+    Supports ``--dry-run`` (prints the intended path without generating).
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``phase_id`` (str) — phase directory name, e.g. ``"phase_1"``.
+        - ``sub_epic`` (str) — sub-epic directory name.
+        - ``desc`` (str) — natural-language description of the new task.
+        - ``dry_run`` (bool) — preview mode.
+        - ``backend`` (str) — AI backend to use.
+    :type args: argparse.Namespace
+    :raises SystemExit: When the phase directory is not found, the AI runner
+        fails, or no file is created by the agent.
+    """
     phase_id = args.phase_id
     sub_epic = args.sub_epic
     description = args.desc
@@ -325,8 +456,31 @@ def cmd_add(args):
     save_replan_state(rp_state)
 
 
-def cmd_modify_req(args):
-    """Modify requirements.md."""
+def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Add, remove, or interactively edit ``requirements.md``.
+
+    Exactly one of the mutually exclusive flags must be set:
+
+    * ``--add`` — opens ``$EDITOR`` for the user to append a requirement, then
+      runs ``verify-master``.
+    * ``--remove <REQ_ID>`` — moves the requirement block to a
+      "Removed or Modified Requirements" section and shows affected tasks.
+    * ``--edit`` — opens ``$EDITOR`` directly on ``requirements.md``, then
+      runs ``verify-master``.
+
+    Supports ``--dry-run`` for ``--remove`` (shows affected tasks without
+    writing).
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``add_req`` (Optional[str]) — description for ``--add``.
+        - ``remove_req`` (Optional[str]) — requirement ID for ``--remove``.
+        - ``edit_req`` (bool) — flag for ``--edit``.
+        - ``dry_run`` (bool) — preview mode.
+    :type args: argparse.Namespace
+    :raises SystemExit: When ``requirements.md`` is not found or the
+        requirement ID is not present.
+    """
     req_file = os.path.join(ROOT_DIR, "requirements.md")
     if not os.path.exists(req_file):
         print(f"Error: {req_file} not found.")
@@ -389,8 +543,22 @@ def cmd_modify_req(args):
         save_replan_state(rp_state)
 
 
-def cmd_regen_dag(args):
-    """Rebuild DAG for a specific phase."""
+def cmd_regen_dag(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Rebuild the dependency DAG for a specific phase.
+
+    Delegates to :func:`_rebuild_phase_dag` which first attempts a
+    programmatic build from task metadata, then falls back to AI inference.
+
+    Supports ``--dry-run``.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``phase_id`` (str) — phase directory name.
+        - ``dry_run`` (bool) — preview mode.
+        - ``backend`` (str) — AI backend for fallback DAG generation.
+    :type args: argparse.Namespace
+    :raises SystemExit: When the phase directory is not found.
+    """
     phase_id = args.phase_id
     phase_dir = os.path.join(get_tasks_dir(), phase_id)
 
@@ -411,8 +579,29 @@ def cmd_regen_dag(args):
     save_replan_state(rp_state)
 
 
-def cmd_regen_tasks(args):
-    """Re-run task breakdown for a phase or sub-epic."""
+def cmd_regen_tasks(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Regenerate task files for a phase or a specific sub-epic.
+
+    When ``--sub-epic`` is given, clears existing ``.md`` files in that
+    directory, regenerates them using the ``tasks.md`` prompt (reading
+    requirement IDs from the phase grouping JSON), then rebuilds the phase
+    DAG.  Full-phase regeneration (without ``--sub-epic``) is not yet
+    implemented.
+
+    Safety: refuses to overwrite completed tasks unless ``--force`` is passed.
+    Supports ``--dry-run``.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``phase_id`` (str) — phase directory name.
+        - ``sub_epic`` (Optional[str]) — sub-epic name to target.
+        - ``force`` (bool) — override completed-task safety check.
+        - ``dry_run`` (bool) — preview mode.
+        - ``backend`` (str) — AI backend.
+    :type args: argparse.Namespace
+    :raises SystemExit: On missing directories, completed tasks (without
+        ``--force``), missing grouping JSON, or AI runner failure.
+    """
     phase_id = args.phase_id
     sub_epic = args.sub_epic
     backend = args.backend
@@ -517,8 +706,19 @@ def cmd_regen_tasks(args):
     save_replan_state(rp_state)
 
 
-def cmd_regen_components(args):
-    """Regenerate shared_components.md."""
+def cmd_regen_components(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Regenerate the shared components manifest (``docs/plan/shared_components.md``).
+
+    Resets the ``shared_components_completed`` state flag and re-runs
+    :class:`~workflow_lib.phases.Phase5BSharedComponents`.  Supports
+    ``--dry-run``.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``dry_run`` (bool) — preview mode.
+        - ``backend`` (str) — AI backend.
+    :type args: argparse.Namespace
+    """
     runner = _make_runner(args.backend)
     ctx = ProjectContext(ROOT_DIR, runner=runner)
 
@@ -536,8 +736,27 @@ def cmd_regen_components(args):
     save_replan_state(rp_state)
 
 
-def cmd_cascade(args):
-    """After manual task edits, rescan and rebuild DAG + validate."""
+def cmd_cascade(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Rescan tasks, rebuild the phase DAG, and run validation after manual edits.
+
+    Steps:
+
+    1. Walk all task files in the phase directory and aggregate requirement IDs.
+    2. Compare coverage against the phase epic document and warn about orphaned
+       requirements.
+    3. Rebuild the phase DAG via :func:`_rebuild_phase_dag`.
+    4. Run ``verify-dags`` validation.
+
+    Supports ``--dry-run``.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``phase_id`` (str) — phase directory name.
+        - ``dry_run`` (bool) — preview mode.
+        - ``backend`` (str) — AI backend.
+    :type args: argparse.Namespace
+    :raises SystemExit: When the phase directory is not found.
+    """
     phase_id = args.phase_id
     phase_dir = os.path.join(get_tasks_dir(), phase_id)
 
@@ -596,7 +815,15 @@ def cmd_cascade(args):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_runner(backend: str):
+def _make_runner(backend: str) -> "AIRunner":  # type: ignore[name-defined]
+    """Instantiate the correct AI runner for the given backend name.
+
+    :param backend: One of ``"claude"``, ``"copilot"``, or any other string
+        (defaults to :class:`~workflow_lib.runners.GeminiRunner`).
+    :type backend: str
+    :returns: An AI runner instance.
+    :rtype: AIRunner
+    """
     if backend == "claude":
         return ClaudeRunner()
     elif backend == "copilot":
@@ -604,8 +831,23 @@ def _make_runner(backend: str):
     return GeminiRunner()
 
 
-def _rebuild_phase_dag(phase_dir: str, ctx: ProjectContext):
-    """Rebuild DAG for a phase: programmatic first, AI fallback."""
+def _rebuild_phase_dag(phase_dir: str, ctx: ProjectContext) -> None:
+    """Rebuild the DAG for a phase: programmatic first, AI fallback.
+
+    Removes any existing ``dag_reviewed.json`` (the new DAG is authoritative
+    after a replan), then calls
+    :meth:`~workflow_lib.phases.Phase7ADAGGeneration._build_programmatic_dag`.
+    If all tasks have ``depends_on`` metadata, writes the result to
+    ``dag.json``.  Otherwise falls back to an AI-generated DAG using the
+    ``dag_tasks.md`` prompt.
+
+    :param phase_dir: Absolute path to the phase task directory, e.g.
+        ``docs/plan/tasks/phase_1/``.
+    :type phase_dir: str
+    :param ctx: Shared project context providing AI runner access and the
+        project description.
+    :type ctx: ProjectContext
+    """
     dag_file = os.path.join(phase_dir, "dag.json")
     dag_reviewed = os.path.join(phase_dir, "dag_reviewed.json")
 
@@ -658,8 +900,17 @@ def _rebuild_phase_dag(phase_dir: str, ctx: ProjectContext):
             print(result.stderr)
 
 
-def _show_affected_tasks(req_id: str):
-    """Show tasks that reference a requirement ID."""
+def _show_affected_tasks(req_id: str) -> None:
+    """Print the list of tasks that reference a given requirement ID.
+
+    Walks all ``.md`` files under the tasks directory and parses requirement
+    IDs using :func:`~workflow_lib.constants.parse_requirements`.  Tasks where
+    *req_id* is the only requirement are flagged as candidates for removal.
+
+    :param req_id: Requirement identifier to search for (without brackets),
+        e.g. ``"AUTH-001"``.
+    :type req_id: str
+    """
     tasks_dir = get_tasks_dir()
     if not os.path.isdir(tasks_dir):
         return
@@ -685,8 +936,16 @@ def _show_affected_tasks(req_id: str):
         print(f"\nNo tasks reference [{req_id}].")
 
 
-def _run_verify(mode: str):
-    """Run a specific verification mode."""
+def _run_verify(mode: str) -> None:
+    """Run a specific ``verify_requirements.py`` verification mode and print the result.
+
+    Supported modes: ``"verify-master"`` and ``"verify-dags"``.  Unknown modes
+    are silently ignored.
+
+    :param mode: Verification mode string matching a key in the internal
+        ``cmd_map``.
+    :type mode: str
+    """
     verify_script = os.path.join(TOOLS_DIR, "verify_requirements.py")
     cmd_map = {
         "verify-master": [sys.executable, verify_script, "--verify-master"],

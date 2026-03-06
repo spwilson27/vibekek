@@ -1,3 +1,27 @@
+"""Parallel task-execution engine for the implementation workflow.
+
+This module drives the ``run`` command: it reads a merged DAG, resolves
+dependency order at runtime, and executes tasks concurrently using
+:class:`concurrent.futures.ThreadPoolExecutor`.
+
+Key responsibilities:
+
+* **process_task** — sets up a git worktree, runs implementation and review
+  AI agents, verifies the result with a presubmit command, and commits.
+* **merge_task** — clones the repo into a temp directory, squash-merges the
+  task branch into ``dev``, verifies again, and pushes to the local origin.
+* **execute_dag** — orchestrates the parallel execution loop, scheduling
+  tasks as their prerequisites complete and halting on first failure.
+* **Logger** — a thread-safe ``sys.stdout``/``sys.stderr`` wrapper that
+  prepends timestamps and mirrors output to a log file.
+
+Signal handling:
+
+* First ``SIGINT`` sets the ``shutdown_requested`` flag so the loop drains
+  in-flight tasks gracefully.
+* Second ``SIGINT`` calls ``os._exit(1)`` for immediate termination.
+"""
+
 import os
 import shutil
 import subprocess
@@ -19,7 +43,17 @@ from .config import get_serena_enabled
 shutdown_requested = False
 
 
-def signal_handler(sig, frame):
+def signal_handler(sig: int, frame: Any) -> None:  # type: ignore[type-arg]
+    """Handle ``SIGINT`` (Ctrl-C) with a two-stage shutdown policy.
+
+    The first ``SIGINT`` sets :data:`shutdown_requested` so the execution loop
+    stops scheduling new tasks and waits for in-flight tasks to finish.  A
+    second ``SIGINT`` calls :func:`os._exit` for an immediate, unconditional
+    exit.
+
+    :param sig: Signal number received (typically ``signal.SIGINT``).
+    :param frame: Current stack frame (unused).
+    """
     global shutdown_requested
     if not shutdown_requested:
         print("\n[!] Ctrl-C detected. Initiating graceful shutdown...")
@@ -29,7 +63,17 @@ def signal_handler(sig, frame):
         print("\n[!] Ctrl-C detected again. Forcing immediate exit...")
         os._exit(1)
 def get_gitlab_remote_url(root_dir: str) -> str:
-    """Returns the URL of the gitlab or origin remote if it contains 'gitlab'."""
+    """Return the URL of the GitLab remote for *root_dir*, with a fallback.
+
+    Iterates over ``git remote -v`` output and returns the first URL whose
+    line contains ``"gitlab"``.  Falls back to a hard-coded default when no
+    matching remote is found or the git command fails.
+
+    :param root_dir: Absolute path to the git repository root.
+    :type root_dir: str
+    :returns: Remote URL string.
+    :rtype: str
+    """
     try:
         res = subprocess.run(["git", "remote", "-v"], cwd=root_dir, capture_output=True, text=True, check=True)
         for line in res.stdout.splitlines():
@@ -42,13 +86,41 @@ def get_gitlab_remote_url(root_dir: str) -> str:
     return "http://gitlab.lan/mrwilson/dreamer"
 
 class Logger(object):
-    def __init__(self, terminal, log_stream, lock):
+    """Thread-safe stream wrapper that timestamps output and mirrors it to a log file.
+
+    Replaces ``sys.stdout`` and ``sys.stderr`` in :func:`cmd_run` so that all
+    output from concurrent worker threads is serialised under a single lock and
+    written to both the terminal and a persistent log file.
+
+    :param terminal: The original terminal stream (``sys.stdout`` or
+        ``sys.stderr``).
+    :param log_stream: An open file object for the log file.
+    :param lock: A :class:`threading.Lock` shared between the ``stdout`` and
+        ``stderr`` wrappers to prevent interleaved output.
+    """
+
+    def __init__(self, terminal: Any, log_stream: Any, lock: threading.Lock) -> None:  # type: ignore[type-arg]
+        """Initialise the logger.
+
+        :param terminal: Original terminal stream.
+        :param log_stream: Writable file object for log output.
+        :param lock: Shared mutex for serialising writes.
+        """
         self.terminal = terminal
         self.log_stream = log_stream
         self.lock = lock
         self._at_line_start = True
 
-    def write(self, message):
+    def write(self, message: str) -> None:
+        """Write *message* to both terminal and log file, prepending timestamps.
+
+        A ``[YYYY-MM-DD HH:MM:SS]`` prefix is added at the start of each new
+        line.  Partial lines (those not ending in ``\\n``) are written without
+        a timestamp prefix until a newline is encountered.
+
+        :param message: The string to write.
+        :type message: str
+        """
         with self.lock:
             # Prepend timestamp at the start of each new line
             parts = message.splitlines(keepends=True)
@@ -65,7 +137,8 @@ class Logger(object):
             self.log_stream.write(out)
             self.log_stream.flush()
 
-    def flush(self):
+    def flush(self) -> None:
+        """Flush both the terminal and log-file streams under the shared lock."""
         with self.lock:
             self.terminal.flush()
             self.log_stream.flush()
@@ -73,6 +146,31 @@ class Logger(object):
 
 # Default CLI backends config for gemini/claude. Assumes same runner logic as gen_all.py
 def run_ai_command(prompt: str, cwd: str, prefix: str = "", backend: str = "gemini") -> int:
+    """Launch an AI CLI process and stream its output, returning the exit code.
+
+    The prompt is fed to the process via ``stdin``.  Output lines are printed
+    to ``stdout`` with an optional *prefix* so concurrent tasks can be
+    distinguished in the log.
+
+    Supported backends:
+
+    * ``"gemini"`` — ``gemini -y``
+    * ``"claude"`` — ``claude -p --dangerously-skip-permissions``
+    * ``"copilot"`` — writes prompt to a temp file and invokes
+      ``copilot --model gpt-5-mini --yolo``
+
+    :param prompt: Full prompt text to pass to the AI CLI.
+    :type prompt: str
+    :param cwd: Working directory for the subprocess.
+    :type cwd: str
+    :param prefix: String prepended to each output line (e.g. task ID).
+    :type prefix: str
+    :param backend: AI backend to use.  One of ``"gemini"``, ``"claude"``,
+        or ``"copilot"``.  Defaults to ``"gemini"``.
+    :type backend: str
+    :returns: Process return code (``0`` on success).
+    :rtype: int
+    """
     cmd = ["gemini", "-y"]
     tmp_file_name = None
 
@@ -124,8 +222,19 @@ def run_ai_command(prompt: str, cwd: str, prefix: str = "", backend: str = "gemi
     return process.returncode
 
 
-def phase_sort_key(task_id: str):
-    """Parses task ID (e.g., 'phase_1/01_foo') to return a sortable tuple (phase_num, task_num)."""
+def phase_sort_key(task_id: str) -> tuple:  # type: ignore[type-arg]
+    """Parse a task ID into a sortable ``(phase_num, task_num)`` tuple.
+
+    Task IDs have the form ``phase_<N>/<sub_epic>/<NN>_<name>.md``.  The
+    function extracts the integer phase number and the leading integer prefix
+    of the second path component.  Unknown formats return ``(999, 999)`` so
+    they sort last.
+
+    :param task_id: Fully-qualified task ID, e.g. ``"phase_1/api/01_setup.md"``.
+    :type task_id: str
+    :returns: ``(phase_num, task_num)`` suitable for use as a sort key.
+    :rtype: tuple
+    """
     parts = task_id.split("/")
     if len(parts) >= 2:
         phase_part = parts[0]
@@ -148,7 +257,17 @@ def phase_sort_key(task_id: str):
     return (999, 999)
     
 def get_task_details(full_task_id: str) -> str:
-    """Reads all markdown files for a given task and returns them as a single context string."""
+    """Read all markdown files for a task and return them as a single context string.
+
+    If *full_task_id* resolves to a file, that file is read.  If it resolves
+    to a directory, every ``.md`` file in that directory is concatenated.
+
+    :param full_task_id: Relative task path such as ``"phase_1/api/01_setup.md"``.
+    :type full_task_id: str
+    :returns: Concatenated file contents, separated by blank lines, or an
+        empty string when the path does not exist.
+    :rtype: str
+    """
     task_path = os.path.join(ROOT_DIR, "docs", "plan", "tasks", full_task_id)
     content = ""
     if os.path.isfile(task_path):
@@ -163,6 +282,13 @@ def get_task_details(full_task_id: str) -> str:
 
 
 def get_memory_context(root_dir: str) -> str:
+    """Return the contents of the agent MEMORY.md file, or an empty string.
+
+    :param root_dir: Absolute path to the project root.
+    :type root_dir: str
+    :returns: Memory file contents, or ``""`` when not found.
+    :rtype: str
+    """
     memory_file = os.path.join(root_dir, ".agent", "MEMORY.md")
     if os.path.exists(memory_file):
         with open(memory_file, "r", encoding="utf-8") as f:
@@ -170,7 +296,15 @@ def get_memory_context(root_dir: str) -> str:
     return ""
 
 
-def get_project_context(tools_dir: str) -> str:
+def get_project_context(tools_dir: str = "") -> str:
+    """Return the project description from ``input/project-description.md``.
+
+    :param tools_dir: Unused; present for API compatibility.  The actual path
+        is always resolved from the package-level :data:`TOOLS_DIR` constant.
+    :type tools_dir: str
+    :returns: Project description text, or ``""`` when the file is absent.
+    :rtype: str
+    """
     desc_file = os.path.join(TOOLS_DIR, "input", "project-description.md")
     if os.path.exists(desc_file):
         with open(desc_file, "r", encoding="utf-8") as f:
@@ -178,8 +312,30 @@ def get_project_context(tools_dir: str) -> str:
     return ""
 
 
-def run_agent(agent_type: str, prompt_file: str, task_context: dict, cwd: str, backend: str = "gemini") -> bool:
-    """Formats the prompt and executes the AI agent."""
+def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini") -> bool:
+    """Format a prompt template and execute an AI agent subprocess.
+
+    Reads the named prompt template from ``.tools/prompts/``, performs simple
+    ``{key}`` substitution using *task_context*, then delegates to
+    :func:`run_ai_command`.
+
+    :param agent_type: Human-readable label for log output (e.g.
+        ``"Implementation"``, ``"Review"``).
+    :type agent_type: str
+    :param prompt_file: Filename of the prompt template inside
+        ``.tools/prompts/`` (e.g. ``"implement_task.md"``).
+    :type prompt_file: str
+    :param task_context: Key/value substitution map applied to the template.
+    :type task_context: dict
+    :param cwd: Working directory in which to run the AI subprocess (typically
+        the task worktree path).
+    :type cwd: str
+    :param backend: AI backend to use.  Passed through to
+        :func:`run_ai_command`.  Defaults to ``"gemini"``.
+    :type backend: str
+    :returns: ``True`` if the agent exited with code 0, ``False`` otherwise.
+    :rtype: bool
+    """
     prompt_path = os.path.join(TOOLS_DIR, "prompts", prompt_file)
     with open(prompt_path, "r", encoding="utf-8") as f:
         prompt_tmpl = f.read()
@@ -205,9 +361,24 @@ def run_agent(agent_type: str, prompt_file: str, task_context: dict, cwd: str, b
     return True
 
 
-def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.Lock):
-    """Rebuilds the Serena cache in source_dir (which has dev checked out) and
-    copies it back to the main repo's .serena/cache/. source_dir is typically a merge clone."""
+def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.Lock) -> None:
+    """Rebuild the Serena code-intelligence cache and copy it to the main repo.
+
+    Starts ``serena-mcp-server`` in *source_dir* (which has ``dev`` checked
+    out) to trigger index generation, waits up to 120 seconds for it to
+    finish, then atomically replaces ``.serena/cache/`` in *root_dir* with the
+    newly generated cache.
+
+    :param source_dir: Path to the directory where Serena should build its
+        index.  Usually a temporary merge clone.
+    :type source_dir: str
+    :param root_dir: Absolute path to the project root that will receive the
+        updated cache.
+    :type root_dir: str
+    :param cache_lock: Lock used to serialise concurrent cache updates across
+        worker threads.
+    :type cache_lock: threading.Lock
+    """
     cache_src = os.path.join(source_dir, ".serena", "cache")
     cache_dst = os.path.join(root_dir, ".serena", "cache")
 
@@ -240,8 +411,23 @@ def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.L
     print(f"      [Serena] Cache updated at {cache_dst}.")
 
 
-def get_existing_worktree(root_dir: str, branch_name: str) -> str:
-    """Returns the path of an existing worktree for the given branch, or None."""
+def get_existing_worktree(root_dir: str, branch_name: str) -> Optional[str]:
+    """Return the path of an existing git worktree for *branch_name*, or ``None``.
+
+    Parses the ``git worktree list --porcelain`` output to find a live worktree
+    whose checked-out branch matches *branch_name*.  Stale entries (where the
+    worktree directory no longer exists) trigger a ``git worktree prune`` and
+    are reported as ``None``.
+
+    :param root_dir: Absolute path to the main git repository.
+    :type root_dir: str
+    :param branch_name: Short branch name to search for (without
+        ``refs/heads/`` prefix).
+    :type branch_name: str
+    :returns: Absolute path to the existing worktree directory, or ``None``
+        when none is found.
+    :rtype: Optional[str]
+    """
     try:
         res = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=root_dir, capture_output=True, text=True, check=True)
         current_wt = None
@@ -263,7 +449,44 @@ def get_existing_worktree(root_dir: str, branch_name: str) -> str:
 
 
 def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False) -> bool:
-    """Handles the lifecycle of a single task: worktree creation, agents, and commit."""
+    """Run the full implementation lifecycle for one task.
+
+    Steps performed:
+
+    1. Create (or reuse and reset) a git worktree on a dedicated branch.
+    2. Optionally seed the Serena cache and copy ``.mcp.json`` (when
+       *serena* is ``True``).
+    3. Run the **Implementation** AI agent.
+    4. Run the **Review** AI agent.
+    5. Run the presubmit command up to *max_retries* times, feeding failure
+       output back to the Review agent on each retry.
+    6. Commit changes if the presubmit passes.
+
+    The worktree is removed on success.  On failure it is left in place so the
+    developer can inspect or manually fix the state.
+
+    :param root_dir: Absolute path to the project root git repository.
+    :type root_dir: str
+    :param full_task_id: Fully-qualified task ID, e.g.
+        ``"phase_1/api/01_setup.md"``.
+    :type full_task_id: str
+    :param presubmit_cmd: Shell command string (split on whitespace) used to
+        verify the implementation, e.g. ``"./do presubmit"``.
+    :type presubmit_cmd: str
+    :param backend: AI backend to use (``"gemini"``, ``"claude"``, or
+        ``"copilot"``).  Defaults to ``"gemini"``.
+    :type backend: str
+    :param max_retries: Maximum number of presubmit verification attempts
+        before giving up.  Defaults to ``3``.
+    :type max_retries: int
+    :param serena: When ``True``, seed the Serena cache into the worktree and
+        copy ``.mcp.json`` so the Claude CLI can discover the Serena MCP
+        server.  Defaults to ``False``.
+    :type serena: bool
+    :returns: ``True`` if the task was implemented, verified, and committed
+        successfully; ``False`` otherwise.
+    :rtype: bool
+    """
     phase_id, task_id = full_task_id.split("/", 1)
     safe_task_id = task_id.replace("/", "_").replace(".md", "")
     branch_name = f"ai-phase-{safe_task_id}"
@@ -373,7 +596,45 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
 
 
 def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False) -> bool:
-    """Creates a clean clone of the repo, merges the task branch via squash, and verifies presubmit."""
+    """Squash-merge a task branch into ``dev`` via a temporary clone and verify.
+
+    Steps performed:
+
+    1. Clone the repo into a temp directory.
+    2. Add the GitLab remote (for CI push targets).
+    3. Attempt a ``git merge --squash`` of the task branch.
+    4. If the squash succeeds, run the presubmit command.
+    5. If the squash fails (conflicts), attempt a rebase then retry.
+    6. If conflicts remain, spawn a **Merge** AI agent up to *max_retries*
+       times to resolve them manually.
+    7. Push ``dev`` to the local origin on success.
+    8. Optionally rebuild the Serena cache (when *serena* is ``True``).
+    9. Remove the temporary clone.
+
+    :param root_dir: Absolute path to the project root git repository.
+    :type root_dir: str
+    :param task_id: Fully-qualified task ID matching the branch name pattern
+        ``ai-phase-<safe_task_id>``.
+    :type task_id: str
+    :param presubmit_cmd: Shell command string used to verify the merged state.
+    :type presubmit_cmd: str
+    :param backend: AI backend for the merge conflict-resolution agent.
+        Defaults to ``"gemini"``.
+    :type backend: str
+    :param max_retries: Maximum number of merge/verify attempts before giving
+        up.  Defaults to ``3``.
+    :type max_retries: int
+    :param cache_lock: Lock for serialising Serena cache rebuilds across worker
+        threads.  Required when *serena* is ``True``.
+    :type cache_lock: Optional[threading.Lock]
+    :param serena: When ``True`` and the merge push succeeded, trigger a Serena
+        cache rebuild so subsequent tasks have an up-to-date code index.
+        Defaults to ``False``.
+    :type serena: bool
+    :returns: ``True`` if the branch was successfully merged into ``dev`` and
+        the presubmit passed; ``False`` otherwise.
+    :rtype: bool
+    """
     phase_part, name_part = task_id.split("/", 1)
     safe_name_part = name_part.replace("/", "_").replace(".md", "")
     branch_name = f"ai-phase-{safe_name_part}"
@@ -534,8 +795,15 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
         subprocess.run(["rm", "-rf", tmpdir])
 
 
-def load_blocked_tasks() -> set:
-    """Load blocked task IDs from replan state."""
+def load_blocked_tasks() -> set:  # type: ignore[type-arg]
+    """Load the set of blocked task IDs from the replan state file.
+
+    Reads ``.replan_state.json`` relative to a ``scripts/`` directory.
+    Returns an empty set when the file is absent or cannot be parsed.
+
+    :returns: Set of blocked task reference strings.
+    :rtype: set
+    """
     tools_dir = os.path.dirname(os.path.abspath(__file__))
     replan_state_file = os.path.join("scripts", ".replan_state.json")
     if os.path.exists(replan_state_file):
@@ -549,7 +817,28 @@ def load_blocked_tasks() -> set:
 
 
 def get_ready_tasks(master_dag: Dict[str, List[str]], completed_tasks: List[str], active_tasks: List[str]) -> List[str]:
-    """Returns a list of task IDs whose prerequisites are fully met and aren't already running or completed."""
+    """Return tasks whose prerequisites are met and that are not already active or done.
+
+    Implements a *phase barrier*: only tasks belonging to the lowest-numbered
+    incomplete phase are eligible to run.  This ensures phase N is fully merged
+    before phase N+1 begins.
+
+    Blocked tasks (from :func:`load_blocked_tasks`) are excluded from both
+    eligibility and prerequisite satisfaction checks — a dependency on a
+    blocked task is never considered met.
+
+    :param master_dag: Mapping of ``task_id -> [prerequisite_task_ids]`` for
+        all tasks across all phases.
+    :type master_dag: Dict[str, List[str]]
+    :param completed_tasks: List of task IDs that have been successfully
+        merged into ``dev``.
+    :type completed_tasks: List[str]
+    :param active_tasks: List of task IDs currently being processed by worker
+        threads.
+    :type active_tasks: List[str]
+    :returns: Sorted list of task IDs ready to be submitted for execution.
+    :rtype: List[str]
+    """
     ready = []
     completed_set = set(completed_tasks)
     blocked_set = load_blocked_tasks()
@@ -585,8 +874,47 @@ def get_ready_tasks(master_dag: Dict[str, List[str]], completed_tasks: List[str]
     return ready
 
 
-def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str = "gemini"):
-    """Orchestrates the parallel execution of tasks according to the DAG."""
+def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str = "gemini") -> None:
+    """Orchestrate parallel task execution according to the dependency DAG.
+
+    Runs a scheduling loop inside a :class:`~concurrent.futures.ThreadPoolExecutor`
+    with *jobs* workers.  On each iteration it resolves ready tasks via
+    :func:`get_ready_tasks`, submits them to the pool, waits for at least one
+    to finish, and then calls :func:`merge_task` for each successful result.
+
+    Workflow state (completed/merged tasks) is persisted after every successful
+    merge so the run can be resumed after an interruption.
+
+    Serena integration:
+
+    * If ``workflow.jsonc`` has ``"serena": true``, a ``.mcp.json`` is copied
+      from the template if missing, and the Serena cache is bootstrapped before
+      the first task runs.
+
+    Termination conditions:
+
+    * All tasks completed and merged → clean exit.
+    * Any task fails implementation or merging → ``sys.exit(1)`` after draining.
+    * DAG deadlock (no tasks running and none ready) → ``os._exit(1)``.
+    * ``SIGINT`` received → graceful drain then exit.
+
+    :param root_dir: Absolute path to the project root git repository.
+    :type root_dir: str
+    :param master_dag: Merged DAG mapping ``task_id -> [prerequisite_ids]``.
+    :type master_dag: Dict[str, List[str]]
+    :param state: Workflow state dict (from :func:`~workflow_lib.state.load_workflow_state`)
+        containing at least ``"completed_tasks"`` and ``"merged_tasks"`` lists.
+    :type state: Dict[str, Any]
+    :param jobs: Maximum number of concurrent worker threads.
+    :type jobs: int
+    :param presubmit_cmd: Shell command used to verify each task's
+        implementation and merge result.
+    :type presubmit_cmd: str
+    :param backend: AI backend for implementation and merge agents.  Defaults
+        to ``"gemini"``.
+    :type backend: str
+    :raises SystemExit: When one or more tasks fail.
+    """
     serena_enabled = get_serena_enabled()
 
     # Ensure dev branch exists
@@ -618,8 +946,8 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
                 subprocess.run(["git", "worktree", "remove", "-f", init_wt],
                                cwd=root_dir, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    active_tasks = set()
-    failed_tasks = set()
+    active_tasks: set = set()
+    failed_tasks: set = set()
     state_lock = threading.Lock()
     
     print("\n=> Starting Parallel DAG Execution Loop...")

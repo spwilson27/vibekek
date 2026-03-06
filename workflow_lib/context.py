@@ -1,3 +1,15 @@
+"""Project context — shared state and AI invocation façade for planning phases.
+
+:class:`ProjectContext` is the central object threaded through every planning
+phase.  It owns:
+
+* Directory paths derived from the project root.
+* The AI runner (Gemini, Claude, or Copilot) used to call external CLI tools.
+* Persistent planning state read from / written to ``GEN_STATE_FILE``.
+* Helper utilities for prompt formatting, workspace snapshotting, and
+  sandbox enforcement.
+"""
+
 import os
 import shutil
 import subprocess
@@ -8,7 +20,24 @@ from typing import List, Dict, Any, Optional
 
 from .constants import TOOLS_DIR, GEN_STATE_FILE, DOCS
 from .runners import AIRunner, GeminiRunner
+
+
 class ProjectContext:
+    """Shared context object for all planning-phase executions.
+
+    Constructed once per ``workflow plan`` invocation and passed to every
+    :class:`~workflow_lib.phases.BasePhase` implementation.
+
+    :param root_dir: Absolute path to the project root directory.
+    :type root_dir: str
+    :param runner: AI CLI runner to use.  Defaults to
+        :class:`~workflow_lib.runners.GeminiRunner` when ``None``.
+    :type runner: AIRunner or None
+    :param jobs: Maximum number of parallel AI invocations for phases that
+        support concurrency (e.g. Phase 6 task breakdown).
+    :type jobs: int
+    """
+
     def __init__(self, root_dir: str, runner: Optional[AIRunner] = None, jobs: int = 1):
         self.root_dir = root_dir
         self.jobs = jobs
@@ -40,9 +69,15 @@ class ProjectContext:
         self.description_ctx = self._load_description()
 
     def _load_state(self) -> Dict[str, Any]:
-        state = {
-            "generated": [], 
-            "fleshed_out": [], 
+        """Load planning state from disk, merging with safe defaults.
+
+        :returns: State dict with all known keys initialised to falsy defaults,
+            updated from the persisted JSON if the state file exists.
+        :rtype: dict
+        """
+        state: Dict[str, Any] = {
+            "generated": [],
+            "fleshed_out": [],
             "fleshed_out_headers": {},
             "extracted_requirements": [],
             "final_review_completed": False,
@@ -56,7 +91,7 @@ class ProjectContext:
             "tasks_generated": [],
             "dag_completed": False,
             "dag_reviewed": False,
-            "tdd_completed": False
+            "tdd_completed": False,
         }
         if os.path.exists(self.state_file):
             with open(self.state_file, "r") as f:
@@ -67,11 +102,18 @@ class ProjectContext:
                     pass
         return state
 
-    def save_state(self):
+    def save_state(self) -> None:
+        """Persist the current :attr:`state` dict to :attr:`state_file`."""
         with open(self.state_file, "w") as f:
             json.dump(self.state, f, indent=4)
 
     def _load_description(self) -> str:
+        """Read the project description from disk.
+
+        :raises SystemExit: If the description file does not exist.
+        :returns: Full text of ``input/project-description.md``.
+        :rtype: str
+        """
         if not os.path.exists(self.desc_file):
             print(f"Error: {self.desc_file} not found.")
             sys.exit(1)
@@ -79,12 +121,27 @@ class ProjectContext:
             return f.read()
 
     def load_shared_components(self) -> str:
+        """Return the contents of ``docs/plan/shared_components.md``.
+
+        :returns: File contents, or an empty string when the file does not
+            exist.
+        :rtype: str
+        """
         if os.path.exists(self.shared_components_file):
             with open(self.shared_components_file, "r", encoding="utf-8") as f:
                 return f.read()
         return ""
 
     def load_prompt(self, filename: str) -> str:
+        """Load a prompt template by filename from the prompts directory.
+
+        :param filename: Filename relative to ``TOOLS_DIR/prompts/``, e.g.
+            ``"spec_prd.md"``.
+        :type filename: str
+        :raises SystemExit: If the prompt file does not exist.
+        :returns: Stripped text content of the prompt file.
+        :rtype: str
+        """
         prompt_path = os.path.join(self.prompts_dir, filename)
         if not os.path.exists(prompt_path):
             print(f"Error: Prompt template {prompt_path} not found.")
@@ -92,49 +149,114 @@ class ProjectContext:
         with open(prompt_path, "r", encoding="utf-8") as f:
             return f.read().strip()
 
-    def format_prompt(self, tmpl: str, **kwargs) -> str:
-        # Single-pass replacement to avoid values containing {other_key}
-        # from being substituted in subsequent iterations
+    def format_prompt(self, tmpl: str, **kwargs: Any) -> str:
+        """Perform a single-pass substitution of ``{key}`` placeholders.
+
+        A single regex pass prevents values that themselves contain
+        ``{other_key}`` patterns from being double-substituted.
+
+        :param tmpl: Template string containing ``{key}`` placeholders.
+        :type tmpl: str
+        :param kwargs: Keyword arguments whose names match placeholder keys.
+        :returns: Template with all matching placeholders replaced.
+        :rtype: str
+        """
         pattern = re.compile(r'\{(' + '|'.join(re.escape(k) for k in kwargs) + r')\}')
         return pattern.sub(lambda m: str(kwargs[m.group(1)]), tmpl)
 
-    def backup_ignore_file(self):
+    def backup_ignore_file(self) -> None:
+        """Back up the AI runner's ignore file if it already exists.
+
+        Copies ``<root>/<runner.ignore_file_name>`` to
+        ``<root>/<runner.ignore_file_name>.bak`` so it can be restored after
+        the planning run.
+        """
         if self.has_existing_ignore:
             shutil.copy(self.ignore_file, self.backup_ignore)
 
-    def restore_ignore_file(self):
+    def restore_ignore_file(self) -> None:
+        """Restore the AI runner's ignore file from its backup.
+
+        If the ignore file existed before the run, the ``.bak`` copy is moved
+        back.  If it did not exist originally but was created during the run,
+        it is deleted.
+        """
         if self.has_existing_ignore:
             if os.path.exists(self.backup_ignore):
                 shutil.move(self.backup_ignore, self.ignore_file)
         elif os.path.exists(self.ignore_file):
             os.remove(self.ignore_file)
 
-    def get_document_path(self, doc: dict) -> str:
+    def get_document_path(self, doc: Dict[str, Any]) -> str:
+        """Return the absolute filesystem path for a planning document.
+
+        :param doc: Document descriptor from :data:`~.constants.DOCS`.
+        :type doc: dict
+        :returns: Absolute path under ``docs/plan/specs/`` or
+            ``docs/plan/research/``.
+        :rtype: str
+        """
         out_folder = "specs" if doc["type"] == "spec" else "research"
         return os.path.join(self.plan_dir, out_folder, f"{doc['id']}.md")
 
-    def get_target_path(self, doc: dict) -> str:
+    def get_target_path(self, doc: Dict[str, Any]) -> str:
+        """Return the project-root-relative path for a planning document.
+
+        Used in prompt templates so the AI knows where to write the file.
+
+        :param doc: Document descriptor from :data:`~.constants.DOCS`.
+        :type doc: dict
+        :returns: Relative path such as ``"docs/plan/specs/1_prd.md"``.
+        :rtype: str
+        """
         out_folder = "docs/plan/specs" if doc["type"] == "spec" else "docs/plan/research"
         return f"{out_folder}/{doc['id']}.md"
 
-    def get_accumulated_context(self, current_doc: dict, include_research: bool = True) -> str:
+    def get_accumulated_context(
+        self,
+        current_doc: Dict[str, Any],
+        include_research: bool = True,
+    ) -> str:
+        """Build an XML-tagged context string from all documents preceding *current_doc*.
+
+        Research documents can be excluded when generating spec documents to
+        prevent hallucinated market data from influencing architectural choices.
+
+        :param current_doc: The document currently being generated.  Documents
+            before this one in :data:`~.constants.DOCS` are included.
+        :type current_doc: dict
+        :param include_research: When ``False``, research-type documents are
+            skipped.
+        :type include_research: bool
+        :returns: Concatenated ``<previous_document>`` XML blocks for each
+            existing preceding document.
+        :rtype: str
+        """
         accumulated_context = ""
         for prev_doc in DOCS:
             if prev_doc == current_doc:
                 break
-            # Skip research docs when building context for spec generation
-            # to prevent hallucinated market data from influencing architecture
             if not include_research and prev_doc["type"] == "research":
                 continue
             prev_file = self.get_document_path(prev_doc)
             if os.path.exists(prev_file):
                 with open(prev_file, "r", encoding="utf-8") as f:
                     content = f.read()
-                    accumulated_context += f'\n\n<previous_document name="{prev_doc["name"]}">\n{content}\n</previous_document>\n'
+                    accumulated_context += (
+                        f'\n\n<previous_document name="{prev_doc["name"]}">'
+                        f'\n{content}\n</previous_document>\n'
+                    )
         return accumulated_context
 
     def get_workspace_snapshot(self) -> Dict[str, float]:
-        snapshot = {}
+        """Capture a modification-time snapshot of all workspace files.
+
+        Skips ``.git/`` and ``.sandbox/`` trees and ``.DS_Store`` files.
+
+        :returns: Mapping of absolute file path to ``os.path.getmtime`` value.
+        :rtype: dict
+        """
+        snapshot: Dict[str, float] = {}
         for root, dirs, files in os.walk(self.root_dir):
             if ".git" in root or ".sandbox" in root:
                 continue
@@ -148,40 +270,65 @@ class ProjectContext:
                     pass
         return snapshot
 
-    def stage_changes(self, file_paths: List[str]):
+    def stage_changes(self, file_paths: List[str]) -> None:
+        """Stage the given paths with ``git add``.
+
+        :param file_paths: List of absolute or relative paths to stage.
+            Empty paths and ``None`` values are filtered out.
+        :type file_paths: list[str]
+        """
         if not file_paths:
             return
         clean_paths = [os.path.abspath(p) for p in file_paths if p]
         subprocess.run(["git", "add"] + clean_paths, cwd=self.root_dir, check=False)
 
-    def verify_changes(self, before: Dict[str, float], allowed_files: List[str]):
+    def verify_changes(self, before: Dict[str, float], allowed_files: List[str]) -> None:
+        """Enforce sandbox constraints after an AI invocation.
+
+        Compares the current workspace snapshot against *before* and calls
+        :func:`sys.exit(1) <sys.exit>` if any new, modified, or deleted file
+        is not in *allowed_files* (or under an allowed directory).
+
+        Internal files (state file, ignore file, backup ignore) are always
+        permitted.
+
+        :param before: Snapshot taken before the AI ran, as returned by
+            :meth:`get_workspace_snapshot`.
+        :type before: dict
+        :param allowed_files: Paths that the AI is permitted to create or
+            modify.  A path ending with :data:`os.sep` is treated as an
+            allowed directory.
+        :type allowed_files: list[str]
+        :raises SystemExit: On any sandbox violation.
+        """
         after = self.get_workspace_snapshot()
         allowed_set = set(os.path.abspath(f) for f in allowed_files)
-        allowed_dirs = [os.path.abspath(f) for f in allowed_files if os.path.isdir(f) or f.endswith(os.sep)]
-        
-        # Check for new or modified files
+        allowed_dirs = [
+            os.path.abspath(f)
+            for f in allowed_files
+            if os.path.isdir(f) or f.endswith(os.sep)
+        ]
+
         for path in after:
             if path not in before or after[path] > before.get(path, 0):
                 abs_path = os.path.abspath(path)
                 is_allowed = abs_path in allowed_set
-                
                 if not is_allowed:
                     for d in allowed_dirs:
                         if abs_path.startswith(d if d.endswith(os.sep) else d + os.sep):
                             is_allowed = True
                             break
-                            
                 if not is_allowed:
-                    # Allow internal script files
-                    if abs_path in [os.path.abspath(self.state_file), 
-                                  os.path.abspath(self.ignore_file), 
-                                  os.path.abspath(self.backup_ignore)]:
+                    if abs_path in [
+                        os.path.abspath(self.state_file),
+                        os.path.abspath(self.ignore_file),
+                        os.path.abspath(self.backup_ignore),
+                    ]:
                         continue
                     print(f"\n[SANDBOX VIOLATION] Unauthorized change detected: {path}")
                     print(f"The agent was only allowed to modify: {allowed_files}")
                     sys.exit(1)
-        
-        # Check for deleted files
+
         for path in before:
             if path not in after:
                 abs_path = os.path.abspath(path)
@@ -191,31 +338,65 @@ class ProjectContext:
                         if abs_path.startswith(d if d.endswith(os.sep) else d + os.sep):
                             is_allowed = True
                             break
-                            
                 if not is_allowed:
                     print(f"\n[SANDBOX VIOLATION] Unauthorized deletion detected: {path}")
                     sys.exit(1)
 
-    def strip_thinking_tags(self, filepath: str):
+    def strip_thinking_tags(self, filepath: str) -> None:
+        """Remove ``<thinking>…</thinking>`` blocks from a file or directory.
+
+        When *filepath* is a directory, all ``*.md`` files within it are
+        processed recursively.  The file is only rewritten when the content
+        actually changes.
+
+        :param filepath: Absolute path to a file or directory to process.
+        :type filepath: str
+        """
         if not os.path.exists(filepath):
             return
-            
+
         if os.path.isdir(filepath):
             for filename in os.listdir(filepath):
                 if filename.endswith(".md"):
                     self.strip_thinking_tags(os.path.join(filepath, filename))
             return
-            
+
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
-            
+
         new_content = re.sub(r'<thinking>.*?</thinking>\s*', '', content, flags=re.DOTALL)
-        
+
         if new_content != content:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(new_content)
 
-    def run_ai(self, full_prompt: str, ignore_content: str, allowed_files: Optional[List[str]] = None, sandbox: bool = True) -> subprocess.CompletedProcess:
+    def run_ai(
+        self,
+        full_prompt: str,
+        ignore_content: str,
+        allowed_files: Optional[List[str]] = None,
+        sandbox: bool = True,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Invoke the configured AI runner and optionally enforce sandbox rules.
+
+        Takes a before-snapshot, runs the AI, then (when *allowed_files* is
+        provided) verifies that only the declared paths were touched and strips
+        any ``<thinking>`` tags from them.
+
+        :param full_prompt: Fully rendered prompt string passed to the runner.
+        :type full_prompt: str
+        :param ignore_content: Content written to the runner's ignore file.
+        :type ignore_content: str
+        :param allowed_files: Paths the AI is permitted to create or modify.
+            Pass ``None`` to skip both sandbox verification and tag stripping.
+        :type allowed_files: list[str] or None
+        :param sandbox: When ``True`` (default), :meth:`verify_changes` is
+            called after the AI runs.  Set to ``False`` for phases that
+            intentionally write to many files.
+        :type sandbox: bool
+        :returns: The completed process result from the underlying runner.
+        :rtype: subprocess.CompletedProcess
+        """
         before = self.get_workspace_snapshot()
         result = self.runner.run(self.root_dir, full_prompt, ignore_content, self.ignore_file)
         if allowed_files is not None:
@@ -225,8 +406,26 @@ class ProjectContext:
                 self.strip_thinking_tags(os.path.abspath(f))
         return result
 
-    # Legacy alias kept for backwards compat
-    def run_gemini(self, full_prompt: str, ignore_content: str, allowed_files: Optional[List[str]] = None, sandbox: bool = True) -> subprocess.CompletedProcess:
+    def run_gemini(
+        self,
+        full_prompt: str,
+        ignore_content: str,
+        allowed_files: Optional[List[str]] = None,
+        sandbox: bool = True,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Alias for :meth:`run_ai` retained for backwards compatibility.
+
+        :param full_prompt: Fully rendered prompt string.
+        :type full_prompt: str
+        :param ignore_content: Content written to the runner's ignore file.
+        :type ignore_content: str
+        :param allowed_files: Paths the AI is permitted to touch.
+        :type allowed_files: list[str] or None
+        :param sandbox: Enforce sandbox rules when ``True``.
+        :type sandbox: bool
+        :returns: The completed process result.
+        :rtype: subprocess.CompletedProcess
+        """
         return self.run_ai(full_prompt, ignore_content, allowed_files, sandbox)
 
     def count_task_files(self, directory: str) -> int:

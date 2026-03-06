@@ -1,12 +1,43 @@
+"""AI CLI runner abstractions.
+
+Each runner wraps a specific AI command-line tool (Gemini, Claude, Copilot)
+behind a common interface so that the rest of the workflow can switch
+backends without changing its logic.
+
+Runner selection is handled at construction time in :mod:`workflow_lib.cli`
+and :mod:`workflow_lib.replan` via ``_make_runner()``.
+"""
+
 import os
 import subprocess
 import tempfile
 from typing import List, Dict, Any, Optional
 
 from .constants import ignore_file_lock
+
+
 class AIRunner:
-    """Abstract base for AI CLI runners."""
-    def write_ignore_file(self, ignore_file: str, ignore_content: str):
+    """Abstract base class for AI CLI runners.
+
+    Subclasses must implement :meth:`run` and the :attr:`ignore_file_name`
+    property.  The shared :meth:`write_ignore_file` helper updates the
+    runner's ignore file atomically under :data:`~.constants.ignore_file_lock`
+    so that concurrent agent threads do not produce torn writes.
+    """
+
+    def write_ignore_file(self, ignore_file: str, ignore_content: str) -> None:
+        """Write *ignore_content* to *ignore_file* if the contents differ.
+
+        Acquires :data:`~.constants.ignore_file_lock` before any I/O so that
+        concurrent runners sharing a working directory cannot race on the same
+        ignore file.
+
+        :param ignore_file: Absolute path to the ignore file (e.g.
+            ``/project/.geminiignore``).
+        :type ignore_file: str
+        :param ignore_content: Full text content to write.
+        :type ignore_content: str
+        """
         with ignore_file_lock:
             should_write = True
             if os.path.exists(ignore_file):
@@ -17,80 +48,186 @@ class AIRunner:
                 with open(ignore_file, "w", encoding="utf-8") as f:
                     f.write(ignore_content)
 
-    def run(self, cwd: str, full_prompt: str, ignore_content: str, ignore_file: str) -> subprocess.CompletedProcess:
+    def run(
+        self,
+        cwd: str,
+        full_prompt: str,
+        ignore_content: str,
+        ignore_file: str,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Invoke the AI CLI and return its completed process result.
+
+        :param cwd: Working directory for the subprocess.
+        :type cwd: str
+        :param full_prompt: Full rendered prompt to pass to the CLI.
+        :type full_prompt: str
+        :param ignore_content: Content for the runner's ignore file.
+        :type ignore_content: str
+        :param ignore_file: Path to the ignore file to write before running.
+        :type ignore_file: str
+        :raises NotImplementedError: Always — subclasses must override this.
+        :returns: The completed subprocess result.
+        :rtype: subprocess.CompletedProcess
+        """
         raise NotImplementedError()
 
     @property
     def ignore_file_name(self) -> str:
+        """Filename (not path) of the ignore file for this runner.
+
+        :raises NotImplementedError: Always — subclasses must override this.
+        :rtype: str
+        """
         raise NotImplementedError()
 
 
 class GeminiRunner(AIRunner):
-    """Wraps the gemini CLI subprocess call."""
-    def run(self, cwd: str, full_prompt: str, ignore_content: str, ignore_file: str) -> subprocess.CompletedProcess:
+    """Runner for the ``gemini`` CLI (Google Gemini).
+
+    Passes the prompt via stdin to ``gemini -y`` (auto-confirm mode) and
+    captures stdout/stderr.
+    """
+
+    def run(
+        self,
+        cwd: str,
+        full_prompt: str,
+        ignore_content: str,
+        ignore_file: str,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Run ``gemini -y`` with *full_prompt* on stdin.
+
+        :param cwd: Working directory for the subprocess.
+        :type cwd: str
+        :param full_prompt: Prompt text written to stdin.
+        :type full_prompt: str
+        :param ignore_content: Content written to ``.geminiignore``.
+        :type ignore_content: str
+        :param ignore_file: Path to the ``.geminiignore`` file.
+        :type ignore_file: str
+        :returns: Completed process with ``returncode``, ``stdout``, ``stderr``.
+        :rtype: subprocess.CompletedProcess
+        """
         self.write_ignore_file(ignore_file, ignore_content)
         return subprocess.run(
             ["gemini", "-y"],
             input=full_prompt,
             cwd=cwd,
             capture_output=True,
-            text=True
+            text=True,
         )
 
     @property
     def ignore_file_name(self) -> str:
+        """Return ``".geminiignore"``."""
         return ".geminiignore"
 
 
 class ClaudeRunner(AIRunner):
-    """Wraps the claude CLI subprocess call."""
-    def run(self, cwd: str, full_prompt: str, ignore_content: str, ignore_file: str) -> subprocess.CompletedProcess:
+    """Runner for the ``claude`` CLI (Anthropic Claude Code).
+
+    Passes the prompt via stdin to ``claude -p --dangerously-skip-permissions``
+    and captures stdout/stderr.
+    """
+
+    def run(
+        self,
+        cwd: str,
+        full_prompt: str,
+        ignore_content: str,
+        ignore_file: str,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Run ``claude -p --dangerously-skip-permissions`` with *full_prompt* on stdin.
+
+        :param cwd: Working directory for the subprocess.
+        :type cwd: str
+        :param full_prompt: Prompt text written to stdin.
+        :type full_prompt: str
+        :param ignore_content: Content written to ``.claudeignore``.
+        :type ignore_content: str
+        :param ignore_file: Path to the ``.claudeignore`` file.
+        :type ignore_file: str
+        :returns: Completed process with ``returncode``, ``stdout``, ``stderr``.
+        :rtype: subprocess.CompletedProcess
+        """
         self.write_ignore_file(ignore_file, ignore_content)
         return subprocess.run(
             ["claude", "-p", "--dangerously-skip-permissions"],
             input=full_prompt,
             cwd=cwd,
             capture_output=True,
-            text=True
+            text=True,
         )
 
     @property
     def ignore_file_name(self) -> str:
+        """Return ``".claudeignore"``."""
         return ".claudeignore"
 
 
 class CopilotRunner(AIRunner):
-    """Wraps the GitHub Copilot CLI subprocess call."""
-    def run(self, cwd: str, full_prompt: str, ignore_content: str, ignore_file: str) -> subprocess.CompletedProcess:
+    """Runner for the GitHub Copilot CLI.
+
+    Writes the prompt to a temporary file and passes its path as an
+    ``@``-reference to ``copilot --yolo``.  Falls back gracefully when the
+    binary is not found.
+    """
+
+    def run(
+        self,
+        cwd: str,
+        full_prompt: str,
+        ignore_content: str,
+        ignore_file: str,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Run the Copilot CLI with *full_prompt* written to a temp file.
+
+        Tries the ``copilot -p @<tempfile> --yolo`` invocation.  If the
+        binary is not found, moves on and ultimately re-raises the last
+        :exc:`FileNotFoundError` or raises :exc:`RuntimeError`.
+
+        :param cwd: Working directory for the subprocess.
+        :type cwd: str
+        :param full_prompt: Prompt text written to the temporary file.
+        :type full_prompt: str
+        :param ignore_content: Content written to ``.copilotignore``.
+        :type ignore_content: str
+        :param ignore_file: Path to the ``.copilotignore`` file.
+        :type ignore_file: str
+        :returns: Completed process with ``returncode``, ``stdout``, ``stderr``.
+        :rtype: subprocess.CompletedProcess
+        :raises RuntimeError: When no CLI candidate succeeds and no
+            :exc:`FileNotFoundError` was captured.
+        """
         self.write_ignore_file(ignore_file, ignore_content)
 
         import tempfile
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=True) as f:
             f.write(full_prompt)
-            #print(full_prompt)
             prompt_file = f.name
             candidates = [
                 ["copilot", "-p", f"Follow the instructions in @{prompt_file}", "--yolo"],
             ]
-            last_exc = None
-            last_result = None
+            last_exc: Optional[Exception] = None
+            last_result: Optional[subprocess.CompletedProcess] = None  # type: ignore[type-arg]
             for cmd in candidates:
                 try:
-                    last_result = subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True)
-                    # If the command ran (found) and returned 0, return immediately.
+                    last_result = subprocess.run(
+                        cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True
+                    )
                     if last_result.returncode == 0:
                         return last_result
                 except FileNotFoundError as e:
                     last_exc = e
                     continue
 
-        # If none succeeded, return the last result if available, else raise the FileNotFoundError
         if last_result is not None:
             return last_result
         raise last_exc if last_exc is not None else RuntimeError("Failed to invoke copilot CLI")
 
     @property
     def ignore_file_name(self) -> str:
+        """Return ``".copilotignore"``."""
         return ".copilotignore"
 
 
