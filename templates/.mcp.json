@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "serena": {
+      "command": "uvx",
+      "args": ["--from", "serena", "serena-mcp-server", "--project-from-cwd", "--mode", "no-onboarding"]
+    }
+  }
+}

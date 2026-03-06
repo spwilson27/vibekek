@@ -9,6 +9,7 @@ from .orchestrator import Orchestrator
 from .context import ProjectContext
 from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade
 from .executor import execute_dag, Logger, signal_handler
+from .config import get_serena_enabled
 from .state import load_workflow_state, load_dags, get_tasks_dir
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner
 def cmd_setup(args):
@@ -98,8 +99,9 @@ def cmd_run(args):
 
     master_dag = load_dags(tasks_dir)
     state = load_workflow_state()
-    
-    print(f"Loaded {len(master_dag)} tasks across all phases.")
+
+    serena_status = "enabled" if get_serena_enabled() else "disabled"
+    print(f"Loaded {len(master_dag)} tasks across all phases. [Serena] {serena_status}")
     execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, args.backend)
 
 def main():

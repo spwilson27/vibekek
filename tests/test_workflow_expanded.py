@@ -318,6 +318,7 @@ def test_execute_dag():
          patch('workflow_lib.executor.merge_task', return_value=True), \
          patch('workflow_lib.executor.rebuild_serena_cache'), \
          patch('workflow_lib.executor.save_workflow_state'), \
+         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
          patch('os.path.isdir', return_value=True):
         
         mock_res = MagicMock(returncode=0)

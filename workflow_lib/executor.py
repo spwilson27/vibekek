@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import json
@@ -13,6 +14,7 @@ from datetime import datetime, timezone
 from .constants import TOOLS_DIR, ROOT_DIR
 from .context import ProjectContext
 from .state import save_workflow_state
+from .config import get_serena_enabled
 
 shutdown_requested = False
 
@@ -260,7 +262,7 @@ def get_existing_worktree(root_dir: str, branch_name: str) -> str:
     return None
 
 
-def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3) -> bool:
+def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False) -> bool:
     """Handles the lifecycle of a single task: worktree creation, agents, and commit."""
     phase_id, task_id = full_task_id.split("/", 1)
     safe_task_id = task_id.replace("/", "_").replace(".md", "")
@@ -290,17 +292,18 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
                 print(f"      [!] Failed to create worktree:\n{e.stderr.decode('utf-8')}")
                 return False
 
-        # Seed Serena cache from main repo so agents don't start cold
-        serena_cache_src = os.path.join(root_dir, ".serena", "cache")
-        serena_cache_dst = os.path.join(tmpdir, ".serena", "cache")
-        if os.path.isdir(serena_cache_src) and not os.path.isdir(serena_cache_dst):
-            shutil.copytree(serena_cache_src, serena_cache_dst)
+        if serena:
+            # Seed Serena cache from main repo so agents don't start cold
+            serena_cache_src = os.path.join(root_dir, ".serena", "cache")
+            serena_cache_dst = os.path.join(tmpdir, ".serena", "cache")
+            if os.path.isdir(serena_cache_src) and not os.path.isdir(serena_cache_dst):
+                shutil.copytree(serena_cache_src, serena_cache_dst)
 
-        # Copy .mcp.json so Claude CLI picks up Serena in the worktree
-        mcp_src = os.path.join(root_dir, ".mcp.json")
-        mcp_dst = os.path.join(tmpdir, ".mcp.json")
-        if os.path.exists(mcp_src) and not os.path.exists(mcp_dst):
-            shutil.copy2(mcp_src, mcp_dst)
+            # Copy .mcp.json so Claude CLI picks up Serena in the worktree
+            mcp_src = os.path.join(root_dir, ".mcp.json")
+            mcp_dst = os.path.join(tmpdir, ".mcp.json")
+            if os.path.exists(mcp_src) and not os.path.exists(mcp_dst):
+                shutil.copy2(mcp_src, mcp_dst)
 
         task_details = get_task_details(full_task_id)
         description_ctx = get_project_context()
@@ -369,7 +372,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
             print(f"      [!] Task failed. Leaving worktree {tmpdir} and branch {branch_name} for investigation.")
 
 
-def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None) -> bool:
+def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False) -> bool:
     """Creates a clean clone of the repo, merges the task branch via squash, and verifies presubmit."""
     phase_part, name_part = task_id.split("/", 1)
     safe_name_part = name_part.replace("/", "_").replace(".md", "")
@@ -524,7 +527,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
         return False
         
     finally:
-        if push_succeeded and cache_lock is not None:
+        if push_succeeded and serena and cache_lock is not None:
             rebuild_serena_cache(tmpdir, root_dir, cache_lock)
         # Cleanup clone
         print(f"      Cleaning up merge clone {tmpdir}...")
@@ -584,24 +587,36 @@ def get_ready_tasks(master_dag: Dict[str, List[str]], completed_tasks: List[str]
 
 def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str = "gemini"):
     """Orchestrates the parallel execution of tasks according to the DAG."""
+    serena_enabled = get_serena_enabled()
+
     # Ensure dev branch exists
     res = subprocess.run(["git", "rev-parse", "--verify", "dev"], cwd=root_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if res.returncode != 0:
         subprocess.run(["git", "branch", "dev", "main"], cwd=root_dir, check=True)
 
-    # Bootstrap Serena cache from dev if not present
     cache_lock = threading.Lock()
-    serena_cache = os.path.join(root_dir, ".serena", "cache")
-    if not os.path.isdir(serena_cache):
-        print("=> [Serena] No cache found. Bootstrapping index from dev branch...")
-        init_wt = tempfile.mkdtemp(prefix="serena_init_")
-        try:
-            subprocess.run(["git", "worktree", "add", "--detach", init_wt, "dev"],
-                           cwd=root_dir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            rebuild_serena_cache(init_wt, root_dir, cache_lock)
-        finally:
-            subprocess.run(["git", "worktree", "remove", "-f", init_wt],
-                           cwd=root_dir, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if serena_enabled:
+        # Ensure .mcp.json exists at project root (copy from template if missing)
+        mcp_dst = os.path.join(root_dir, ".mcp.json")
+        if not os.path.exists(mcp_dst):
+            mcp_template = os.path.join(TOOLS_DIR, "templates", ".mcp.json")
+            if os.path.exists(mcp_template):
+                shutil.copy2(mcp_template, mcp_dst)
+                print(f"=> [Serena] Copied .mcp.json template to {mcp_dst}")
+
+        # Bootstrap Serena cache from dev if not present
+        serena_cache = os.path.join(root_dir, ".serena", "cache")
+        if not os.path.isdir(serena_cache):
+            print("=> [Serena] No cache found. Bootstrapping index from dev branch...")
+            init_wt = tempfile.mkdtemp(prefix="serena_init_")
+            try:
+                subprocess.run(["git", "worktree", "add", "--detach", init_wt, "dev"],
+                               cwd=root_dir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                rebuild_serena_cache(init_wt, root_dir, cache_lock)
+            finally:
+                subprocess.run(["git", "worktree", "remove", "-f", init_wt],
+                               cwd=root_dir, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     active_tasks = set()
     failed_tasks = set()
@@ -628,7 +643,7 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
                 with state_lock:
                     active_tasks.add(task_id)
                     
-                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend)
+                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled)
                 future_to_task[future] = task_id
             
             # If no tasks are running and (none are ready or shutdown requested), we are done/deadlocked
@@ -666,7 +681,7 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
                         print(f"   -> [Implementation] Task {task_id} completed successfully.")
                         
                         # Trigger DAG Merge Workflow immediately
-                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock):
+                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled):
                             with state_lock:
                                 state["completed_tasks"].append(task_id)
                                 state["merged_tasks"].append(task_id)
