@@ -64,7 +64,7 @@ from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblo
 from .executor import execute_dag, Logger, signal_handler
 from .config import get_serena_enabled
 from .state import load_workflow_state, load_dags, get_tasks_dir
-from .runners import GeminiRunner, ClaudeRunner, CopilotRunner
+from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner
 
 
 def cmd_setup(args: argparse.Namespace) -> None:
@@ -207,7 +207,7 @@ def main() -> None:
     the ``commands`` dispatch table.
     """
     parser = argparse.ArgumentParser(description="AI Project Planning and Execution Workflow")
-    parser.add_argument("--backend", choices=["gemini", "claude", "copilot"], default="gemini", help="AI CLI backend to use (default: gemini)")
+    parser.add_argument("--backend", choices=["gemini", "claude", "opencode", "copilot"], default="gemini", help="AI CLI backend to use (default: gemini)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # setup

@@ -181,13 +181,15 @@ class TestHelpers:
         assert result == ""
 
     def test_get_project_context_exists(self):
-        with patch("os.path.exists", return_value=True), \
+        with patch("os.path.isdir", return_value=True), \
+             patch("os.listdir", return_value=["project-description.md"]), \
+             patch("os.path.isfile", return_value=True), \
              patch("builtins.open", mock_open(read_data="project desc")):
             result = get_project_context("/fake/tools")
-        assert result == "project desc"
+        assert result == '<file name="project-description.md">\nproject desc\n</file>'
 
     def test_get_project_context_missing(self):
-        with patch("os.path.exists", return_value=False):
+        with patch("os.path.isdir", return_value=False):
             result = get_project_context("/fake/tools")
         assert result == ""
 
@@ -677,7 +679,7 @@ class TestContextCoverage:
             ctx.sandbox_dir = "/fake/root/.sandbox"
             ctx.prompts_dir = "/fake/.tools/prompts"
             ctx.state_file = "/fake/.tools/.gen_state.json"
-            ctx.desc_file = "/fake/.tools/input/project-description.md"
+            ctx.input_dir = "/fake/.tools/input"
             ctx.shared_components_file = "/fake/root/docs/plan/shared_components.md"
             ctx.ignore_file = "/fake/root/.geminiignore"
             ctx.backup_ignore = "/fake/root/.geminiignore.bak"

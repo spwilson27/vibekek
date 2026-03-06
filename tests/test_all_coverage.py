@@ -93,6 +93,7 @@ def custom_walk(path):
 @patch("builtins.open", new_callable=lambda: custom_open)
 @patch("os.path.exists", side_effect=custom_exists)
 @patch("os.path.isdir", side_effect=custom_isdir)
+@patch("os.path.isfile", return_value=True)
 @patch("os.listdir", side_effect=custom_listdir)
 @patch("os.walk", side_effect=custom_walk)
 @patch("workflow.ProjectContext.get_workspace_snapshot", return_value={})
@@ -104,6 +105,7 @@ def test_all_phases(
     mock_snap,
     mock_walk,
     mock_listdir,
+    mock_isfile,
     mock_isdir,
     mock_exists,
     mock_open_file,
@@ -246,6 +248,7 @@ def test_all_cmds(
 @patch("builtins.open", new_callable=lambda: custom_open)
 @patch("os.path.exists", side_effect=custom_exists)
 @patch("os.path.isdir", side_effect=custom_isdir)
+@patch("os.path.isfile", return_value=True)
 @patch("os.listdir", side_effect=custom_listdir)
 @patch("os.walk", side_effect=custom_walk)
 @patch("workflow.ProjectContext.get_workspace_snapshot", return_value={})
@@ -257,6 +260,7 @@ def test_all_phases_failure(
     mock_snap,
     mock_walk,
     mock_listdir,
+    mock_isfile,
     mock_isdir,
     mock_exists,
     mock_open_file,

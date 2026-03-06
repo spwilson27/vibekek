@@ -19,7 +19,7 @@ import re
 from typing import List, Dict, Any, Optional
 
 from .constants import TOOLS_DIR, GEN_STATE_FILE, DOCS
-from .runners import AIRunner, GeminiRunner
+from .runners import AIRunner, GeminiRunner, IMAGE_EXTENSIONS
 
 
 class ProjectContext:
@@ -47,7 +47,7 @@ class ProjectContext:
         self.research_dir = os.path.join(self.plan_dir, "research")
         self.prompts_dir = os.path.join(TOOLS_DIR, "prompts")
         self.state_file = GEN_STATE_FILE
-        self.desc_file = os.path.join(TOOLS_DIR, "input", "project-description.md")
+        self.input_dir = os.path.join(TOOLS_DIR, "input")
         
         self.requirements_dir = os.path.join(self.plan_dir, "requirements")
         
@@ -66,6 +66,7 @@ class ProjectContext:
 
         self.has_existing_ignore = os.path.exists(self.ignore_file)
         self.state = self._load_state()
+        self.image_paths = self._load_images()
         self.description_ctx = self._load_description()
 
     def _load_state(self) -> Dict[str, Any]:
@@ -107,18 +108,53 @@ class ProjectContext:
         with open(self.state_file, "w") as f:
             json.dump(self.state, f, indent=4)
 
-    def _load_description(self) -> str:
-        """Read the project description from disk.
+    def _load_images(self) -> List[str]:
+        """Return absolute paths to all image files in the ``input/`` directory.
 
-        :raises SystemExit: If the description file does not exist.
-        :returns: Full text of ``input/project-description.md``.
+        Files are sorted by name.  Non-existent directories return an empty list.
+
+        :returns: Sorted list of absolute image file paths.
+        :rtype: list[str]
+        """
+        if not os.path.isdir(self.input_dir):
+            return []
+        return sorted(
+            os.path.join(self.input_dir, f)
+            for f in os.listdir(self.input_dir)
+            if os.path.isfile(os.path.join(self.input_dir, f))
+            and os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS
+        )
+
+    def _load_description(self) -> str:
+        """Read all non-image files from the ``input/`` directory and concatenate them.
+
+        Every text file in ``.tools/input/`` is included, sorted by filename,
+        with each file's content preceded by a ``## <filename>`` header so the
+        AI can distinguish between multiple input documents.  Image files are
+        excluded here and attached separately via :attr:`image_paths`.
+
+        :raises SystemExit: If the ``input/`` directory does not exist or
+            contains no text files.
+        :returns: Concatenated contents of all text input files.
         :rtype: str
         """
-        if not os.path.exists(self.desc_file):
-            print(f"Error: {self.desc_file} not found.")
+        if not os.path.isdir(self.input_dir):
+            print(f"Error: {self.input_dir} not found.")
             sys.exit(1)
-        with open(self.desc_file, "r", encoding="utf-8") as f:
-            return f.read()
+        files = sorted(
+            f for f in os.listdir(self.input_dir)
+            if os.path.isfile(os.path.join(self.input_dir, f))
+            and os.path.splitext(f)[1].lower() not in IMAGE_EXTENSIONS
+        )
+        if not files:
+            print(f"Error: No input files found in {self.input_dir}.")
+            sys.exit(1)
+        parts = []
+        for filename in files:
+            filepath = os.path.join(self.input_dir, filename)
+            with open(filepath, "r", encoding="utf-8") as f:
+                parts.append(f"<file name=\"{filename}\">\n{f.read()}\n</file>")
+        return "\n\n".join(parts)
 
     def load_shared_components(self) -> str:
         """Return the contents of ``docs/plan/shared_components.md``.
@@ -398,7 +434,7 @@ class ProjectContext:
         :rtype: subprocess.CompletedProcess
         """
         before = self.get_workspace_snapshot()
-        result = self.runner.run(self.root_dir, full_prompt, ignore_content, self.ignore_file)
+        result = self.runner.run(self.root_dir, full_prompt, ignore_content, self.ignore_file, self.image_paths)
         if allowed_files is not None:
             if sandbox:
                 self.verify_changes(before, allowed_files)

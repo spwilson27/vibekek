@@ -15,6 +15,8 @@ from typing import List, Dict, Any, Optional
 
 from .constants import ignore_file_lock
 
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
+
 
 class AIRunner:
     """Abstract base class for AI CLI runners.
@@ -54,6 +56,7 @@ class AIRunner:
         full_prompt: str,
         ignore_content: str,
         ignore_file: str,
+        image_paths: Optional[List[str]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Invoke the AI CLI and return its completed process result.
 
@@ -65,6 +68,10 @@ class AIRunner:
         :type ignore_content: str
         :param ignore_file: Path to the ignore file to write before running.
         :type ignore_file: str
+        :param image_paths: Optional list of absolute paths to image files to
+            attach to the request.  How images are delivered depends on the
+            backend — see concrete subclass implementations.
+        :type image_paths: list[str] or None
         :raises NotImplementedError: Always — subclasses must override this.
         :returns: The completed subprocess result.
         :rtype: subprocess.CompletedProcess
@@ -94,8 +101,12 @@ class GeminiRunner(AIRunner):
         full_prompt: str,
         ignore_content: str,
         ignore_file: str,
+        image_paths: Optional[List[str]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``gemini -y`` with *full_prompt* on stdin.
+
+        Images are delivered by appending ``@<absolute_path>`` file-reference
+        lines to the prompt, which the Gemini CLI resolves as attachments.
 
         :param cwd: Working directory for the subprocess.
         :type cwd: str
@@ -105,13 +116,19 @@ class GeminiRunner(AIRunner):
         :type ignore_content: str
         :param ignore_file: Path to the ``.geminiignore`` file.
         :type ignore_file: str
+        :param image_paths: Absolute paths to image files to attach.
+        :type image_paths: list[str] or None
         :returns: Completed process with ``returncode``, ``stdout``, ``stderr``.
         :rtype: subprocess.CompletedProcess
         """
         self.write_ignore_file(ignore_file, ignore_content)
+        prompt = full_prompt
+        if image_paths:
+            refs = "\n".join(f"@{p}" for p in image_paths)
+            prompt = f"{prompt}\n\n{refs}"
         return subprocess.run(
             ["gemini", "-y"],
-            input=full_prompt,
+            input=prompt,
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -136,8 +153,12 @@ class ClaudeRunner(AIRunner):
         full_prompt: str,
         ignore_content: str,
         ignore_file: str,
+        image_paths: Optional[List[str]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``claude -p --dangerously-skip-permissions`` with *full_prompt* on stdin.
+
+        Images are delivered via ``--image <path>`` flags appended to the
+        command, one flag pair per image.
 
         :param cwd: Working directory for the subprocess.
         :type cwd: str
@@ -147,12 +168,17 @@ class ClaudeRunner(AIRunner):
         :type ignore_content: str
         :param ignore_file: Path to the ``.claudeignore`` file.
         :type ignore_file: str
+        :param image_paths: Absolute paths to image files to attach.
+        :type image_paths: list[str] or None
         :returns: Completed process with ``returncode``, ``stdout``, ``stderr``.
         :rtype: subprocess.CompletedProcess
         """
         self.write_ignore_file(ignore_file, ignore_content)
+        cmd = ["claude", "-p", "--dangerously-skip-permissions"]
+        for path in (image_paths or []):
+            cmd += ["--image", path]
         return subprocess.run(
-            ["claude", "-p", "--dangerously-skip-permissions"],
+            cmd,
             input=full_prompt,
             cwd=cwd,
             capture_output=True,
@@ -163,6 +189,56 @@ class ClaudeRunner(AIRunner):
     def ignore_file_name(self) -> str:
         """Return ``".claudeignore"``."""
         return ".claudeignore"
+
+
+class OpencodeRunner(AIRunner):
+    """Runner for the ``opencode`` CLI.
+
+    Passes the prompt via stdin to ``opencode --print --yes`` and captures
+    stdout/stderr.
+    """
+
+    def run(
+        self,
+        cwd: str,
+        full_prompt: str,
+        ignore_content: str,
+        ignore_file: str,
+        image_paths: Optional[List[str]] = None,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Run ``opencode --print --yes`` with *full_prompt* on stdin.
+
+        Images are delivered via ``--image <path>`` flags appended to the
+        command, one flag pair per image.
+
+        :param cwd: Working directory for the subprocess.
+        :type cwd: str
+        :param full_prompt: Prompt text written to stdin.
+        :type full_prompt: str
+        :param ignore_content: Unused; present for interface compatibility.
+        :type ignore_content: str
+        :param ignore_file: Unused; present for interface compatibility.
+        :type ignore_file: str
+        :param image_paths: Absolute paths to image files to attach.
+        :type image_paths: list[str] or None
+        :returns: Completed process with ``returncode``, ``stdout``, ``stderr``.
+        :rtype: subprocess.CompletedProcess
+        """
+        cmd = ["opencode", "--print", "--yes"]
+        for path in (image_paths or []):
+            cmd += ["--image", path]
+        return subprocess.run(
+            cmd,
+            input=full_prompt,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+
+    @property
+    def ignore_file_name(self) -> str:
+        """Return ``".opencodeignore"``."""
+        return ".opencodeignore"
 
 
 class CopilotRunner(AIRunner):
@@ -179,6 +255,7 @@ class CopilotRunner(AIRunner):
         full_prompt: str,
         ignore_content: str,
         ignore_file: str,
+        image_paths: Optional[List[str]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run the Copilot CLI with *full_prompt* written to a temp file.
 
@@ -194,16 +271,23 @@ class CopilotRunner(AIRunner):
         :type ignore_content: str
         :param ignore_file: Path to the ``.copilotignore`` file.
         :type ignore_file: str
+        :param image_paths: Absolute paths to image files to attach.  Appended
+            as ``@<path>`` references in the prompt file.
+        :type image_paths: list[str] or None
         :returns: Completed process with ``returncode``, ``stdout``, ``stderr``.
         :rtype: subprocess.CompletedProcess
         :raises RuntimeError: When no CLI candidate succeeds and no
             :exc:`FileNotFoundError` was captured.
         """
         self.write_ignore_file(ignore_file, ignore_content)
+        prompt = full_prompt
+        if image_paths:
+            refs = "\n".join(f"@{p}" for p in image_paths)
+            prompt = f"{prompt}\n\n{refs}"
 
         import tempfile
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=True) as f:
-            f.write(full_prompt)
+            f.write(prompt)
             prompt_file = f.name
             candidates = [
                 ["copilot", "-p", f"Follow the instructions in @{prompt_file}", "--yolo"],
@@ -213,7 +297,7 @@ class CopilotRunner(AIRunner):
             for cmd in candidates:
                 try:
                     last_result = subprocess.run(
-                        cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True
+                        cmd, input=prompt, cwd=cwd, capture_output=True, text=True
                     )
                     if last_result.returncode == 0:
                         return last_result

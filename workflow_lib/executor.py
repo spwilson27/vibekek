@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 
 from .constants import TOOLS_DIR, ROOT_DIR
 from .context import ProjectContext
+from .runners import IMAGE_EXTENSIONS
 from .state import save_workflow_state
 from .config import get_serena_enabled
 
@@ -145,7 +146,13 @@ class Logger(object):
 
 
 # Default CLI backends config for gemini/claude. Assumes same runner logic as gen_all.py
-def run_ai_command(prompt: str, cwd: str, prefix: str = "", backend: str = "gemini") -> int:
+def run_ai_command(
+    prompt: str,
+    cwd: str,
+    prefix: str = "",
+    backend: str = "gemini",
+    image_paths: Optional[List[str]] = None,
+) -> int:
     """Launch an AI CLI process and stream its output, returning the exit code.
 
     The prompt is fed to the process via ``stdin``.  Output lines are printed
@@ -154,10 +161,13 @@ def run_ai_command(prompt: str, cwd: str, prefix: str = "", backend: str = "gemi
 
     Supported backends:
 
-    * ``"gemini"`` — ``gemini -y``
-    * ``"claude"`` — ``claude -p --dangerously-skip-permissions``
+    * ``"gemini"`` — ``gemini -y``.  Images are appended as ``@<path>``
+      references in the prompt text.
+    * ``"claude"`` — ``claude -p --dangerously-skip-permissions``.  Images are
+      passed as ``--image <path>`` CLI flags.
     * ``"copilot"`` — writes prompt to a temp file and invokes
-      ``copilot --model gpt-5-mini --yolo``
+      ``copilot --model gpt-5-mini --yolo``.  Images are appended as
+      ``@<path>`` references in the prompt file.
 
     :param prompt: Full prompt text to pass to the AI CLI.
     :type prompt: str
@@ -168,15 +178,31 @@ def run_ai_command(prompt: str, cwd: str, prefix: str = "", backend: str = "gemi
     :param backend: AI backend to use.  One of ``"gemini"``, ``"claude"``,
         or ``"copilot"``.  Defaults to ``"gemini"``.
     :type backend: str
+    :param image_paths: Optional list of absolute paths to image files to
+        attach to the request.
+    :type image_paths: list[str] or None
     :returns: Process return code (``0`` on success).
     :rtype: int
     """
+    images = image_paths or []
     cmd = ["gemini", "-y"]
     tmp_file_name = None
 
-    if backend == "claude":
+    if backend == "gemini" and images:
+        refs = "\n".join(f"@{p}" for p in images)
+        prompt = f"{prompt}\n\n{refs}"
+    elif backend == "claude":
         cmd = ["claude", "-p", "--dangerously-skip-permissions"]
+        for path in images:
+            cmd += ["--image", path]
+    elif backend == "opencode":
+        cmd = ["opencode", "--print", "--yes"]
+        for path in images:
+            cmd += ["--image", path]
     elif backend == "copilot":
+        if images:
+            refs = "\n".join(f"@{p}" for p in images)
+            prompt = f"{prompt}\n\n{refs}"
         fd, tmp_file_name = tempfile.mkstemp(text=True)
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(prompt)
@@ -297,19 +323,53 @@ def get_memory_context(root_dir: str) -> str:
 
 
 def get_project_context(tools_dir: str = "") -> str:
-    """Return the project description from ``input/project-description.md``.
+    """Return the concatenated contents of all text files in the ``input/`` directory.
+
+    Every non-image file in ``.tools/input/`` is included, sorted by filename,
+    with each file's content preceded by a ``## <filename>`` header.  Image
+    files are excluded here; use :func:`get_project_images` to obtain them.
 
     :param tools_dir: Unused; present for API compatibility.  The actual path
         is always resolved from the package-level :data:`TOOLS_DIR` constant.
     :type tools_dir: str
-    :returns: Project description text, or ``""`` when the file is absent.
+    :returns: Concatenated text input file contents, or ``""`` when the
+        directory does not exist or contains no text files.
     :rtype: str
     """
-    desc_file = os.path.join(TOOLS_DIR, "input", "project-description.md")
-    if os.path.exists(desc_file):
-        with open(desc_file, "r", encoding="utf-8") as f:
-            return f.read()
-    return ""
+    input_dir = os.path.join(TOOLS_DIR, "input")
+    if not os.path.isdir(input_dir):
+        return ""
+    files = sorted(
+        f for f in os.listdir(input_dir)
+        if os.path.isfile(os.path.join(input_dir, f))
+        and os.path.splitext(f)[1].lower() not in IMAGE_EXTENSIONS
+    )
+    if not files:
+        return ""
+    parts = []
+    for filename in files:
+        filepath = os.path.join(input_dir, filename)
+        with open(filepath, "r", encoding="utf-8") as f:
+            parts.append(f"<file name=\"{filename}\">\n{f.read()}\n</file>")
+    return "\n\n".join(parts)
+
+
+def get_project_images() -> List[str]:
+    """Return absolute paths to all image files in the ``input/`` directory.
+
+    :returns: Sorted list of absolute image file paths, or ``[]`` when the
+        directory does not exist or contains no image files.
+    :rtype: list[str]
+    """
+    input_dir = os.path.join(TOOLS_DIR, "input")
+    if not os.path.isdir(input_dir):
+        return []
+    return sorted(
+        os.path.join(input_dir, f)
+        for f in os.listdir(input_dir)
+        if os.path.isfile(os.path.join(input_dir, f))
+        and os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS
+    )
 
 
 def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini") -> bool:
@@ -352,7 +412,7 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
     short_task = task_name[:15] + ".." if len(task_name) > 15 else task_name
     prefix = f"[{phase_id}/{short_task}] "
 
-    returncode = run_ai_command(prompt, cwd, prefix=prefix, backend=backend)
+    returncode = run_ai_command(prompt, cwd, prefix=prefix, backend=backend, image_paths=get_project_images())
     
     if returncode != 0:
         print(f"      [{agent_type}] FATAL: Agent process failed with exit code {returncode}")
