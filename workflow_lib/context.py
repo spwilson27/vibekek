@@ -18,7 +18,7 @@ import json
 import re
 from typing import List, Dict, Any, Optional
 
-from .constants import TOOLS_DIR, GEN_STATE_FILE, DOCS
+from .constants import TOOLS_DIR, INPUT_DIR, GEN_STATE_FILE, DOCS
 from .runners import AIRunner, GeminiRunner, IMAGE_EXTENSIONS
 
 
@@ -47,7 +47,7 @@ class ProjectContext:
         self.research_dir = os.path.join(self.plan_dir, "research")
         self.prompts_dir = os.path.join(TOOLS_DIR, "prompts")
         self.state_file = GEN_STATE_FILE
-        self.input_dir = os.path.join(TOOLS_DIR, "input")
+        self.input_dir = INPUT_DIR
         
         self.requirements_dir = os.path.join(self.plan_dir, "requirements")
         

@@ -35,7 +35,7 @@ import tempfile
 import traceback
 from datetime import datetime, timezone
 
-from .constants import TOOLS_DIR, ROOT_DIR
+from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR
 from .context import ProjectContext
 from .runners import IMAGE_EXTENSIONS
 from .state import save_workflow_state
@@ -336,7 +336,7 @@ def get_project_context(tools_dir: str = "") -> str:
         directory does not exist or contains no text files.
     :rtype: str
     """
-    input_dir = os.path.join(TOOLS_DIR, "input")
+    input_dir = INPUT_DIR
     if not os.path.isdir(input_dir):
         return ""
     files = sorted(
@@ -361,7 +361,7 @@ def get_project_images() -> List[str]:
         directory does not exist or contains no image files.
     :rtype: list[str]
     """
-    input_dir = os.path.join(TOOLS_DIR, "input")
+    input_dir = INPUT_DIR
     if not os.path.isdir(input_dir):
         return []
     return sorted(
