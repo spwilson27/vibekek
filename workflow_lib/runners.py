@@ -50,6 +50,10 @@ class AIRunner:
                 with open(ignore_file, "w", encoding="utf-8") as f:
                     f.write(ignore_content)
 
+    def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
+        """Return the CLI command list (without prompt). Subclasses must override."""
+        raise NotImplementedError()
+
     def run(
         self,
         cwd: str,
@@ -94,6 +98,9 @@ class GeminiRunner(AIRunner):
     Passes the prompt via stdin to ``gemini -y`` (auto-confirm mode) and
     captures stdout/stderr.
     """
+
+    def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
+        return ["gemini", "-y"]
 
     def run(
         self,
@@ -147,6 +154,12 @@ class ClaudeRunner(AIRunner):
     and captures stdout/stderr.
     """
 
+    def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
+        cmd = ["claude", "-p", "--dangerously-skip-permissions"]
+        for path in (image_paths or []):
+            cmd += ["--image", path]
+        return cmd
+
     def run(
         self,
         cwd: str,
@@ -198,6 +211,12 @@ class OpencodeRunner(AIRunner):
     stdout/stderr.
     """
 
+    def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
+        cmd = ["opencode", "run"]
+        for path in (image_paths or []):
+            cmd += ["-f", path]
+        return cmd
+
     def run(
         self,
         cwd: str,
@@ -248,6 +267,9 @@ class CopilotRunner(AIRunner):
     ``@``-reference to ``copilot --yolo``.  Falls back gracefully when the
     binary is not found.
     """
+
+    def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
+        return ["copilot", "-p", "@<prompt_file>", "--yolo"]
 
     def run(
         self,

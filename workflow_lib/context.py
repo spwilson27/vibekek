@@ -435,12 +435,33 @@ class ProjectContext:
         """
         before = self.get_workspace_snapshot()
         result = self.runner.run(self.root_dir, full_prompt, ignore_content, self.ignore_file, self.image_paths)
+        if result.returncode != 0:
+            self._write_last_failed_command(full_prompt, ignore_content)
         if allowed_files is not None:
             if sandbox:
                 self.verify_changes(before, allowed_files)
             for f in allowed_files:
                 self.strip_thinking_tags(os.path.abspath(f))
         return result
+
+    def _write_last_failed_command(self, full_prompt: str, ignore_content: str) -> None:
+        """Write .last_failed_prompt.txt and .last_failed_command.sh for debugging."""
+        import shlex
+        prompt_file = os.path.join(self.root_dir, ".last_failed_prompt.txt")
+        script_file = os.path.join(self.root_dir, ".last_failed_command.sh")
+        with open(prompt_file, "w", encoding="utf-8") as f:
+            f.write(full_prompt)
+        cmd = self.runner.get_cmd(self.image_paths)
+        cmd_str = " ".join(shlex.quote(c) for c in cmd)
+        with open(script_file, "w", encoding="utf-8") as f:
+            f.write("#!/usr/bin/env bash\n")
+            f.write(f"# Last failed workflow command\n")
+            f.write(f"cd {shlex.quote(self.root_dir)}\n")
+            if ignore_content:
+                f.write(f"# Ignore file: {self.ignore_file}\n")
+            f.write(f"{cmd_str} < .last_failed_prompt.txt\n")
+        os.chmod(script_file, 0o755)
+        print(f"   -> Debug: saved .last_failed_command.sh and .last_failed_prompt.txt")
 
     def run_gemini(
         self,

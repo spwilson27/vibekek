@@ -10,6 +10,40 @@ idea to a fully-planned, parallel-executed codebase. It has two main phases:
 
 ---
 
+## Workflow Overview
+
+```mermaid
+flowchart TD
+    A([Start]) --> C["1. Setup<br/>workflow.py setup"]
+    C --> C1[".tools/.venv/<br/>do.py, ci.py, .agent/<br/>input/"]
+
+    C1 --> B["2. Describe project<br/>Edit input/ files"]
+
+    B --> D["3. Plan<br/>workflow.py plan"]
+
+    D --> P1["Phase 3b - Adversarial review<br/>docs/plan/adversarial_review.md"]
+    P1 --> P2["Phase 4 - Merge + scope + order<br/>docs/plan/specs/<br/>docs/plan/research/"]
+    P2 --> P3["Phase 5 - Epics + shared components<br/>docs/plan/phases/phase_N.md<br/>docs/plan/shared_components.md"]
+    P3 --> P4["Phase 6 - Tasks + review + reorder<br/>docs/plan/tasks/phase_N/sub_epic/NN_task.md"]
+    P4 --> P5["Phase 7 - DAG<br/>docs/plan/tasks/phase_N/dag.json<br/>docs/plan/requirements.md"]
+
+    P5 --> E["4. Implement<br/>workflow.py run --jobs N"]
+
+    E --> R1["Pick next ready task<br/>prerequisites met, not blocked"]
+    R1 --> R2["Create git worktree<br/>ai-phase-task branch"]
+    R2 --> R3["Implementation agent<br/>Review agent"]
+    R3 --> R4["Run ./do presubmit<br/>up to 3 attempts"]
+    R4 -->|Pass| R5["Squash-merge into dev<br/>task marked complete"]
+    R4 -->|Fail| R3
+    R5 --> R6{More tasks?}
+    R6 -->|Yes| R1
+    R6 -->|Phase complete| R7{More phases?}
+    R7 -->|Yes| R1
+    R7 -->|No| Z([Done])
+```
+
+---
+
 ## Requirements
 
 | Dependency | Purpose |

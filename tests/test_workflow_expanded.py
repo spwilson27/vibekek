@@ -361,3 +361,137 @@ def test_cmd_unblock():
         workflow.cmd_unblock(args)
         mock_save.assert_called_once()
         assert "phase_1/t1" not in mock_save.call_args[0][0]["blocked_tasks"]
+
+
+# --- Runner get_cmd Tests ---
+
+def test_gemini_runner_get_cmd():
+    runner = GeminiRunner()
+    assert runner.get_cmd() == ["gemini", "-y"]
+    assert runner.get_cmd(image_paths=["/img.png"]) == ["gemini", "-y"]
+
+
+def test_claude_runner_get_cmd():
+    runner = ClaudeRunner()
+    assert runner.get_cmd() == ["claude", "-p", "--dangerously-skip-permissions"]
+    assert runner.get_cmd(image_paths=["/a.png", "/b.jpg"]) == [
+        "claude", "-p", "--dangerously-skip-permissions", "--image", "/a.png", "--image", "/b.jpg"
+    ]
+
+
+def test_copilot_runner_get_cmd():
+    runner = CopilotRunner()
+    cmd = runner.get_cmd()
+    assert cmd[0] == "copilot"
+
+
+def test_opencode_runner_get_cmd():
+    from workflow import OpencodeRunner
+    runner = OpencodeRunner()
+    assert runner.get_cmd() == ["opencode", "run"]
+    assert runner.get_cmd(image_paths=["/x.png"]) == ["opencode", "run", "-f", "/x.png"]
+
+
+# --- _write_last_failed_command Tests ---
+
+def test_write_last_failed_command(tmp_path):
+    runner = GeminiRunner()
+    with patch("builtins.open", _real_open_for_tmp(tmp_path)), \
+         patch("os.chmod") as mock_chmod, \
+         patch("builtins.print"):
+        ctx = ProjectContext.__new__(ProjectContext)
+        ctx.root_dir = str(tmp_path)
+        ctx.runner = runner
+        ctx.image_paths = None
+        ctx.ignore_file = str(tmp_path / ".geminiignore")
+
+        ctx._write_last_failed_command("test prompt content", "/*\n!/docs/\n")
+
+    prompt_file = tmp_path / ".last_failed_prompt.txt"
+    script_file = tmp_path / ".last_failed_command.sh"
+    assert prompt_file.read_text() == "test prompt content"
+
+    script = script_file.read_text()
+    assert script.startswith("#!/usr/bin/env bash\n")
+    assert "gemini -y" in script
+    assert "< .last_failed_prompt.txt" in script
+    assert f"cd {str(tmp_path)!r}" in script or f"cd '{tmp_path}'" in script or f"cd {tmp_path}" in script
+    assert "# Ignore file:" in script
+    mock_chmod.assert_called_once_with(str(script_file), 0o755)
+
+
+def test_write_last_failed_command_no_ignore(tmp_path):
+    runner = ClaudeRunner()
+    with patch("builtins.open", _real_open_for_tmp(tmp_path)), \
+         patch("os.chmod"), \
+         patch("builtins.print"):
+        ctx = ProjectContext.__new__(ProjectContext)
+        ctx.root_dir = str(tmp_path)
+        ctx.runner = runner
+        ctx.image_paths = ["/img/screenshot.png"]
+        ctx.ignore_file = str(tmp_path / ".claudeignore")
+
+        ctx._write_last_failed_command("prompt here", "")
+
+    script = (tmp_path / ".last_failed_command.sh").read_text()
+    assert "claude" in script
+    assert "--image" in script
+    assert "# Ignore file:" not in script
+
+
+def test_run_ai_writes_last_failed_on_failure(tmp_path):
+    runner = GeminiRunner()
+    mock_result = MagicMock()
+    mock_result.returncode = 1
+
+    with patch.object(runner, "run", return_value=mock_result), \
+         patch("builtins.open", _real_open_for_tmp(tmp_path)), \
+         patch("os.chmod"), \
+         patch("builtins.print"):
+        ctx = ProjectContext.__new__(ProjectContext)
+        ctx.root_dir = str(tmp_path)
+        ctx.runner = runner
+        ctx.image_paths = None
+        ctx.ignore_file = str(tmp_path / ".geminiignore")
+
+        result = ctx.run_ai("my prompt", "ignore stuff")
+
+    assert result.returncode == 1
+    assert (tmp_path / ".last_failed_command.sh").exists()
+    assert (tmp_path / ".last_failed_prompt.txt").exists()
+
+
+def test_run_ai_no_failed_file_on_success(tmp_path):
+    runner = GeminiRunner()
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+
+    with patch.object(runner, "run", return_value=mock_result), \
+         patch("builtins.print"):
+        ctx = ProjectContext.__new__(ProjectContext)
+        ctx.root_dir = str(tmp_path)
+        ctx.runner = runner
+        ctx.image_paths = None
+        ctx.ignore_file = str(tmp_path / ".geminiignore")
+
+        result = ctx.run_ai("my prompt", "ignore stuff")
+
+    assert result.returncode == 0
+    assert not (tmp_path / ".last_failed_command.sh").exists()
+
+
+def _real_open_for_tmp(tmp_path):
+    """Return an open wrapper that allows real writes to tmp_path only."""
+    import builtins
+    _real = builtins.open.__wrapped__ if hasattr(builtins.open, '__wrapped__') else builtins.open
+    # In test context, builtins.open may be the guarded version from conftest
+    # We need the actual open for tmp_path writes
+    import io
+    _actual_open = io.open
+
+    def _open(file, mode="r", *args, **kwargs):
+        path = os.path.abspath(str(file))
+        if path.startswith(str(tmp_path)):
+            return _actual_open(file, mode, *args, **kwargs)
+        return _actual_open(file, mode, *args, **kwargs)
+    return _open
