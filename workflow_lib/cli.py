@@ -105,22 +105,6 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     # Copy templates
     import shutil
-    # Copy input directory to project root
-    input_template_dir = os.path.join(templates_dir, "input")
-    input_dst_dir = os.path.join(ROOT_DIR, "input")
-    if os.path.isdir(input_template_dir):
-        os.makedirs(input_dst_dir, exist_ok=True)
-        for name in os.listdir(input_template_dir):
-            src = os.path.join(input_template_dir, name)
-            dst = os.path.join(input_dst_dir, name)
-            if not os.path.isfile(src):
-                continue
-            if os.path.exists(dst):
-                print(f"Already exists, skipping: {dst}")
-                continue
-            shutil.copy2(src, dst)
-            print(f"Copied: {src} -> {dst}")
-
     for name in [".agent", "do.py", "ci.py"]:
         src = os.path.join(templates_dir, name)
         dst = os.path.join(ROOT_DIR, name)
@@ -222,71 +206,68 @@ def main() -> None:
     every supported command, then calls the matching handler function from
     the ``commands`` dispatch table.
     """
-    # Shared flags available to all subcommands
-    shared = argparse.ArgumentParser(add_help=False)
-    shared.add_argument("--backend", choices=["gemini", "claude", "opencode", "copilot"], default="gemini", help="AI CLI backend to use (default: gemini)")
-
     parser = argparse.ArgumentParser(description="AI Project Planning and Execution Workflow")
+    parser.add_argument("--backend", choices=["gemini", "claude", "opencode", "copilot"], default="gemini", help="AI CLI backend to use (default: gemini)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # setup
-    sub.add_parser("setup", parents=[shared], help="Create virtualenv, install dependencies, and copy project templates")
+    sub.add_parser("setup", help="Create virtualenv, install dependencies, and copy project templates")
 
     # plan
-    p_plan = sub.add_parser("plan", parents=[shared], help="Multi-phase document generation orchestrator")
+    p_plan = sub.add_parser("plan", help="Multi-phase document generation orchestrator")
     p_plan.add_argument("--phase", default=None, help="Start from a specific phase, e.g. '4-merge'")
     p_plan.add_argument("--jobs", type=int, default=1, help="Maximum number of parallel AI agents/jobs")
     p_plan.add_argument("--force", action="store_true", help="Force re-run of the specified phase")
 
     # run
-    p_run = sub.add_parser("run", parents=[shared], help="Parallel development workflow orchestrator")
+    p_run = sub.add_parser("run", help="Parallel development workflow orchestrator")
     p_run.add_argument("--jobs", type=int, default=1, help="Number of parallel implementation agents")
     p_run.add_argument("--presubmit-cmd", type=str, default="./do presubmit", help="Command to evaluate correctness")
 
     # replan commands
-    sub.add_parser("status", parents=[shared], help="Show plan and execution status")
-    sub.add_parser("validate", parents=[shared], help="Run all verification checks")
+    sub.add_parser("status", help="Show plan and execution status")
+    sub.add_parser("validate", help="Run all verification checks")
 
-    p_block = sub.add_parser("block", parents=[shared], help="Mark a task as blocked")
+    p_block = sub.add_parser("block", help="Mark a task as blocked")
     p_block.add_argument("task", help="Task path")
     p_block.add_argument("--reason", required=True, help="Reason for blocking")
     p_block.add_argument("--dry-run", action="store_true")
 
-    p_unblock = sub.add_parser("unblock", parents=[shared], help="Unblock a task")
+    p_unblock = sub.add_parser("unblock", help="Unblock a task")
     p_unblock.add_argument("task", help="Task path")
     p_unblock.add_argument("--dry-run", action="store_true")
 
-    p_remove = sub.add_parser("remove", parents=[shared], help="Remove a task and update DAG")
+    p_remove = sub.add_parser("remove", help="Remove a task and update DAG")
     p_remove.add_argument("task", help="Task path")
     p_remove.add_argument("--dry-run", action="store_true")
 
-    p_add = sub.add_parser("add", parents=[shared], help="AI-generate a new task")
+    p_add = sub.add_parser("add", help="AI-generate a new task")
     p_add.add_argument("phase_id", help="Phase (e.g., phase_1)")
     p_add.add_argument("sub_epic", help="Sub-epic directory name")
     p_add.add_argument("--desc", required=True, help="Description of the task to generate")
     p_add.add_argument("--dry-run", action="store_true")
 
-    p_mod_req = sub.add_parser("modify-req", parents=[shared], help="Modify requirements.md")
+    p_mod_req = sub.add_parser("modify-req", help="Modify requirements.md")
     mg = p_mod_req.add_mutually_exclusive_group(required=True)
     mg.add_argument("--add", dest="add_req", metavar="DESC", help="Add a requirement (opens editor)")
     mg.add_argument("--remove", dest="remove_req", metavar="REQ_ID", help="Remove a requirement by ID")
     mg.add_argument("--edit", dest="edit_req", action="store_true", help="Open requirements.md in editor")
     p_mod_req.add_argument("--dry-run", action="store_true")
 
-    p_regen_dag = sub.add_parser("regen-dag", parents=[shared], help="Rebuild DAG for a phase")
+    p_regen_dag = sub.add_parser("regen-dag", help="Rebuild DAG for a phase")
     p_regen_dag.add_argument("phase_id", help="Phase (e.g., phase_1)")
     p_regen_dag.add_argument("--dry-run", action="store_true")
 
-    p_regen_tasks = sub.add_parser("regen-tasks", parents=[shared], help="Regenerate tasks for a phase/sub-epic")
+    p_regen_tasks = sub.add_parser("regen-tasks", help="Regenerate tasks for a phase/sub-epic")
     p_regen_tasks.add_argument("phase_id", help="Phase (e.g., phase_1)")
     p_regen_tasks.add_argument("--sub-epic", help="Target sub-epic (regenerates only this one)")
     p_regen_tasks.add_argument("--force", action="store_true", help="Override safety checks")
     p_regen_tasks.add_argument("--dry-run", action="store_true")
 
-    p_regen_comp = sub.add_parser("regen-components", parents=[shared], help="Regenerate shared_components.md")
+    p_regen_comp = sub.add_parser("regen-components", help="Regenerate shared_components.md")
     p_regen_comp.add_argument("--dry-run", action="store_true")
 
-    p_cascade = sub.add_parser("cascade", parents=[shared], help="After manual edits, rescan + rebuild DAG + validate")
+    p_cascade = sub.add_parser("cascade", help="After manual edits, rescan + rebuild DAG + validate")
     p_cascade.add_argument("phase_id", help="Phase (e.g., phase_1)")
     p_cascade.add_argument("--dry-run", action="store_true")
 

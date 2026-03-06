@@ -1,0 +1,30 @@
+{
+    "gitlab": {
+        "project_id": "mrwilson/vibekek",
+        "host": "http://gitlab.lan",
+        "branch": "main",
+        "rag_job_name": "build-rag-index"
+    },
+    "rag": {
+        "skip_dirs": [
+            ".git",
+            "target",
+            "node_modules",
+            ".venv",
+            "dist",
+            "__pycache__"
+        ],
+        "sources": [
+            {
+                "dirs": [
+                    "./**"
+                ],
+                "extensions": [
+                    ".md",
+                    ".py"
+                ],
+                "label": "codebase"
+            }
+        ]
+    }
+}

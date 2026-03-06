@@ -1,0 +1,6 @@
+llama-index>=0.12
+llama-index-embeddings-huggingface
+llama-index-vector-stores-faiss
+faiss-cpu
+fastmcp
+psutil
