@@ -1044,12 +1044,16 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
                     if failed_tasks:
                         break
                     
-                    if len(state["completed_tasks"]) == len(master_dag):
+                    blocked = load_blocked_tasks()
+                    non_blocked_total = len([t for t in master_dag if t not in blocked])
+                    if len(state["completed_tasks"]) >= non_blocked_total:
                         print("\n=> All implementation tasks completed successfully!")
+                        if blocked:
+                            print(f"   ({len(blocked)} blocked task(s) skipped)")
                         break
                     else:
                         print("\n[!] FATAL: DAG deadlock or unrecoverable error. No tasks running and none ready.")
-                        print(f"    Completed: {len(state['completed_tasks'])} / {len(master_dag)}")
+                        print(f"    Completed: {len(state['completed_tasks'])} / {non_blocked_total} (non-blocked)")
                         os._exit(1)
             
             # Wait for at least one future to complete

@@ -65,12 +65,12 @@ STUB_PROMPT = "Write {target_path} based on {description_ctx}."
 def _create_tools_layout(root: Path) -> Path:
     """Create the minimal .tools/ directory structure inside *root*."""
     tools = root / ".tools"
-    (tools / "input").mkdir(parents=True)
+    (root / "input").mkdir(parents=True)
     (tools / "prompts").mkdir(parents=True)
     (tools / "templates").mkdir(parents=True)
 
-    # project description
-    (tools / "input" / "project-description.md").write_text(
+    # project description (in root/input/, matching INPUT_DIR)
+    (root / "input" / "project-description.md").write_text(
         "# Test Project\n\nA simple test project for E2E testing.\n"
     )
 
@@ -698,7 +698,8 @@ class TestImplementationE2E:
              patch("workflow_lib.executor.save_workflow_state"), \
              patch("subprocess.run",
                    return_value=MagicMock(returncode=0, stdout="",
-                                          stderr="")):
+                                          stderr="")), \
+             patch("builtins.input", return_value="c"):
             execute_dag(root, dag, state, jobs=2,
                         presubmit_cmd="echo ok", backend="gemini")
 
@@ -726,7 +727,8 @@ class TestImplementationE2E:
              patch("workflow_lib.executor.process_task") as mock_proc, \
              patch("subprocess.run",
                    return_value=MagicMock(returncode=0, stdout="",
-                                          stderr="")):
+                                          stderr="")), \
+             patch("builtins.input", return_value="c"):
             execute_dag(root, {}, state, jobs=1,
                         presubmit_cmd="echo ok", backend="gemini")
 
@@ -769,7 +771,8 @@ class TestImplementationE2E:
              patch("workflow_lib.executor.save_workflow_state"), \
              patch("subprocess.run",
                    return_value=MagicMock(returncode=0, stdout="",
-                                          stderr="")):
+                                          stderr="")), \
+             patch("builtins.input", return_value="c"):
             execute_dag(root, dag, state, jobs=4,
                         presubmit_cmd="echo ok", backend="gemini")
 

@@ -2453,3 +2453,103 @@ class TestConfigCoverage:
             from workflow_lib.config import load_config
             result = load_config()
         assert result.get("serena") is True
+
+
+class TestGetProjectDescriptionAndImages:
+    """Tests for get_project_context and get_project_images."""
+
+    def test_get_project_context_with_files(self, tmp_path):
+        from workflow_lib.executor import get_project_context
+        desc_file = tmp_path / "project-description.md"
+        desc_file.write_text("# My Project\nDescription here.")
+        with patch("workflow_lib.executor.INPUT_DIR", str(tmp_path)):
+            result = get_project_context()
+        assert "My Project" in result
+        assert '<file name="project-description.md">' in result
+
+    def test_get_project_context_missing_dir(self):
+        from workflow_lib.executor import get_project_context
+        with patch("workflow_lib.executor.INPUT_DIR", "/nonexistent/path"):
+            assert get_project_context() == ""
+
+    def test_get_project_context_empty_dir(self, tmp_path):
+        from workflow_lib.executor import get_project_context
+        with patch("workflow_lib.executor.INPUT_DIR", str(tmp_path)):
+            assert get_project_context() == ""
+
+    def test_get_project_images_missing_dir(self):
+        from workflow_lib.executor import get_project_images
+        with patch("workflow_lib.executor.INPUT_DIR", "/nonexistent/path"):
+            assert get_project_images() == []
+
+    def test_get_project_images_with_images(self, tmp_path):
+        from workflow_lib.executor import get_project_images
+        (tmp_path / "screenshot.png").write_bytes(b"\x89PNG")
+        (tmp_path / "readme.md").write_text("not an image")
+        with patch("workflow_lib.executor.INPUT_DIR", str(tmp_path)):
+            result = get_project_images()
+        assert len(result) == 1
+        assert result[0].endswith("screenshot.png")
+
+    def test_get_project_context_excludes_images(self, tmp_path):
+        from workflow_lib.executor import get_project_context
+        (tmp_path / "desc.md").write_text("hello")
+        (tmp_path / "photo.png").write_bytes(b"\x89PNG")
+        with patch("workflow_lib.executor.INPUT_DIR", str(tmp_path)):
+            result = get_project_context()
+        assert "hello" in result
+        assert "photo.png" not in result
+
+    def test_get_project_images_no_images(self, tmp_path):
+        from workflow_lib.executor import get_project_images
+        (tmp_path / "readme.md").write_text("text only")
+        with patch("workflow_lib.executor.INPUT_DIR", str(tmp_path)):
+            assert get_project_images() == []
+
+    def test_get_project_context_multiple_files(self, tmp_path):
+        from workflow_lib.executor import get_project_context
+        (tmp_path / "a.md").write_text("file a")
+        (tmp_path / "b.txt").write_text("file b")
+        with patch("workflow_lib.executor.INPUT_DIR", str(tmp_path)):
+            result = get_project_context()
+        assert "file a" in result
+        assert "file b" in result
+        assert result.index("a.md") < result.index("b.txt")
+
+
+class TestRunnerImagePaths:
+    """Tests for runner image_paths handling."""
+
+    def test_gemini_runner_with_images(self):
+        from workflow_lib.runners import GeminiRunner
+        runner = GeminiRunner()
+        mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            runner.run("prompt", "/tmp", "ignore", "content",
+                       image_paths=["/img/a.png", "/img/b.jpg"])
+        call_args = mock_run.call_args
+        # Images should be appended as @refs in the prompt
+        assert "@/img/a.png" in call_args.kwargs.get("input", call_args[1].get("input", ""))
+
+    def test_claude_runner_with_images(self):
+        from workflow_lib.runners import ClaudeRunner
+        runner = ClaudeRunner()
+        mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            runner.run("prompt", "/tmp", ".claudeignore", "content",
+                       image_paths=["/img/a.png"])
+        cmd = mock_run.call_args[0][0]
+        assert "--image" in cmd
+        assert "/img/a.png" in cmd
+
+    def test_opencode_runner_run(self):
+        from workflow_lib.runners import OpencodeRunner
+        runner = OpencodeRunner()
+        mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            runner.run("prompt", "/tmp", ".opencodeignore", "content",
+                       image_paths=["/img/a.png"])
+        cmd = mock_run.call_args[0][0]
+        assert "opencode" in cmd[0]
+        assert "-f" in cmd
+        assert "/img/a.png" in cmd

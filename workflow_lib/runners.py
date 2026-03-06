@@ -206,9 +206,9 @@ class OpencodeRunner(AIRunner):
         ignore_file: str,
         image_paths: Optional[List[str]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
-        """Run ``opencode --print --yes`` with *full_prompt* on stdin.
+        """Run ``opencode run`` with *full_prompt* on stdin.
 
-        Images are delivered via ``--image <path>`` flags appended to the
+        Images are delivered via ``-f <path>`` flags appended to the
         command, one flag pair per image.
 
         :param cwd: Working directory for the subprocess.
@@ -224,9 +224,9 @@ class OpencodeRunner(AIRunner):
         :returns: Completed process with ``returncode``, ``stdout``, ``stderr``.
         :rtype: subprocess.CompletedProcess
         """
-        cmd = ["opencode", "--print", "--yes"]
+        cmd = ["opencode", "run"]
         for path in (image_paths or []):
-            cmd += ["--image", path]
+            cmd += ["-f", path]
         return subprocess.run(
             cmd,
             input=full_prompt,
