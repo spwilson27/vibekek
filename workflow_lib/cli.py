@@ -105,6 +105,22 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     # Copy templates
     import shutil
+    # Copy input directory to project root
+    input_template_dir = os.path.join(templates_dir, "input")
+    input_dst_dir = os.path.join(ROOT_DIR, "input")
+    if os.path.isdir(input_template_dir):
+        os.makedirs(input_dst_dir, exist_ok=True)
+        for name in os.listdir(input_template_dir):
+            src = os.path.join(input_template_dir, name)
+            dst = os.path.join(input_dst_dir, name)
+            if not os.path.isfile(src):
+                continue
+            if os.path.exists(dst):
+                print(f"Already exists, skipping: {dst}")
+                continue
+            shutil.copy2(src, dst)
+            print(f"Copied: {src} -> {dst}")
+
     for name in [".agent", "do.py", "ci.py"]:
         src = os.path.join(templates_dir, name)
         dst = os.path.join(ROOT_DIR, name)
