@@ -1051,16 +1051,16 @@ class TestPhase3B:
 
     def test_scope_creep_found_continue(self):
         ctx = _mock_ctx()
+        ctx.prompt_input.return_value = "c"
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data="scope creep found")), \
-             patch("builtins.input", return_value="c"):
+             patch("builtins.open", mock_open(read_data="scope creep found")):
             Phase3BAdversarialReview().execute(ctx)
 
     def test_scope_creep_quit(self):
         ctx = _mock_ctx()
+        ctx.prompt_input.return_value = "q"
         with patch("os.path.exists", return_value=True), \
              patch("builtins.open", mock_open(read_data="scope creep found")), \
-             patch("builtins.input", return_value="q"), \
              pytest.raises(SystemExit):
             Phase3BAdversarialReview().execute(ctx)
 
@@ -1140,19 +1140,19 @@ class TestPhase4BScopeGate:
 
     def test_continue_action(self):
         ctx = _mock_ctx()
+        ctx.prompt_input.return_value = "c"
         req_content = "[REQ-001] requirement"
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data=req_content)), \
-             patch("builtins.input", return_value="c"):
+             patch("builtins.open", mock_open(read_data=req_content)):
             Phase4BScopeGate().execute(ctx)
         assert ctx.state.get("scope_gate_passed")
 
     def test_quit_action_exits(self):
         ctx = _mock_ctx()
+        ctx.prompt_input.return_value = "q"
         req_content = "[REQ-001] requirement"
         with patch("os.path.exists", return_value=True), \
              patch("builtins.open", mock_open(read_data=req_content)), \
-             patch("builtins.input", return_value="q"), \
              pytest.raises(SystemExit):
             Phase4BScopeGate().execute(ctx)
 

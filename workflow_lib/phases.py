@@ -366,8 +366,12 @@ class Phase3BAdversarialReview(BasePhase):
         print(f"   Review saved to: {target_path}")
 
         if scope_creep_count > 0 or needs_clarification_count > 0:
-            print(f"\n   Review the adversarial review report before continuing.")
-            action = input("   [c]ontinue / [e]dit specs / [q]uit: ").strip().lower()
+            action = ctx.prompt_input(
+                f"Adversarial review found {scope_creep_count} SCOPE CREEP and "
+                f"{needs_clarification_count} NEEDS CLARIFICATION issues.\n"
+                f"  Review: {target_path}\n"
+                f"  [c]ontinue / [e]dit specs / [q]uit"
+            ).strip().lower()
             if action == 'q':
                 sys.exit(0)
             elif action == 'e':
@@ -540,17 +544,18 @@ class Phase4BScopeGate(BasePhase):
         unique_reqs = set(req_ids)
         line_count = len(req_content.splitlines())
 
-        print("\n" + "=" * 70)
-        print("  SCOPE GATE — Human Review Required")
-        print("=" * 70)
-        print(f"\n  Total unique requirements: {len(unique_reqs)}")
-        print(f"  Requirements document: {line_count} lines")
-        print(f"\n  Original description: {len(ctx.description_ctx.splitlines())} lines")
-        print(f"\n  Review 'requirements.md' to check for scope inflation.")
-        print(f"  You may edit the file to remove or defer requirements.\n")
+        summary = (
+            f"SCOPE GATE — Human Review Required\n"
+            f"  Total unique requirements: {len(unique_reqs)}\n"
+            f"  Requirements document: {line_count} lines\n"
+            f"  Original description: {len(ctx.description_ctx.splitlines())} lines\n"
+            f"  Review 'requirements.md' to check for scope inflation.\n"
+            f"  You may edit the file to remove or defer requirements.\n"
+            f"  [c]ontinue / [e]dit (opens $EDITOR) / [q]uit"
+        )
 
         while True:
-            action = input("  [c]ontinue / [e]dit (opens $EDITOR) / [q]uit: ").strip().lower()
+            action = ctx.prompt_input(summary).strip().lower()
             if action == 'q':
                 print("  Aborting.")
                 sys.exit(0)

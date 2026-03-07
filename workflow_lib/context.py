@@ -64,6 +64,24 @@ class ProjectContext:
         self.image_paths = self._load_images()
         self.description_ctx = self._load_description()
 
+    def prompt_input(self, message: str) -> str:
+        """Prompt for user input, using the dashboard if available.
+
+        When a dashboard is active this pauses the live display and renders
+        a prominent ``INPUT REQUIRED`` banner so the user notices the prompt.
+
+        :param message: The prompt text to display.
+        :returns: The user's input string.
+        """
+        if self.dashboard is not None:
+            return self.dashboard.prompt_input(message)
+        print("\n" + "!" * 70)
+        print("  ⚠  INPUT REQUIRED")
+        print("!" * 70)
+        print(f"  {message}")
+        print("!" * 70)
+        return input("> ")
+
     def _load_state(self) -> Dict[str, Any]:
         """Load planning state from disk, merging with safe defaults.
 

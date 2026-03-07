@@ -54,7 +54,7 @@ class Orchestrator:
         self.auto_retries = auto_retries or 0
         self.ctx.agent_timeout = timeout if timeout > 0 else None
         self.shutdown_requested = False
-        self._prev_sigint_handler = None
+        self._prev_sigint_handler: Any = None
 
     def _log(self, message: str) -> None:
         if self.dashboard:
