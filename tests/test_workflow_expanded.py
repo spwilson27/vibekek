@@ -381,9 +381,9 @@ def test_gemini_runner_get_cmd():
 
 def test_claude_runner_get_cmd():
     runner = ClaudeRunner()
-    assert runner.get_cmd() == ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
+    assert runner.get_cmd() == ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose"]
     assert runner.get_cmd(image_paths=["/a.png", "/b.jpg"]) == [
-        "claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose", "--image", "/a.png", "--image", "/b.jpg"
+        "claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--image", "/a.png", "--image", "/b.jpg"
     ]
 
 

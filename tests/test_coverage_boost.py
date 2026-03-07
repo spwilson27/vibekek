@@ -2886,7 +2886,7 @@ class TestRunnerStreaming:
         """Return a mock Popen that yields *lines* from stdout."""
         import io
         proc = MagicMock()
-        proc.stdout = iter(line + "\n" for line in lines)
+        proc.stdout = io.StringIO("".join(line + "\n" for line in lines))
         proc.stderr = io.StringIO("err output")
         proc.returncode = returncode
         proc.stdin = MagicMock()
@@ -3466,7 +3466,7 @@ class TestRunStreamingJson:
     def _fake_popen(self, lines, returncode=0):
         import io
         proc = MagicMock()
-        proc.stdout = iter(line + "\n" for line in lines)
+        proc.stdout = io.StringIO("".join(line + "\n" for line in lines))
         proc.stderr = io.StringIO("")
         proc.returncode = returncode
         proc.stdin = MagicMock()
@@ -3533,7 +3533,7 @@ class TestClineRunnerCoverage:
         import io
         r = ClineRunner()
         proc = MagicMock()
-        proc.stdout = iter(["output\n"])
+        proc.stdout = io.StringIO("output\n")
         proc.stderr = io.StringIO("")
         proc.returncode = 0
         proc.stdin = MagicMock()
@@ -3570,7 +3570,7 @@ class TestAiderRunnerCoverage:
         import io
         r = AiderRunner()
         proc = MagicMock()
-        proc.stdout = iter(["output\n"])
+        proc.stdout = io.StringIO("output\n")
         proc.stderr = io.StringIO("")
         proc.returncode = 0
         proc.stdin = MagicMock()
@@ -3608,7 +3608,7 @@ class TestCodexRunnerCoverage:
         import io
         r = CodexRunner()
         proc = MagicMock()
-        proc.stdout = iter(["output\n"])
+        proc.stdout = io.StringIO("output\n")
         proc.stderr = io.StringIO("")
         proc.returncode = 0
         proc.stdin = MagicMock()
@@ -3637,7 +3637,7 @@ class TestCopilotRunnerCoverage:
         import io
         r = CopilotRunner()
         proc = MagicMock()
-        proc.stdout = iter(["output\n"])
+        proc.stdout = io.StringIO("output\n")
         proc.stderr = io.StringIO("")
         proc.returncode = 0
         proc.stdin = MagicMock()

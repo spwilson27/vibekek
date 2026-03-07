@@ -25,6 +25,10 @@ def parse_stream_json_line(raw: str) -> Optional[str]:
 
     Both ``claude`` and ``qwen`` CLIs emit the same JSONL format when
     ``--output-format stream-json`` is used.
+
+    For ``stream_event`` messages (emitted with ``--include-partial-messages``),
+    returns the text delta directly so the caller can accumulate tokens into
+    lines.
     """
     import json as _json
     stripped = raw.strip()
@@ -36,6 +40,18 @@ def parse_stream_json_line(raw: str) -> Optional[str]:
         return None
 
     msg_type = obj.get("type")
+
+    # Incremental streaming tokens (--include-partial-messages)
+    if msg_type == "stream_event":
+        event = obj.get("event", {})
+        event_type = event.get("type")
+        if event_type == "content_block_delta":
+            delta = event.get("delta", {})
+            if delta.get("type") == "text_delta":
+                return delta.get("text", "")
+            elif delta.get("type") == "input_json_delta":
+                return delta.get("partial_json", "")
+        return None
 
     if msg_type == "assistant":
         content = obj.get("message", {}).get("content", [])
@@ -150,14 +166,23 @@ class AIRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            bufsize=1,
             cwd=cwd,
             env=self._env(),
         )
         stdout_lines: List[str] = []
 
+        if use_stdin:
+            assert proc.stdin is not None
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+
         def _read_stdout() -> None:
             assert proc.stdout is not None
-            for line in proc.stdout:
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    break
                 stripped = line.rstrip("\n")
                 stdout_lines.append(stripped)
                 if stripped.strip():
@@ -165,11 +190,6 @@ class AIRunner:
 
         reader = threading.Thread(target=_read_stdout, daemon=True)
         reader.start()
-
-        if use_stdin:
-            assert proc.stdin is not None
-            proc.stdin.write(prompt)
-            proc.stdin.close()
 
         try:
             reader.join(timeout=timeout)
@@ -216,28 +236,84 @@ class AIRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            bufsize=1,
             cwd=cwd,
             env=self._env(),
         )
         result_text: List[str] = []
 
+        if use_stdin:
+            assert proc.stdin is not None
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+
         def _read_stdout() -> None:
             assert proc.stdout is not None
-            for raw_line in proc.stdout:
+            import json as _json
+            # Buffer for accumulating streaming token deltas into lines.
+            # ``has_deltas`` is set once we see any stream_event and never
+            # cleared — it tells us the CLI is sending partial messages so
+            # the final ``assistant`` and ``result`` messages are duplicates.
+            token_buf = ""
+            has_deltas = False
+            while True:
+                raw_line = proc.stdout.readline()
+                if not raw_line:
+                    break
                 parsed = parse_stream_json_line(raw_line)
-                if parsed:
+                if parsed is None:
+                    continue
+
+                # Determine message type from the raw JSON
+                stripped = raw_line.strip()
+                try:
+                    obj = _json.loads(stripped)
+                except _json.JSONDecodeError:
+                    obj = {}
+                msg_type = obj.get("type")
+
+                if msg_type == "stream_event":
+                    has_deltas = True
+                    token_buf += parsed
+                    # Emit complete lines from the buffer
+                    while "\n" in token_buf:
+                        line, token_buf = token_buf.split("\n", 1)
+                        if line.strip():
+                            result_text.append(line)
+                            on_line(line)
+                elif msg_type == "assistant":
+                    # Flush any remaining token buffer
+                    if token_buf.strip():
+                        result_text.append(token_buf.strip())
+                        on_line(token_buf.strip())
+                    token_buf = ""
+                    if has_deltas:
+                        # Already streamed via deltas — skip duplicate
+                        continue
+                    result_text.append(parsed)
+                    for sub in parsed.splitlines():
+                        if sub.strip():
+                            on_line(sub)
+                elif msg_type == "result":
+                    result_text.append(parsed)
+                    if not has_deltas:
+                        for sub in parsed.splitlines():
+                            if sub.strip():
+                                on_line(sub)
+                else:
+                    # user messages (tool results), etc.
                     result_text.append(parsed)
                     for sub in parsed.splitlines():
                         if sub.strip():
                             on_line(sub)
 
+            # Flush any trailing token buffer
+            if token_buf.strip():
+                result_text.append(token_buf.strip())
+                on_line(token_buf.strip())
+
         reader = threading.Thread(target=_read_stdout, daemon=True)
         reader.start()
-
-        if use_stdin:
-            assert proc.stdin is not None
-            proc.stdin.write(prompt)
-            proc.stdin.close()
 
         try:
             reader.join(timeout=timeout)
@@ -394,7 +470,7 @@ class ClaudeRunner(AIRunner):
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
-        cmd = ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
+        cmd = ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose"]
         if self.model:
             cmd += ["--model", self.model]
         for path in (image_paths or []):
@@ -540,7 +616,7 @@ class QwenRunner(SessionResumableRunner):
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
-        cmd = ["qwen", "-y", "--output-format", "stream-json", "-p", "-"]
+        cmd = ["qwen", "-y", "--output-format", "stream-json", "--include-partial-messages"]
         if self.model:
             cmd += ["-m", self.model]
         if session_id:
