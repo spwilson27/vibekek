@@ -65,7 +65,7 @@ from .executor import execute_dag, Logger, signal_handler
 from .dashboard import make_dashboard, _DashboardStream
 from .config import get_serena_enabled, get_config_defaults
 from .state import load_workflow_state, load_dags, get_tasks_dir
-from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner
+from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner, QwenRunner
 
 
 def cmd_setup(args: argparse.Namespace) -> None:
@@ -243,7 +243,7 @@ def main() -> None:
     # Defaults are None so we can distinguish "not passed" from "passed".
     # Actual defaults are layered: hardcoded -> .workflow.jsonc -> CLI.
     shared = argparse.ArgumentParser(add_help=False)
-    shared.add_argument("--backend", choices=["gemini", "claude", "opencode", "copilot", "cline", "aider", "codex"], default=None, help="AI CLI backend to use (default: gemini)")
+    shared.add_argument("--backend", choices=["gemini", "claude", "opencode", "copilot", "cline", "aider", "codex", "qwen"], default=None, help="AI CLI backend to use (default: gemini)")
     shared.add_argument("--model", default=None, help="Model name to pass through to the AI CLI (e.g. 'claude-sonnet-4-5-20250514')")
     shared.add_argument("--ignore-sandbox", action="store_true", default=None, help="Disable sandbox violation checks")
 

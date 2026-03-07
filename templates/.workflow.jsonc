@@ -4,7 +4,7 @@
   // it after each successful merge so agents have up-to-date code search.
   "serena": true,
 
-  // AI CLI backend: "gemini", "claude", "opencode", "copilot", "cline", "aider", or "codex"
+  // AI CLI backend: "gemini", "claude", "opencode", "copilot", "cline", "aider", "codex", or "qwen"
   // "backend": "gemini",
 
   // Model name passed through to the AI CLI via --model (optional).

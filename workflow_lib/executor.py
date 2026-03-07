@@ -233,9 +233,12 @@ def run_ai_command(
             cmd += ["-i", path]
         cmd.append(prompt)
         prompt = ""  # prompt is passed as arg, not stdin
+    elif backend == "qwen":
+        cmd = ["qwen", "-y", "--output-format", "stream-json", prompt]
+        prompt = ""  # prompt is passed as arg, not stdin
 
     if model:
-        model_flag = "-m" if backend in ("cline", "codex") else "--model"
+        model_flag = "-m" if backend in ("cline", "codex", "qwen") else "--model"
         cmd += [model_flag, model]
 
     use_stdin = bool(prompt)
@@ -268,7 +271,19 @@ def run_ai_command(
         for line in iter(process.stdout.readline, ""):
             if line:
                 stripped = line.rstrip("\n")
-                if on_line:
+                if backend == "qwen":
+                    from .runners import QwenRunner
+                    parsed = QwenRunner._parse_stream_line(stripped)
+                    if not parsed:
+                        continue
+                    for sub in parsed.splitlines():
+                        if sub.strip():
+                            if on_line:
+                                on_line(sub)
+                            else:
+                                print(f"{prefix}{sub}")
+                                sys.stdout.flush()
+                elif on_line:
                     on_line(stripped)
                 else:
                     print(f"{prefix}{stripped}")

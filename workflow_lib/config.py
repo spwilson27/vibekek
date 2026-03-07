@@ -75,7 +75,7 @@ def get_config_defaults() -> Dict[str, Any]:
     Supported keys (all optional):
 
     * ``backend`` (str) — AI CLI backend (``"gemini"``, ``"claude"``,
-      ``"opencode"``, ``"copilot"``, ``"cline"``, ``"aider"``, ``"codex"``).
+      ``"opencode"``, ``"copilot"``, ``"cline"``, ``"aider"``, ``"codex"``, ``"qwen"``).
     * ``model`` (str) — Model name passed through to the AI CLI.
     * ``ignore_sandbox`` (bool) — Disable sandbox violation checks.
     * ``timeout`` (int) — Timeout in seconds per AI agent invocation.
