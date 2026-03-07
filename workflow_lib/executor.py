@@ -221,9 +221,12 @@ def run_ai_command(
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(prompt)
         cmd = ["copilot", "--model", "gpt-5-mini", "-p", f"Follow the instructions in @{tmp_file_name}", "--yolo"]
+    elif backend == "cline":
+        cmd = ["cline", "--yolo", prompt]
+        prompt = ""  # prompt is passed as arg, not stdin
 
     if model:
-        cmd += ["--model", model]
+        cmd += ["--model" if backend != "cline" else "-m", model]
 
     process = subprocess.Popen(
         cmd,

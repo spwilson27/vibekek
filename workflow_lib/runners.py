@@ -242,6 +242,37 @@ class OpencodeRunner(AIRunner):
         return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
 
 
+class ClineRunner(AIRunner):
+    """Runner for the ``cline`` CLI.
+
+    Passes the prompt as a positional argument to ``cline --yolo``.
+    """
+
+    def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
+        cmd = ["cline", "--yolo"]
+        if self.model:
+            cmd += ["-m", self.model]
+        return cmd
+
+    def run(
+        self,
+        cwd: str,
+        full_prompt: str,
+        image_paths: Optional[List[str]] = None,
+        on_line: Optional[Callable[[str], None]] = None,
+        timeout: Optional[int] = None,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Run ``cline --yolo`` with *full_prompt* as the prompt argument.
+
+        :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
+        """
+        cmd = self.get_cmd(image_paths)
+        cmd.append(full_prompt)
+        if on_line is not None:
+            return self._run_streaming(cmd, "", cwd, on_line, timeout=timeout)
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
+
+
 class CopilotRunner(AIRunner):
     """Runner for the GitHub Copilot CLI.
 
