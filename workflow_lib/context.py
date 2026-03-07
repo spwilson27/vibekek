@@ -6,8 +6,7 @@ phase.  It owns:
 * Directory paths derived from the project root.
 * The AI runner (Gemini, Claude, or Copilot) used to call external CLI tools.
 * Persistent planning state read from / written to ``GEN_STATE_FILE``.
-* Helper utilities for prompt formatting, workspace snapshotting, and
-  sandbox enforcement.
+* Helper utilities for prompt formatting and workspace snapshotting.
 """
 
 import os
@@ -41,7 +40,6 @@ class ProjectContext:
     def __init__(self, root_dir: str, runner: Optional[AIRunner] = None, jobs: int = 1, dashboard: Optional[Any] = None):
         self.root_dir = root_dir
         self.jobs = jobs
-        self.sandbox_dir = os.path.join(root_dir, ".sandbox")
         self.plan_dir = os.path.join(root_dir, "docs", "plan")
         self.specs_dir = os.path.join(self.plan_dir, "specs")
         self.research_dir = os.path.join(self.plan_dir, "research")
@@ -61,7 +59,6 @@ class ProjectContext:
         self.backup_ignore = self.ignore_file + ".bak"
         
         # Ensures directories exist
-        os.makedirs(self.sandbox_dir, exist_ok=True)
         os.makedirs(self.specs_dir, exist_ok=True)
         os.makedirs(self.research_dir, exist_ok=True)
         os.makedirs(self.requirements_dir, exist_ok=True)
@@ -96,7 +93,6 @@ class ProjectContext:
             "tasks_generated": [],
             "dag_completed": False,
             "dag_reviewed": False,
-            "tdd_completed": False,
         }
         if os.path.exists(self.state_file):
             with open(self.state_file, "r") as f:
@@ -312,14 +308,14 @@ class ProjectContext:
     def get_workspace_snapshot(self) -> Dict[str, float]:
         """Capture a modification-time snapshot of all workspace files.
 
-        Skips ``.git/`` and ``.sandbox/`` trees and ``.DS_Store`` files.
+        Skips ``.git/`` trees and ``.DS_Store`` files.
 
         :returns: Mapping of absolute file path to ``os.path.getmtime`` value.
         :rtype: dict
         """
         snapshot: Dict[str, float] = {}
         for root, dirs, files in os.walk(self.root_dir):
-            if ".git" in root or ".sandbox" in root:
+            if ".git" in root:
                 continue
             for file in files:
                 if file == ".DS_Store":

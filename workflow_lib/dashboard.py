@@ -21,6 +21,7 @@ Typical usage::
 from __future__ import annotations
 
 import io
+import time
 import threading
 import types
 from collections import deque
@@ -28,7 +29,7 @@ from datetime import datetime
 from typing import Deque, Dict, IO, Optional, Tuple, Type
 from zoneinfo import ZoneInfo
 
-from rich.console import Console, Group
+from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
@@ -38,7 +39,7 @@ from rich.text import Text
 
 _PST = ZoneInfo("America/Los_Angeles")
 _LOG_LINES = 30   # max lines kept in the aggregate log ring buffer
-_AGENT_LINES = 4  # max recent output lines shown per agent card
+_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
 def _now() -> str:
@@ -78,23 +79,28 @@ class Dashboard:
         self._log_file = log_file
         self._lock = threading.Lock()
         self._ring: Deque[str] = deque(maxlen=log_lines)
-        # task_id -> (command, status, lines_deque)
+        # task_id -> (command, status, lines_deque, start_time)
         # lines_deque holds (timestamp_str, text) pairs for the agent card
-        self._agents: Dict[str, Tuple[str, str, Deque[Tuple[str, str]]]] = {}
+        self._agents: Dict[str, Tuple[str, str, Deque[Tuple[str, str]], datetime]] = {}
         self._live: Optional[Live] = None
         self._console = Console(highlight=False)
+        self._spinner_idx = 0
+        self._last_spinner_time = 0.0
 
     # ------------------------------------------------------------------
     # Context manager
     # ------------------------------------------------------------------
 
+    def __rich_console__(self, console: Console, options: "ConsoleOptions") -> "RenderResult":
+        """Make Dashboard a live renderable so Rich auto-refreshes us."""
+        yield self._render()
+
     def __enter__(self) -> "Dashboard":
-        layout = self._build_layout()
         self._live = Live(
-            layout,
+            self,
             console=self._console,
-            refresh_per_second=4,
-            screen=False,
+            refresh_per_second=2,
+            screen=True,
             transient=False,
         )
         self._live.__enter__()
@@ -150,15 +156,16 @@ class Dashboard:
         :param last_line: Optional initial output line to show in the card.
         """
         with self._lock:
-            # Preserve existing log lines when updating status/stage
+            # Preserve existing log lines and start time when updating
             if task_id in self._agents:
-                _, _, lines = self._agents[task_id]
+                _, _, lines, started = self._agents[task_id]
             else:
-                lines: Deque[Tuple[str, str]] = deque(maxlen=_AGENT_LINES)
+                lines: Deque[Tuple[str, str]] = deque()
+                started = datetime.now(tz=_PST)
             short = last_line.strip()[:120] if last_line else ""
             if short:
                 lines.append((_now_short(), short))
-            self._agents[task_id] = (stage, status, lines)
+            self._agents[task_id] = (stage, status, lines, started)
         self._refresh()
 
     def update_last_line(self, task_id: str, last_line: str) -> None:
@@ -172,7 +179,7 @@ class Dashboard:
             return
         with self._lock:
             if task_id in self._agents:
-                command, status, lines = self._agents[task_id]
+                _cmd, _st, lines, _started = self._agents[task_id]
                 lines.append((_now_short(), short))
         self._refresh()
 
@@ -209,78 +216,157 @@ class Dashboard:
     # Internal rendering
     # ------------------------------------------------------------------
 
-    def _build_layout(self) -> Layout:
-        layout = Layout()
-        layout.split_column(
-            Layout(name="log",    ratio=2),
-            Layout(name="agents", ratio=1),
-        )
-        return layout
+    def _render(self) -> Group:
+        """Build the full dashboard as a single Group with dynamic sizing.
 
-    def _render_log_panel(self) -> Panel:
-        text = Text()
-        with self._lock:
-            lines = list(self._ring)
-        # Render newest lines first so they are always visible when the panel
-        # is shorter than the full ring buffer.
-        for line in reversed(lines):
-            text.append(line + "\n", style="dim")
-        return Panel(text, title="[bold]Log[/bold]", border_style="blue")
+        Layout rules:
+        - 50/50 split between log and agents panels.
+        - If agents need less than their half, log expands into the surplus.
+        - Each agent gets an equal share of the agents half.
+        - If an agent needs fewer lines than its share, the surplus is
+          redistributed evenly among the other agents.
+        """
+        term_h = self._console.size.height
+        # Reserve 2 lines for Live overhead
+        usable = max(term_h - 2, 10)
+        half = usable // 2
 
-    def _render_agents_panel(self) -> Panel:
+        now = datetime.now(tz=_PST)
+        mono = time.monotonic()
+        if mono - self._last_spinner_time >= 0.5:
+            self._spinner_idx = (self._spinner_idx + 1) % len(_SPINNER_FRAMES)
+            self._last_spinner_time = mono
+        spinner = _SPINNER_FRAMES[self._spinner_idx]
+
+        # --- Gather visible agents ---
         with self._lock:
             visible = {
-                k: v for k, v in self._agents.items()
+                k: (v[0], v[1], list(v[2]), v[3])
+                for k, v in self._agents.items()
                 if v[1] in ("running", "failed", "cloning", "merging", "queued", "waiting")
             }
 
-        if not visible:
-            return Panel(
+        # --- Compute agent allocations ---
+        # Each agent card costs: 1 header + N output lines + 1 separator (except last)
+        # Panel border costs 2 lines.
+        if visible:
+            n = len(visible)
+            # Panel border (top + bottom) = 2, separators between agents = n-1
+            chrome = 2 + max(n - 1, 0)
+            content_budget = max(half - chrome, n)  # at least 1 line per agent
+            per_agent = content_budget // n
+
+            # First pass: figure out how many content lines each agent needs
+            # (1 for header + output lines, minimum 2: header + at least 1 line)
+            agent_data = []
+            for task_id in sorted(visible):
+                stage, status, output_lines, started = visible[task_id]
+                # need = header(1) + output lines (at least 1 for "waiting...")
+                need = 1 + max(len(output_lines), 1)
+                elapsed = now - started
+                agent_data.append((task_id, stage, status, output_lines, need, started, elapsed))
+
+            # Two-pass allocation: give each agent min(need, share), redistribute surplus
+            allocs = [min(a[4], per_agent) for a in agent_data]
+            surplus = content_budget - sum(allocs)
+            # Redistribute surplus to agents that could use more
+            if surplus > 0:
+                hungry = [i for i, a in enumerate(agent_data) if allocs[i] < a[4]]
+                while surplus > 0 and hungry:
+                    give = max(surplus // len(hungry), 1)
+                    still_hungry = []
+                    for i in hungry:
+                        can_use = agent_data[i][4] - allocs[i]
+                        grant = min(give, can_use, surplus)
+                        allocs[i] += grant
+                        surplus -= grant
+                        if allocs[i] < agent_data[i][4]:
+                            still_hungry.append(i)
+                    hungry = still_hungry
+
+            # Build agent cards with allocated lines
+            cards = []
+            for idx, (task_id, stage, status, output_lines, _need, started, elapsed) in enumerate(agent_data):
+                style, symbol = _STATUS_STYLE.get(status, ("white", "?"))
+                # Use spinner for active statuses
+                if status in ("running", "cloning", "merging"):
+                    symbol = spinner
+
+                # Format elapsed time
+                total_secs = int(elapsed.total_seconds())
+                if total_secs >= 3600:
+                    elapsed_str = f"{total_secs // 3600}h{(total_secs % 3600) // 60:02d}m"
+                elif total_secs >= 60:
+                    elapsed_str = f"{total_secs // 60}m{total_secs % 60:02d}s"
+                else:
+                    elapsed_str = f"{total_secs}s"
+                start_str = started.strftime("%H:%M:%S")
+
+                header = Table.grid(expand=True, padding=(0, 1))
+                header.add_column(ratio=5)
+                header.add_column(ratio=1, justify="right")
+                header.add_row(
+                    f"[bold]{task_id}[/bold]  [dim]{stage}[/dim]",
+                    f"[dim]{start_str}[/dim] [dim]({elapsed_str})[/dim]  [{style}]{symbol} {status}[/{style}]",
+                )
+                cards.append(header)
+
+                # Output lines: show the most recent that fit (alloc - 1 for header)
+                max_lines = max(allocs[idx] - 1, 0)
+                if output_lines:
+                    for ts, line in output_lines[-max_lines:]:
+                        cards.append(Text(f"  [{ts}] {line}", style="dim", no_wrap=True))
+                else:
+                    cards.append(Text("  waiting for output...", style="dim"))
+
+                if idx < len(agent_data) - 1:
+                    cards.append(Rule(style="dim"))
+
+            agents_used = sum(allocs) + chrome
+            agents_panel = Panel(
+                Group(*cards),
+                title="[bold]Active Agents[/bold]",
+                border_style="green",
+                height=agents_used,
+            )
+        else:
+            agents_used = 3  # border(2) + 1 line of text
+            agents_panel = Panel(
                 Text("No active agents", style="dim"),
                 title="[bold]Active Agents[/bold]",
                 border_style="green",
+                height=agents_used,
             )
 
-        cards = []
-        for i, task_id in enumerate(sorted(visible)):
-            stage, status, lines = visible[task_id]
-            style, symbol = _STATUS_STYLE.get(status, ("white", "?"))
+        # --- Build log panel with remaining space ---
+        log_height = max(usable - agents_used, 5)
+        # Panel border = 2, so content lines = log_height - 2
+        log_content_lines = max(log_height - 2, 1)
 
-            # Header: task_id left, status right
-            header = Table.grid(expand=True, padding=(0, 1))
-            header.add_column(ratio=5)
-            header.add_column(ratio=1, justify="right")
-            header.add_row(
-                f"[bold]{task_id}[/bold]  [dim]{stage}[/dim]",
-                f"[{style}]{symbol} {status}[/{style}]",
-            )
-            cards.append(header)
+        text = Text(no_wrap=True, overflow="ellipsis")
+        with self._lock:
+            lines = list(self._ring)
+        # Show newest lines first, limited to available space
+        shown = list(reversed(lines))[:log_content_lines]
+        for line in shown:
+            text.append(line + "\n", style="dim")
+        # Pad to fill allocated height so the layout stays stable
+        for _ in range(log_content_lines - len(shown)):
+            text.append("\n")
 
-            with self._lock:
-                output_lines = list(lines)
-
-            if output_lines:
-                for ts, line in output_lines:
-                    cards.append(Text(f"  [{ts}] {line}", style="dim", no_wrap=True))
-            else:
-                cards.append(Text("  [dim]waiting for output...[/dim]"))
-
-            if i < len(visible) - 1:
-                cards.append(Rule(style="dim"))
-
-        return Panel(
-            Group(*cards),
-            title="[bold]Active Agents[/bold]",
-            border_style="green",
+        log_panel = Panel(
+            text,
+            title="[bold]Log[/bold]",
+            border_style="blue",
+            height=log_height,
         )
+
+        return Group(log_panel, agents_panel)
 
     def _refresh(self) -> None:
         if self._live is None:
             return
-        layout = self._build_layout()
-        layout["log"].update(self._render_log_panel())
-        layout["agents"].update(self._render_agents_panel())
-        self._live.update(layout)
+        self._live.refresh()
 
 
 class _DashboardStream:

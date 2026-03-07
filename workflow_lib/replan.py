@@ -432,7 +432,7 @@ def cmd_add(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
         return
 
     expected_file = os.path.join(se_dir, task_filename)
-    ignore_content = f"/*\n!/.sandbox/\n!/docs/plan/tasks/{target_dir}/\n!/docs/plan/phases/\n!/requirements.md\n"
+    ignore_content = f"/*\n!/docs/plan/tasks/{target_dir}/\n!/docs/plan/phases/\n!/requirements.md\n"
     allowed_files = [se_dir + os.sep]
     result = ctx.run_ai(prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
 
@@ -682,7 +682,7 @@ def cmd_regen_tasks(args: "argparse.Namespace") -> None:  # type: ignore[name-de
             shared_components_ctx=shared_components_ctx,
         )
 
-        ignore_content = f"/*\n!/.sandbox/\n!/requirements.md\n!/docs/plan/phases/\n!/docs/plan/tasks/\n!/.tools/verify_requirements.py\n"
+        ignore_content = f"/*\n!/requirements.md\n!/docs/plan/phases/\n!/docs/plan/tasks/\n!/.tools/verify_requirements.py\n"
         allowed_files = [se_dir + os.sep]
         result = ctx.run_ai(prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
 
@@ -893,7 +893,7 @@ def _rebuild_phase_dag(phase_dir: str, ctx: ProjectContext) -> None:
         tasks_content=tasks_content,
     )
 
-    ignore_content = f"/*\n!/.sandbox/\n!/docs/plan/tasks/{phase_id}/dag.json\n"
+    ignore_content = f"/*\n!/docs/plan/tasks/{phase_id}/dag.json\n"
     result = ctx.run_ai(prompt, ignore_content, allowed_files=[dag_file], sandbox=False)
 
     if result.returncode == 0 and os.path.exists(dag_file):

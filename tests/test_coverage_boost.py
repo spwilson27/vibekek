@@ -890,7 +890,6 @@ class TestContextCoverage:
             ctx.specs_dir = "/fake/root/docs/plan/specs"
             ctx.research_dir = "/fake/root/docs/plan/research"
             ctx.requirements_dir = "/fake/root/docs/plan/requirements"
-            ctx.sandbox_dir = "/fake/root/.sandbox"
             ctx.prompts_dir = "/fake/.tools/prompts"
             ctx.state_file = "/fake/.gen_state.json"
             ctx.input_dir = "/fake/.tools/input"
@@ -3137,7 +3136,7 @@ class TestDashboardUpdateLastLine:
         with Dashboard(log_file=io.StringIO()) as d:
             d.set_agent("t1", "Generate", "running", "old")
             d.update_last_line("t1", "new")
-            command, status, lines_deque = d._agents["t1"]
+            command, status, lines_deque, _started = d._agents["t1"]
             assert command == "Generate"
             assert status == "running"
             line_texts = [t for _, t in lines_deque]
