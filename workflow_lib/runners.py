@@ -49,7 +49,8 @@ class AIRunner:
         check ``result.stdout`` still see it).
 
         :param cmd: Command list to execute.
-        :param prompt: Text written to the process stdin.
+        :param prompt: Text written to the process stdin.  If empty, stdin is
+            connected to ``/dev/null`` instead of a pipe.
         :param cwd: Working directory for the subprocess.
         :param on_line: Callback invoked once per output line (newline stripped).
         :param timeout: Maximum seconds to wait for the process. ``None`` means
@@ -60,9 +61,10 @@ class AIRunner:
         :rtype: subprocess.CompletedProcess
         :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
         """
+        use_stdin = bool(prompt)
         proc = subprocess.Popen(
             cmd,
-            stdin=subprocess.PIPE,
+            stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -82,9 +84,10 @@ class AIRunner:
         reader = threading.Thread(target=_read_stdout, daemon=True)
         reader.start()
 
-        assert proc.stdin is not None
-        proc.stdin.write(prompt)
-        proc.stdin.close()
+        if use_stdin:
+            assert proc.stdin is not None
+            proc.stdin.write(prompt)
+            proc.stdin.close()
 
         reader.join(timeout=timeout)
         if reader.is_alive():
@@ -263,6 +266,70 @@ class ClineRunner(AIRunner):
         timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``cline --yolo`` with *full_prompt* as the prompt argument.
+
+        :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
+        """
+        cmd = self.get_cmd(image_paths)
+        cmd.append(full_prompt)
+        if on_line is not None:
+            return self._run_streaming(cmd, "", cwd, on_line, timeout=timeout)
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
+
+
+class AiderRunner(AIRunner):
+    """Runner for the ``aider`` CLI.
+
+    Passes the prompt via ``--message`` to ``aider --yes-always --no-auto-commits``.
+    """
+
+    def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
+        cmd = ["aider", "--yes-always", "--no-auto-commits"]
+        if self.model:
+            cmd += ["--model", self.model]
+        return cmd
+
+    def run(
+        self,
+        cwd: str,
+        full_prompt: str,
+        image_paths: Optional[List[str]] = None,
+        on_line: Optional[Callable[[str], None]] = None,
+        timeout: Optional[int] = None,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Run ``aider --yes-always --no-auto-commits --message <prompt>``.
+
+        :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
+        """
+        cmd = self.get_cmd(image_paths)
+        cmd += ["--message", full_prompt]
+        if on_line is not None:
+            return self._run_streaming(cmd, "", cwd, on_line, timeout=timeout)
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
+
+
+class CodexRunner(AIRunner):
+    """Runner for the ``codex`` CLI (OpenAI Codex).
+
+    Uses ``codex exec --full-auto`` for non-interactive execution.
+    """
+
+    def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
+        cmd = ["codex", "exec", "--full-auto"]
+        if self.model:
+            cmd += ["-m", self.model]
+        for path in (image_paths or []):
+            cmd += ["-i", path]
+        return cmd
+
+    def run(
+        self,
+        cwd: str,
+        full_prompt: str,
+        image_paths: Optional[List[str]] = None,
+        on_line: Optional[Callable[[str], None]] = None,
+        timeout: Optional[int] = None,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Run ``codex exec --full-auto`` with *full_prompt* as the prompt argument.
 
         :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
         """

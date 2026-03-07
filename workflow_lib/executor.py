@@ -224,13 +224,24 @@ def run_ai_command(
     elif backend == "cline":
         cmd = ["cline", "--yolo", prompt]
         prompt = ""  # prompt is passed as arg, not stdin
+    elif backend == "aider":
+        cmd = ["aider", "--yes-always", "--no-auto-commits", "--message", prompt]
+        prompt = ""  # prompt is passed as arg, not stdin
+    elif backend == "codex":
+        cmd = ["codex", "exec", "--full-auto"]
+        for path in images:
+            cmd += ["-i", path]
+        cmd.append(prompt)
+        prompt = ""  # prompt is passed as arg, not stdin
 
     if model:
-        cmd += ["--model" if backend != "cline" else "-m", model]
+        model_flag = "-m" if backend in ("cline", "codex") else "--model"
+        cmd += [model_flag, model]
 
+    use_stdin = bool(prompt)
     process = subprocess.Popen(
         cmd,
-        stdin=subprocess.PIPE,
+        stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         cwd=cwd,
@@ -247,9 +258,11 @@ def run_ai_command(
         finally:
             if process.stdin:
                 process.stdin.close()
-            
-    writer = threading.Thread(target=write_input)
-    writer.start()
+
+    writer: Optional[threading.Thread] = None
+    if use_stdin:
+        writer = threading.Thread(target=write_input)
+        writer.start()
 
     if process.stdout:
         for line in iter(process.stdout.readline, ""):
@@ -262,7 +275,8 @@ def run_ai_command(
                     sys.stdout.flush()
 
     process.wait()
-    writer.join()
+    if writer is not None:
+        writer.join()
 
     if tmp_file_name:
         try:

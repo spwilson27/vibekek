@@ -51,7 +51,7 @@ from .constants import TOOLS_DIR, ROOT_DIR, parse_requirements
 from .state import *
 from .executor import phase_sort_key
 from .context import ProjectContext
-from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner
+from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner
 from .phases import Phase5BSharedComponents, Phase7ADAGGeneration
 
 
@@ -834,6 +834,10 @@ def _make_runner(backend: str, model: Optional[str] = None) -> "AIRunner":  # ty
         return OpencodeRunner(model=model)
     elif backend == "cline":
         return ClineRunner(model=model)
+    elif backend == "aider":
+        return AiderRunner(model=model)
+    elif backend == "codex":
+        return CodexRunner(model=model)
     return GeminiRunner(model=model)
 
 
