@@ -83,11 +83,14 @@ def parse_stream_json_line(raw: str) -> Optional[str]:
 
     return None
 
-RESUME_PROMPT = (
-    "You have run out of time. Immediately finish up your current work: "
-    "complete any in-progress file edits, ensure the code compiles/runs, "
-    "and stop. Do not start any new tasks."
-)
+def _load_resume_prompt() -> str:
+    """Load the resume prompt from the prompts directory."""
+    prompt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts", "resume.md")
+    with open(prompt_path, "r") as f:
+        return f.read().strip()
+
+
+RESUME_PROMPT = _load_resume_prompt()
 
 
 class AIRunner:
