@@ -199,7 +199,8 @@ def cmd_plan(args: argparse.Namespace) -> None:
                     dashboard.log(f"Warning: unknown phase '{args.phase}' for --force, ignoring.")
 
             orchestrator = Orchestrator(ctx, dashboard=dashboard,
-                                       max_retries=args.retries, timeout=args.timeout)
+                                       max_retries=args.retries, timeout=args.timeout,
+                                       auto_retries=args.auto_retries)
             orchestrator.run()
         finally:
             sys.stdout = original_stdout
@@ -259,6 +260,7 @@ def main() -> None:
     p_plan.add_argument("--jobs", type=int, default=1, help="Maximum number of parallel AI agents/jobs")
     p_plan.add_argument("--force", action="store_true", help="Force re-run of the specified phase")
     p_plan.add_argument("--retries", type=int, default=None, help="Max retries per phase on failure (default: 3, use 0 to disable)")
+    p_plan.add_argument("--auto-retries", type=int, default=None, help="Auto-retry up to N times before prompting user (default: none)")
     p_plan.add_argument("--timeout", type=int, default=None, help="Timeout in seconds per AI agent invocation (default: 600 = 10m)")
 
     # run
@@ -322,6 +324,7 @@ def main() -> None:
         "ignore_sandbox": False,
         "timeout": 600,
         "retries": 3,
+        "auto_retries": None,
     }
     cfg_defaults = get_config_defaults()
     for key, hardcoded in _HARDCODED.items():

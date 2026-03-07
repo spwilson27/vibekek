@@ -9,9 +9,11 @@ and :mod:`workflow_lib.replan` via ``_make_runner()``.
 """
 
 import os
+import signal
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from typing import Callable, List, Dict, Any, Optional
 
@@ -110,6 +112,11 @@ class AIRunner:
         """
         return os.environ.copy()
 
+    def _kill_process(self, proc: subprocess.Popen) -> None:  # type: ignore[type-arg]
+        """Kill a timed-out process.  Subclasses may override for graceful shutdown."""
+        proc.kill()
+        proc.wait()
+
     def _run_streaming(
         self,
         cmd: List[str],
@@ -166,8 +173,7 @@ class AIRunner:
 
         reader.join(timeout=timeout)
         if reader.is_alive():
-            proc.kill()
-            proc.wait()
+            self._kill_process(proc)
             raise subprocess.TimeoutExpired(cmd, timeout or 0)
 
         stderr_raw = proc.stderr.read() if proc.stderr else ""
@@ -221,8 +227,7 @@ class AIRunner:
 
         reader.join(timeout=timeout)
         if reader.is_alive():
-            proc.kill()
-            proc.wait()
+            self._kill_process(proc)
             raise subprocess.TimeoutExpired(cmd, timeout or 0)
 
         stderr_raw = proc.stderr.read() if proc.stderr else ""
@@ -527,6 +532,19 @@ class QwenRunner(SessionResumableRunner):
             else:
                 cmd += ["--session-id", session_id]
         return cmd
+
+    def _kill_process(self, proc: subprocess.Popen) -> None:  # type: ignore[type-arg]
+        """Send two SIGINTs to stop the current prompt, wait 1s, then SIGKILL."""
+        try:
+            proc.send_signal(signal.SIGINT)
+            proc.send_signal(signal.SIGINT)
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
     def _build_resume_cmd_and_prompt(self, session_id: str) -> tuple:
         """Build the resume command for qwen.

@@ -34,7 +34,8 @@ class Orchestrator:
     """
 
     def __init__(self, ctx: ProjectContext, dashboard: Optional[Any] = None,
-                 max_retries: int = 3, timeout: int = 600) -> None:
+                 max_retries: int = 3, timeout: int = 600,
+                 auto_retries: Optional[int] = None) -> None:
         """Initialise the orchestrator with a project context.
 
         :param ctx: The :class:`~workflow_lib.context.ProjectContext` instance
@@ -43,10 +44,13 @@ class Orchestrator:
         :param dashboard: Optional dashboard.
         :param max_retries: Maximum retry attempts per phase (0 = no retries).
         :param timeout: Timeout in seconds per AI agent invocation.
+        :param auto_retries: Number of automatic retries before prompting
+            the user.  ``None`` means always prompt immediately.
         """
         self.ctx = ctx
         self.dashboard = dashboard
         self.max_retries = max(max_retries, 1)  # At least 1 attempt
+        self.auto_retries = auto_retries or 0
         self.ctx.agent_timeout = timeout if timeout > 0 else None
 
     def _log(self, message: str) -> None:
@@ -81,6 +85,7 @@ class Orchestrator:
         """
         if max_retries <= 0:
             max_retries = self.max_retries
+        auto_failures = 0
         name = phase.display_name
         stage = phase.operation
         for attempt in range(1, max_retries + 1):
@@ -118,6 +123,11 @@ class Orchestrator:
                 self._log(f"[!] Phase {name} failed on attempt {attempt} (exit code {e.code}).")
                 self._set_phase(name, "failed", stage)
                 if attempt < max_retries:
+                    if auto_failures < self.auto_retries:
+                        auto_failures += 1
+                        self._log(f"    Auto-retrying ({auto_failures}/{self.auto_retries})...")
+                        self.ctx.state = self.ctx._load_state()
+                        continue
                     self._set_phase(name, "waiting", stage)
                     action = self._prompt(
                         f"Phase '{name}' failed (attempt {attempt}/{max_retries}, exit code {e.code}). "
@@ -135,6 +145,11 @@ class Orchestrator:
                 self._log(f"[!] Phase {name} encountered an error on attempt {attempt}: {e}")
                 self._set_phase(name, "failed", stage)
                 if attempt < max_retries:
+                    if auto_failures < self.auto_retries:
+                        auto_failures += 1
+                        self._log(f"    Auto-retrying ({auto_failures}/{self.auto_retries})...")
+                        self.ctx.state = self.ctx._load_state()
+                        continue
                     self._set_phase(name, "waiting", stage)
                     action = self._prompt(
                         f"Phase '{name}' errored (attempt {attempt}/{max_retries}): {e}\n"
