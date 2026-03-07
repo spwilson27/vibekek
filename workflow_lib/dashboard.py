@@ -194,12 +194,17 @@ class Dashboard:
     def prompt_input(self, message: str) -> str:
         """Pause the live display, show a prominent prompt, and return user input.
 
+        Renders the current dashboard state (log + agents) above the prompt so
+        the user retains full context about what failed and why.
+
         :param message: The prompt text to display.
         :returns: The user's input string.
         """
         if self._live:
             self._live.stop()
         try:
+            # Re-render the dashboard state so the user can see agents and logs
+            self._console.print(self._render())
             self._console.print()
             self._console.print(Rule("[bold yellow]INPUT REQUIRED[/bold yellow]", style="yellow"))
             self._console.print(f"[bold yellow]  {message}[/bold yellow]")
