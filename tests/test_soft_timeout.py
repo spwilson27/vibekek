@@ -433,7 +433,7 @@ class TestClaudeGetCmd:
     def test_basic(self):
         r = ClaudeRunner()
         cmd = r.get_cmd()
-        assert cmd == ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json"]
+        assert cmd == ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
 
     def test_with_model(self):
         r = ClaudeRunner(model="claude-sonnet-4-6")

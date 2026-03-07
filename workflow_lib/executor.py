@@ -62,7 +62,7 @@ def signal_handler(sig: int, frame: Any) -> None:  # type: ignore[type-arg]
     global shutdown_requested
     if not shutdown_requested:
         print("\n[!] Ctrl-C detected. Initiating graceful shutdown...")
-        print("    Waiting for active tasks to complete and merge before exiting.")
+        print("    Active agents will finish. No new agents will be spawned.")
         shutdown_requested = True
     else:
         print("\n[!] Ctrl-C detected again. Forcing immediate exit...")
@@ -334,6 +334,10 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
     ``{key}`` substitution using *task_context*, then delegates to
     :func:`run_ai_command`.
 
+    When :data:`shutdown_requested` is set (via Ctrl-C), this function returns
+    ``False`` immediately without spawning a new agent, allowing in-flight
+    agents to complete while preventing new work from starting.
+
     :param agent_type: Human-readable label for log output (e.g.
         ``"Implementation"``, ``"Review"``).
     :type agent_type: str
@@ -349,8 +353,17 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
         :func:`run_ai_command`.  Defaults to ``"gemini"``.
     :type backend: str
     :returns: ``True`` if the agent exited with code 0, ``False`` otherwise.
+        Returns ``False`` immediately when shutdown has been requested.
     :rtype: bool
     """
+    if shutdown_requested:
+        _log_msg = f"[{agent_type}] Skipped — shutdown requested."
+        if dashboard:
+            dashboard.log(_log_msg)
+        else:
+            print(f"      {_log_msg}")
+        return False
+
     prompt_path = os.path.join(TOOLS_DIR, "prompts", prompt_file)
     with open(prompt_path, "r", encoding="utf-8") as f:
         prompt_tmpl = f.read()
@@ -556,6 +569,9 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
 
         # 3. Verification Loop
         for attempt in range(1, max_retries + 1):
+            if shutdown_requested:
+                _log(f"      [Verification] Skipped — shutdown requested.")
+                return False
             _log(f"      [Verification] Running presubmit (Attempt {attempt}/{max_retries})...")
             if dashboard:
                 dashboard.set_agent(full_task_id, "Verify", "running", f"Attempt {attempt}/{max_retries}")
@@ -690,6 +706,9 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
         
         # 1. Verification Loop for Merge
         for attempt in range(1, max_retries + 1):
+            if shutdown_requested:
+                _log(f"      [Merge] Skipped — shutdown requested.")
+                return False
             failure_output = ""
             if attempt == 1:
                 # First attempt: Try a squash merge via git CLI
