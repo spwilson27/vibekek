@@ -387,7 +387,7 @@ def cmd_add(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
     description = args.desc
     backend = args.backend
 
-    runner = _make_runner(backend)
+    runner = _make_runner(backend, model=getattr(args, 'model', None))
     ctx = ProjectContext(ROOT_DIR, runner=runner)
 
     phase_dir = os.path.join(get_tasks_dir(), phase_id)
@@ -572,7 +572,7 @@ def cmd_regen_dag(args: "argparse.Namespace") -> None:  # type: ignore[name-defi
         print(f"[dry-run] Would rebuild DAG for {phase_id}")
         return
 
-    runner = _make_runner(args.backend)
+    runner = _make_runner(args.backend, model=getattr(args, 'model', None))
     ctx = ProjectContext(ROOT_DIR, runner=runner)
     _rebuild_phase_dag(phase_dir, ctx)
 
@@ -608,7 +608,7 @@ def cmd_regen_tasks(args: "argparse.Namespace") -> None:  # type: ignore[name-de
     sub_epic = args.sub_epic
     backend = args.backend
 
-    runner = _make_runner(backend)
+    runner = _make_runner(backend, model=getattr(args, 'model', None))
     ctx = ProjectContext(ROOT_DIR, runner=runner)
     wf_state = load_workflow_state()
 
@@ -719,7 +719,7 @@ def cmd_regen_components(args: "argparse.Namespace") -> None:  # type: ignore[na
         - ``backend`` (str) — AI backend.
     :type args: argparse.Namespace
     """
-    runner = _make_runner(args.backend)
+    runner = _make_runner(args.backend, model=getattr(args, 'model', None))
     ctx = ProjectContext(ROOT_DIR, runner=runner)
 
     if args.dry_run:
@@ -768,7 +768,7 @@ def cmd_cascade(args: "argparse.Namespace") -> None:  # type: ignore[name-define
         print(f"[dry-run] Would cascade changes for {phase_id}")
         return
 
-    runner = _make_runner(args.backend)
+    runner = _make_runner(args.backend, model=getattr(args, 'model', None))
     ctx = ProjectContext(ROOT_DIR, runner=runner)
 
     # Scan tasks and collect requirement coverage
@@ -815,22 +815,24 @@ def cmd_cascade(args: "argparse.Namespace") -> None:  # type: ignore[name-define
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_runner(backend: str) -> "AIRunner":  # type: ignore[name-defined]
+def _make_runner(backend: str, model: Optional[str] = None) -> "AIRunner":  # type: ignore[name-defined]
     """Instantiate the correct AI runner for the given backend name.
 
     :param backend: One of ``"claude"``, ``"copilot"``, or any other string
         (defaults to :class:`~workflow_lib.runners.GeminiRunner`).
     :type backend: str
+    :param model: Optional model name to pass through to the CLI via ``--model``.
+    :type model: str or None
     :returns: An AI runner instance.
     :rtype: AIRunner
     """
     if backend == "claude":
-        return ClaudeRunner()
+        return ClaudeRunner(model=model)
     elif backend == "copilot":
-        return CopilotRunner()
+        return CopilotRunner(model=model)
     elif backend == "opencode":
-        return OpencodeRunner()
-    return GeminiRunner()
+        return OpencodeRunner(model=model)
+    return GeminiRunner(model=model)
 
 
 def _rebuild_phase_dag(phase_dir: str, ctx: ProjectContext) -> None:

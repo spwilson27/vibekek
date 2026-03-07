@@ -161,7 +161,7 @@ def cmd_plan(args: argparse.Namespace) -> None:
     log_file = os.path.join(ROOT_DIR, "plan_workflow.log")
     log_stream = open(log_file, "a", encoding="utf-8")
 
-    runner = _make_runner(args.backend)
+    runner = _make_runner(args.backend, model=args.model)
 
     with make_dashboard(log_file=log_stream) as dashboard:
         original_stdout = sys.stdout
@@ -230,7 +230,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     state = load_workflow_state()
 
     serena_status = "enabled" if get_serena_enabled() else "disabled"
-    execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, args.backend, log_file=log_stream)
+    execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, args.backend, log_file=log_stream, model=args.model)
 
 def main() -> None:
     """Parse CLI arguments and dispatch to the appropriate command handler.
@@ -242,6 +242,7 @@ def main() -> None:
     # Shared flags available to all subcommands
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--backend", choices=["gemini", "claude", "opencode", "copilot"], default="gemini", help="AI CLI backend to use (default: gemini)")
+    shared.add_argument("--model", default=None, help="Model name to pass through to the AI CLI (e.g. 'claude-sonnet-4-5-20250514')")
     shared.add_argument("--ignore-sandbox", action="store_true", help="Disable sandbox violation checks")
 
     parser = argparse.ArgumentParser(description="AI Project Planning and Execution Workflow")

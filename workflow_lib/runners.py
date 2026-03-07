@@ -22,6 +22,9 @@ class AIRunner:
     Subclasses must implement :meth:`run`.
     """
 
+    def __init__(self, model: Optional[str] = None) -> None:
+        self.model = model
+
     def _run_streaming(
         self,
         cmd: List[str],
@@ -130,7 +133,10 @@ class GeminiRunner(AIRunner):
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
-        return ["gemini", "-y"]
+        cmd = ["gemini", "-y"]
+        if self.model:
+            cmd += ["--model", self.model]
+        return cmd
 
     def run(
         self,
@@ -151,7 +157,7 @@ class GeminiRunner(AIRunner):
         if image_paths:
             refs = "\n".join(f"@{p}" for p in image_paths)
             prompt = f"{prompt}\n\n{refs}"
-        cmd = ["gemini", "-y"]
+        cmd = self.get_cmd(image_paths)
         if on_line is not None:
             return self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout)
         return subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout)
@@ -166,6 +172,8 @@ class ClaudeRunner(AIRunner):
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
         cmd = ["claude", "-p", "--dangerously-skip-permissions"]
+        if self.model:
+            cmd += ["--model", self.model]
         for path in (image_paths or []):
             cmd += ["--image", path]
         return cmd
@@ -185,9 +193,7 @@ class ClaudeRunner(AIRunner):
 
         :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
         """
-        cmd = ["claude", "-p", "--dangerously-skip-permissions"]
-        for path in (image_paths or []):
-            cmd += ["--image", path]
+        cmd = self.get_cmd(image_paths)
         if on_line is not None:
             return self._run_streaming(cmd, full_prompt, cwd, on_line, timeout=timeout)
         return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout)
@@ -202,6 +208,8 @@ class OpencodeRunner(AIRunner):
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
         cmd = ["opencode", "run"]
+        if self.model:
+            cmd += ["--model", self.model]
         for path in (image_paths or []):
             cmd += ["-f", path]
         return cmd
@@ -218,9 +226,7 @@ class OpencodeRunner(AIRunner):
 
         :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
         """
-        cmd = ["opencode", "run"]
-        for path in (image_paths or []):
-            cmd += ["-f", path]
+        cmd = self.get_cmd(image_paths)
         if on_line is not None:
             return self._run_streaming(cmd, full_prompt, cwd, on_line, timeout=timeout)
         return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout)
@@ -235,7 +241,10 @@ class CopilotRunner(AIRunner):
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
-        return ["copilot", "-p", "@<prompt_file>", "--yolo"]
+        cmd = ["copilot", "-p", "@<prompt_file>", "--yolo"]
+        if self.model:
+            cmd += ["--model", self.model]
+        return cmd
 
     def run(
         self,

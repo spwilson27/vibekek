@@ -86,6 +86,9 @@ class Orchestrator:
         for attempt in range(1, max_retries + 1):
             if attempt > 1:
                 self._log(f"[Retry {attempt}/{max_retries}] Retrying {name}...")
+                # Reset the agent entry so the timer restarts from now
+                if self.dashboard:
+                    self.dashboard.remove_agent(f"plan/{name}")
 
             self.ctx.current_phase = name
             self._set_phase(name, "running", stage)

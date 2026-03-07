@@ -165,6 +165,7 @@ def run_ai_command(
     backend: str = "gemini",
     image_paths: Optional[List[str]] = None,
     on_line: Optional[Callable[[str], None]] = None,
+    model: Optional[str] = None,
 ) -> int:
     """Launch an AI CLI process and stream its output, returning the exit code.
 
@@ -220,6 +221,9 @@ def run_ai_command(
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(prompt)
         cmd = ["copilot", "--model", "gpt-5-mini", "-p", f"Follow the instructions in @{tmp_file_name}", "--yolo"]
+
+    if model:
+        cmd += ["--model", model]
 
     process = subprocess.Popen(
         cmd,
@@ -389,7 +393,7 @@ def get_project_images() -> List[str]:
     )
 
 
-def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "") -> bool:
+def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "", model: Optional[str] = None) -> bool:
     """Format a prompt template and execute an AI agent subprocess.
 
     Reads the named prompt template from ``.tools/prompts/``, performs simple
@@ -439,7 +443,7 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
             dashboard.log(f"{prefix}{line}")
             dashboard.set_agent(_tid, _stage, "running", line)
 
-    returncode = run_ai_command(prompt, cwd, prefix=prefix, backend=backend, image_paths=get_project_images(), on_line=on_line)
+    returncode = run_ai_command(prompt, cwd, prefix=prefix, backend=backend, image_paths=get_project_images(), on_line=on_line, model=model)
 
     if returncode != 0:
         err = f"[{agent_type}] FATAL: Agent process failed with exit code {returncode}"
@@ -504,7 +508,7 @@ def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.L
 
 
 
-def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False, dashboard: Any = None) -> bool:
+def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False, dashboard: Any = None, model: Optional[str] = None) -> bool:
     """Run the full implementation lifecycle for one task.
 
     Steps performed:
@@ -603,7 +607,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
         # 1. Implementation Agent
         if dashboard:
             dashboard.set_agent(full_task_id, "Impl", "running", "")
-        if not run_agent("Implementation", "implement_task.md", context, tmpdir, backend, dashboard=dashboard, task_id=full_task_id):
+        if not run_agent("Implementation", "implement_task.md", context, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model):
             if dashboard:
                 dashboard.set_agent(full_task_id, "Impl", "failed", "Implementation agent failed")
             return False
@@ -611,7 +615,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
         # 2. Review Agent
         if dashboard:
             dashboard.set_agent(full_task_id, "Review", "running", "")
-        if not run_agent("Review", "review_task.md", context, tmpdir, backend, dashboard=dashboard, task_id=full_task_id):
+        if not run_agent("Review", "review_task.md", context, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model):
             if dashboard:
                 dashboard.set_agent(full_task_id, "Review", "failed", "Review agent failed")
             return False
@@ -652,7 +656,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
                  failure_ctx["task_details"] += f"\n\n### PRESUBMIT FAILURE (Attempt {attempt})\nThe presubmit script failed with the following output. Please fix the code.\n\n```\n{presubmit_res.stdout}\n{presubmit_res.stderr}\n```\n"
                  if dashboard:
                      dashboard.set_agent(full_task_id, "Review", "running", f"Retry after presubmit failure")
-                 if not run_agent("Review (Retry)", "review_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=full_task_id):
+                 if not run_agent("Review (Retry)", "review_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model):
                      return False
 
         _log(f"   -> [!] Task {full_task_id} failed presubmit {max_retries} times. Aborting task.")
@@ -673,7 +677,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
                 dashboard.set_agent(full_task_id, "failed", "failed", "Task failed")
 
 
-def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False, dashboard: Any = None) -> bool:
+def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False, dashboard: Any = None, model: Optional[str] = None) -> bool:
     """Squash-merge a task branch into ``dev`` via a temporary clone and verify.
 
     Steps performed:
@@ -843,7 +847,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                 failure_ctx["description_ctx"] += f"\n\n### PREVIOUS ATTEMPT FAILURE\nThe previous squash merge or presubmit failed with:\n```\n{failure_output}\n```\n"
                 failure_ctx["description_ctx"] += f"\nPlease resolve the conflicts and ensure the final state is a single commit on the dev branch with the message: {commit_msg}"
                 
-                if not run_agent("Merge", "merge_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=task_id):
+                if not run_agent("Merge", "merge_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=task_id, model=model):
                     _log(f"      [!] Merge agent failed to cleanly exit.")
                     continue
                     
@@ -954,7 +958,7 @@ def get_ready_tasks(master_dag: Dict[str, List[str]], completed_tasks: List[str]
     return ready
 
 
-def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str = "gemini", log_file: Any = None) -> None:
+def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str = "gemini", log_file: Any = None, model: Optional[str] = None) -> None:
     """Orchestrate parallel task execution according to the dependency DAG.
 
     Runs a scheduling loop inside a :class:`~concurrent.futures.ThreadPoolExecutor`
@@ -1005,10 +1009,10 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
     cache_lock = threading.Lock()
 
     with make_dashboard(log_file=log_file) as dashboard:
-        _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, serena_enabled, cache_lock, dashboard)
+        _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, serena_enabled, cache_lock, dashboard, model=model)
 
 
-def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str, serena_enabled: bool, cache_lock: threading.Lock, dashboard: Any) -> None:
+def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str, serena_enabled: bool, cache_lock: threading.Lock, dashboard: Any, model: Optional[str] = None) -> None:
     """Inner DAG execution loop run inside the dashboard context manager."""
     if serena_enabled:
         # Ensure .mcp.json exists at project root (copy from template if missing)
@@ -1058,7 +1062,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                 with state_lock:
                     active_tasks.add(task_id)
 
-                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled, dashboard=dashboard)
+                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled, dashboard=dashboard, model=model)
                 future_to_task[future] = task_id
 
             # If no tasks are running and (none are ready or shutdown requested), we are done/deadlocked
@@ -1100,7 +1104,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                         dashboard.log(f"   -> [Implementation] Task {task_id} completed successfully.")
 
                         # Trigger DAG Merge Workflow immediately
-                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard):
+                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model):
                             with state_lock:
                                 state["completed_tasks"].append(task_id)
                                 state["merged_tasks"].append(task_id)
