@@ -15,7 +15,7 @@ import os
 import signal
 import subprocess
 import sys
-from typing import Any, Optional
+from typing import Any, Callable, Optional, Union
 
 from .constants import DOCS
 from .context import ProjectContext
@@ -54,7 +54,7 @@ class Orchestrator:
         self.auto_retries = auto_retries or 0
         self.ctx.agent_timeout = timeout if timeout > 0 else None
         self.shutdown_requested = False
-        self._prev_sigint_handler: Any = None
+        self._prev_sigint_handler: Optional[Union[Callable, int, signal.Handlers]] = None
 
     def _log(self, message: str) -> None:
         if self.dashboard:

@@ -29,12 +29,14 @@ class TestPromptFilesExist:
 
     def test_no_unregistered_prompts(self):
         """Every .md file in prompts/ should be in the registry."""
+        # Files that are used directly (not as registered templates).
+        NON_TEMPLATE_PROMPTS = {"resume.md"}
         on_disk = {
             f for f in os.listdir(PROMPTS_DIR)
             if f.endswith(".md") and os.path.isfile(os.path.join(PROMPTS_DIR, f))
         }
         registered = set(PROMPT_PLACEHOLDERS.keys())
-        unregistered = on_disk - registered
+        unregistered = on_disk - registered - NON_TEMPLATE_PROMPTS
         assert unregistered == set(), (
             f"Prompt files on disk but not in registry: {sorted(unregistered)}. "
             "Add them to PROMPT_PLACEHOLDERS in prompt_registry.py"

@@ -197,6 +197,7 @@ class AIRunner:
         cwd: str,
         on_line: Callable[[str], None],
         timeout: Optional[int] = None,
+        prompt: str = "",
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run *cmd* and parse its stream-json output, calling *on_line* for
         each meaningful extracted line.
@@ -204,11 +205,14 @@ class AIRunner:
         Uses :func:`parse_stream_json_line` to convert Anthropic-style JSONL
         into human-readable text.
 
+        :param prompt: Optional text written to the process stdin.  If empty,
+            stdin is connected to ``/dev/null``.
         :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
         """
+        use_stdin = bool(prompt)
         proc = subprocess.Popen(
             cmd,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -229,6 +233,11 @@ class AIRunner:
 
         reader = threading.Thread(target=_read_stdout, daemon=True)
         reader.start()
+
+        if use_stdin:
+            assert proc.stdin is not None
+            proc.stdin.write(prompt)
+            proc.stdin.close()
 
         try:
             reader.join(timeout=timeout)
@@ -531,7 +540,7 @@ class QwenRunner(SessionResumableRunner):
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
-        cmd = ["qwen", "-y", "--output-format", "stream-json"]
+        cmd = ["qwen", "-y", "--output-format", "stream-json", "-p", "-"]
         if self.model:
             cmd += ["-m", self.model]
         if session_id:
@@ -557,11 +566,10 @@ class QwenRunner(SessionResumableRunner):
     def _build_resume_cmd_and_prompt(self, session_id: str) -> tuple:
         """Build the resume command for qwen.
 
-        The resume prompt is appended as a positional argument (not stdin).
+        The resume prompt is passed via stdin (using ``-p -``).
         """
         cmd = self.get_cmd(session_id=session_id, resume=True)
-        cmd.append(RESUME_PROMPT)  # prompt as positional arg
-        return cmd, ""  # empty stdin
+        return cmd, RESUME_PROMPT
 
     @staticmethod
     def _parse_stream_line(raw: str) -> Optional[str]:
@@ -577,7 +585,7 @@ class QwenRunner(SessionResumableRunner):
         timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Override to use JSONL-parsing streaming instead of plain text."""
-        return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout)
+        return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=prompt)
 
     def run(
         self,
@@ -598,15 +606,14 @@ class QwenRunner(SessionResumableRunner):
         """
         session_id = str(uuid.uuid4()) if self.soft_timeout else None
         cmd = self.get_cmd(image_paths, session_id=session_id)
-        cmd.append(full_prompt)
 
         if on_line is not None and self.soft_timeout and session_id:
-            return self._run_with_soft_timeout(cmd, "", cwd, on_line, session_id, timeout)
+            return self._run_with_soft_timeout(cmd, full_prompt, cwd, on_line, session_id, timeout)
         if on_line is not None:
-            return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout)
+            return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=full_prompt)
 
         # Non-streaming fallback
-        result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
+        result = subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
         parsed_lines: List[str] = []
         for line in result.stdout.splitlines():
             parsed = parse_stream_json_line(line)

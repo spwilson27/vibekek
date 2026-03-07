@@ -110,13 +110,13 @@ class TestQwenGetCmd:
 # ---------------------------------------------------------------------------
 
 class TestQwenBuildResume:
-    def test_resume_uses_positional_arg(self):
+    def test_resume_uses_stdin(self):
         r = QwenRunner()
         cmd, prompt = r._build_resume_cmd_and_prompt("sess-456")
         assert "--resume" in cmd
         assert "sess-456" in cmd
-        assert RESUME_PROMPT in cmd  # appended to cmd
-        assert prompt == ""  # stdin is empty
+        assert RESUME_PROMPT not in cmd  # not appended to cmd
+        assert prompt == RESUME_PROMPT  # passed via stdin
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ class TestQwenRunnerRun:
         mock_st.assert_not_called()
         mock_json.assert_called_once()
 
-    def test_prompt_is_positional_arg(self):
+    def test_prompt_is_passed_via_stdin(self):
         r = QwenRunner(soft_timeout=None)
         expected = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
@@ -249,7 +249,8 @@ class TestQwenRunnerRun:
             r.run("/tmp", "my prompt", on_line=lambda l: None)
 
         cmd_arg = mock_json.call_args[0][0]
-        assert "my prompt" in cmd_arg
+        assert "my prompt" not in cmd_arg  # not a positional arg
+        assert mock_json.call_args[1].get("prompt") == "my prompt"  # passed via stdin
 
     def test_no_on_line_uses_subprocess_run(self):
         r = QwenRunner(soft_timeout=60)
