@@ -17,6 +17,72 @@ from typing import Callable, List, Dict, Any, Optional
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
 
+
+def parse_stream_json_line(raw: str) -> Optional[str]:
+    """Extract human-readable text from a single Anthropic-style JSONL line.
+
+    Both ``claude`` and ``qwen`` CLIs emit the same JSONL format when
+    ``--output-format stream-json`` is used.
+    """
+    import json as _json
+    stripped = raw.strip()
+    if not stripped or not stripped.startswith("{"):
+        return None
+    try:
+        obj = _json.loads(stripped)
+    except _json.JSONDecodeError:
+        return None
+
+    msg_type = obj.get("type")
+
+    if msg_type == "assistant":
+        content = obj.get("message", {}).get("content", [])
+        parts: List[str] = []
+        for block in content:
+            if block.get("type") == "text":
+                text = block.get("text", "").strip()
+                if text:
+                    parts.append(text)
+            elif block.get("type") == "tool_use":
+                name = block.get("name", "unknown")
+                inp = block.get("input", {})
+                if name == "web_fetch":
+                    parts.append(f"[tool] {name}: {inp.get('url', '')}")
+                elif name in ("read_file", "write_file", "edit"):
+                    parts.append(f"[tool] {name}: {inp.get('file_path', inp.get('path', ''))}")
+                elif name == "run_shell_command":
+                    parts.append(f"[tool] {name}: {inp.get('command', '')}")
+                elif name == "grep_search":
+                    parts.append(f"[tool] {name}: {inp.get('pattern', '')}")
+                else:
+                    parts.append(f"[tool] {name}")
+        return "\n".join(parts) if parts else None
+
+    if msg_type == "user":
+        content = obj.get("message", {}).get("content", [])
+        parts = []
+        for block in content:
+            if block.get("type") == "tool_result":
+                tool_id = block.get("tool_use_id", "")
+                text = block.get("content", "")
+                if isinstance(text, str) and text.strip():
+                    parts.append(f"[result] {text.strip()}")
+                elif block.get("is_error"):
+                    parts.append(f"[result] error (tool {tool_id})")
+                else:
+                    parts.append(f"[result] ok (tool {tool_id})")
+            elif block.get("type") == "text":
+                text = block.get("text", "").strip()
+                if text:
+                    parts.append(text)
+        return "\n".join(parts) if parts else None
+
+    if msg_type == "result":
+        result_text = obj.get("result", "").strip()
+        return result_text or None
+
+    return None
+
 RESUME_PROMPT = (
     "You have run out of time. Immediately finish up your current work: "
     "complete any in-progress file edits, ensure the code compiles/runs, "
@@ -108,6 +174,61 @@ class AIRunner:
             args=cmd,
             returncode=proc.returncode,
             stdout="\n".join(stdout_lines),
+            stderr=stderr_raw,
+        )
+
+    def _run_streaming_json(
+        self,
+        cmd: List[str],
+        cwd: str,
+        on_line: Callable[[str], None],
+        timeout: Optional[int] = None,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Run *cmd* and parse its stream-json output, calling *on_line* for
+        each meaningful extracted line.
+
+        Uses :func:`parse_stream_json_line` to convert Anthropic-style JSONL
+        into human-readable text.
+
+        :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
+        """
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd,
+            env=self._env(),
+        )
+        result_text: List[str] = []
+
+        def _read_stdout() -> None:
+            assert proc.stdout is not None
+            for raw_line in proc.stdout:
+                parsed = parse_stream_json_line(raw_line)
+                if parsed:
+                    result_text.append(parsed)
+                    for sub in parsed.splitlines():
+                        if sub.strip():
+                            on_line(sub)
+
+        reader = threading.Thread(target=_read_stdout, daemon=True)
+        reader.start()
+
+        reader.join(timeout=timeout)
+        if reader.is_alive():
+            proc.kill()
+            proc.wait()
+            raise subprocess.TimeoutExpired(cmd, timeout or 0)
+
+        stderr_raw = proc.stderr.read() if proc.stderr else ""
+        proc.wait()
+
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=proc.returncode,
+            stdout="\n".join(result_text),
             stderr=stderr_raw,
         )
 
@@ -248,7 +369,7 @@ class ClaudeRunner(AIRunner):
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
-        cmd = ["claude", "-p", "--dangerously-skip-permissions"]
+        cmd = ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
         if self.model:
             cmd += ["--model", self.model]
         for path in (image_paths or []):
@@ -263,17 +384,31 @@ class ClaudeRunner(AIRunner):
         on_line: Optional[Callable[[str], None]] = None,
         timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
-        """Run ``claude -p --dangerously-skip-permissions`` with *full_prompt* on stdin.
+        """Run ``claude -p --dangerously-skip-permissions --output-format stream-json``.
 
         Images are delivered via ``--image <path>`` flags appended to the
-        command, one flag pair per image.
+        command, one flag pair per image.  JSONL output is parsed into
+        human-readable text via :func:`parse_stream_json_line`.
 
         :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
         """
         cmd = self.get_cmd(image_paths)
+        cmd.append(full_prompt)
         if on_line is not None:
-            return self._run_streaming(cmd, full_prompt, cwd, on_line, timeout=timeout)
-        return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
+            return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout)
+        # Non-streaming fallback: parse JSONL after completion
+        result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
+        parsed_lines: List[str] = []
+        for line in result.stdout.splitlines():
+            parsed = parse_stream_json_line(line)
+            if parsed:
+                parsed_lines.append(parsed)
+        return subprocess.CompletedProcess(
+            args=result.args,
+            returncode=result.returncode,
+            stdout="\n".join(parsed_lines),
+            stderr=result.stderr,
+        )
 
 
 class OpencodeRunner(AIRunner):
@@ -401,117 +536,8 @@ class QwenRunner(SessionResumableRunner):
 
     @staticmethod
     def _parse_stream_line(raw: str) -> Optional[str]:
-        """Extract human-readable text from a single JSONL line."""
-        import json as _json
-        stripped = raw.strip()
-        if not stripped or not stripped.startswith("{"):
-            return None
-        try:
-            obj = _json.loads(stripped)
-        except _json.JSONDecodeError:
-            return None
-
-        msg_type = obj.get("type")
-
-        if msg_type == "assistant":
-            content = obj.get("message", {}).get("content", [])
-            parts: List[str] = []
-            for block in content:
-                if block.get("type") == "text":
-                    text = block.get("text", "").strip()
-                    if text:
-                        parts.append(text)
-                elif block.get("type") == "tool_use":
-                    name = block.get("name", "unknown")
-                    inp = block.get("input", {})
-                    if name == "web_fetch":
-                        parts.append(f"[tool] {name}: {inp.get('url', '')}")
-                    elif name in ("read_file", "write_file", "edit"):
-                        parts.append(f"[tool] {name}: {inp.get('file_path', inp.get('path', ''))}")
-                    elif name == "run_shell_command":
-                        parts.append(f"[tool] {name}: {inp.get('command', '')}")
-                    elif name == "grep_search":
-                        parts.append(f"[tool] {name}: {inp.get('pattern', '')}")
-                    else:
-                        parts.append(f"[tool] {name}")
-            return "\n".join(parts) if parts else None
-
-        if msg_type == "user":
-            content = obj.get("message", {}).get("content", [])
-            parts = []
-            for block in content:
-                if block.get("type") == "tool_result":
-                    tool_id = block.get("tool_use_id", "")
-                    text = block.get("content", "")
-                    if isinstance(text, str) and text.strip():
-                        parts.append(f"[result] {text.strip()}")
-                    elif block.get("is_error"):
-                        parts.append(f"[result] error (tool {tool_id})")
-                    else:
-                        parts.append(f"[result] ok (tool {tool_id})")
-                elif block.get("type") == "text":
-                    text = block.get("text", "").strip()
-                    if text:
-                        parts.append(text)
-            return "\n".join(parts) if parts else None
-
-        if msg_type == "result":
-            result_text = obj.get("result", "").strip()
-            return result_text or None
-
-        return None
-
-    def _run_streaming_json(
-        self,
-        cmd: List[str],
-        cwd: str,
-        on_line: Callable[[str], None],
-        timeout: Optional[int] = None,
-    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
-        """Run *cmd* and parse its stream-json output, calling *on_line* for
-        each meaningful extracted line.
-
-        :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
-        """
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=cwd,
-            env=self._env(),
-        )
-        result_text: List[str] = []
-
-        def _read_stdout() -> None:
-            assert proc.stdout is not None
-            for raw_line in proc.stdout:
-                parsed = self._parse_stream_line(raw_line)
-                if parsed:
-                    result_text.append(parsed)
-                    for sub in parsed.splitlines():
-                        if sub.strip():
-                            on_line(sub)
-
-        reader = threading.Thread(target=_read_stdout, daemon=True)
-        reader.start()
-
-        reader.join(timeout=timeout)
-        if reader.is_alive():
-            proc.kill()
-            proc.wait()
-            raise subprocess.TimeoutExpired(cmd, timeout or 0)
-
-        stderr_raw = proc.stderr.read() if proc.stderr else ""
-        proc.wait()
-
-        return subprocess.CompletedProcess(
-            args=cmd,
-            returncode=proc.returncode,
-            stdout="\n".join(result_text),
-            stderr=stderr_raw,
-        )
+        """Backwards-compatible alias for :func:`parse_stream_json_line`."""
+        return parse_stream_json_line(raw)
 
     def _run_session(
         self,
@@ -554,7 +580,7 @@ class QwenRunner(SessionResumableRunner):
         result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
         parsed_lines: List[str] = []
         for line in result.stdout.splitlines():
-            parsed = self._parse_stream_line(line)
+            parsed = parse_stream_json_line(line)
             if parsed:
                 parsed_lines.append(parsed)
         return subprocess.CompletedProcess(

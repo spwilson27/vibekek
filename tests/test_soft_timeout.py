@@ -13,8 +13,10 @@ from workflow_lib.runners import (
     AIRunner,
     SessionResumableRunner,
     GeminiRunner,
+    ClaudeRunner,
     QwenRunner,
     make_runner,
+    parse_stream_json_line,
     RESUME_PROMPT,
 )
 
@@ -387,3 +389,103 @@ class TestRunAiCommand:
         # Verify an on_line callback was passed (wrapping the prefix)
         run_call = mock_runner.run.call_args
         assert run_call.kwargs.get("on_line") is not None
+
+
+# ---------------------------------------------------------------------------
+# Module-level parse_stream_json_line
+# ---------------------------------------------------------------------------
+
+class TestParseStreamJsonLine:
+    def test_empty_line(self):
+        assert parse_stream_json_line("") is None
+
+    def test_non_json(self):
+        assert parse_stream_json_line("some text") is None
+
+    def test_invalid_json(self):
+        assert parse_stream_json_line("{invalid}") is None
+
+    def test_assistant_text(self):
+        import json
+        line = json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Hello world"}]}
+        })
+        assert parse_stream_json_line(line) == "Hello world"
+
+    def test_result_type(self):
+        import json
+        line = json.dumps({"type": "result", "result": "Done!"})
+        assert parse_stream_json_line(line) == "Done!"
+
+    def test_qwen_alias_delegates(self):
+        """QwenRunner._parse_stream_line delegates to module-level function."""
+        import json
+        line = json.dumps({"type": "result", "result": "ok"})
+        assert QwenRunner._parse_stream_line(line) == parse_stream_json_line(line)
+
+
+# ---------------------------------------------------------------------------
+# ClaudeRunner
+# ---------------------------------------------------------------------------
+
+class TestClaudeGetCmd:
+    def test_basic(self):
+        r = ClaudeRunner()
+        cmd = r.get_cmd()
+        assert cmd == ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json"]
+
+    def test_with_model(self):
+        r = ClaudeRunner(model="claude-sonnet-4-6")
+        cmd = r.get_cmd()
+        assert "--model" in cmd
+        assert "claude-sonnet-4-6" in cmd
+
+    def test_with_images(self):
+        r = ClaudeRunner()
+        cmd = r.get_cmd(image_paths=["/tmp/img.png"])
+        assert "--image" in cmd
+        assert "/tmp/img.png" in cmd
+
+    def test_stream_json_flag(self):
+        r = ClaudeRunner()
+        cmd = r.get_cmd()
+        assert "--output-format" in cmd
+        idx = cmd.index("--output-format")
+        assert cmd[idx + 1] == "stream-json"
+
+
+class TestClaudeRunnerRun:
+    def test_streaming_uses_json_parser(self):
+        r = ClaudeRunner()
+        expected = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
+
+        with patch.object(r, '_run_streaming_json', return_value=expected) as mock_json, \
+             patch.object(r, '_run_streaming') as mock_plain:
+            r.run("/tmp", "hello", on_line=lambda l: None)
+
+        mock_json.assert_called_once()
+        mock_plain.assert_not_called()
+
+    def test_prompt_is_positional_arg(self):
+        r = ClaudeRunner()
+        expected = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        with patch.object(r, '_run_streaming_json', return_value=expected) as mock_json:
+            r.run("/tmp", "my prompt", on_line=lambda l: None)
+
+        cmd_arg = mock_json.call_args[0][0]
+        assert "my prompt" in cmd_arg
+
+    def test_no_on_line_parses_json(self):
+        """Non-streaming mode still parses JSONL output."""
+        import json
+        r = ClaudeRunner()
+        jsonl_output = json.dumps({"type": "result", "result": "final answer"})
+        expected = subprocess.CompletedProcess(args=["claude"], returncode=0, stdout=jsonl_output, stderr="")
+
+        with patch('subprocess.run', return_value=expected):
+            result = r.run("/tmp", "hello")
+
+        assert result.returncode == 0
+        assert "final answer" in result.stdout

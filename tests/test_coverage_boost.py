@@ -2863,9 +2863,11 @@ class TestRunnerStreaming:
         mock_run.assert_called_once()
 
     def test_claude_runner_on_line_uses_popen(self):
+        import json as _json
         from workflow_lib.runners import ClaudeRunner
         runner = ClaudeRunner()
-        proc = self._fake_popen(["claude output"])
+        jsonl_line = _json.dumps({"type": "result", "result": "claude output"})
+        proc = self._fake_popen([jsonl_line])
         with patch("subprocess.Popen", return_value=proc):
             collected = []
             runner.run("/cwd", "prompt", on_line=collected.append)
@@ -3279,3 +3281,303 @@ class TestOrchestratorWithDashboard:
             orc.run_phase_with_retry(phase, max_retries=1)
 
 
+# ---------------------------------------------------------------------------
+# parse_stream_json_line (module-level) coverage
+# ---------------------------------------------------------------------------
+
+class TestParseStreamJsonLineCoverage:
+    """Cover the module-level parse_stream_json_line function."""
+
+    def test_empty(self):
+        from workflow_lib.runners import parse_stream_json_line
+        assert parse_stream_json_line("") is None
+
+    def test_non_json(self):
+        from workflow_lib.runners import parse_stream_json_line
+        assert parse_stream_json_line("plain text") is None
+
+    def test_invalid_json(self):
+        from workflow_lib.runners import parse_stream_json_line
+        assert parse_stream_json_line("{bad}") is None
+
+    def test_assistant_text(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}})
+        assert parse_stream_json_line(line) == "hi"
+
+    def test_assistant_tool_use_read_file(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "read_file", "input": {"file_path": "/a.py"}}
+        ]}})
+        assert "[tool] read_file: /a.py" in parse_stream_json_line(line)
+
+    def test_assistant_tool_use_web_fetch(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "web_fetch", "input": {"url": "http://x"}}
+        ]}})
+        assert "[tool] web_fetch: http://x" in parse_stream_json_line(line)
+
+    def test_assistant_tool_use_shell(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "run_shell_command", "input": {"command": "ls"}}
+        ]}})
+        assert "[tool] run_shell_command: ls" in parse_stream_json_line(line)
+
+    def test_assistant_tool_use_grep(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "grep_search", "input": {"pattern": "foo"}}
+        ]}})
+        assert "[tool] grep_search: foo" in parse_stream_json_line(line)
+
+    def test_assistant_tool_use_other(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "custom_tool", "input": {}}
+        ]}})
+        assert parse_stream_json_line(line) == "[tool] custom_tool"
+
+    def test_assistant_empty_content(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "assistant", "message": {"content": []}})
+        assert parse_stream_json_line(line) is None
+
+    def test_user_tool_result_text(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "output"}
+        ]}})
+        assert "[result] output" in parse_stream_json_line(line)
+
+    def test_user_tool_result_error(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "", "is_error": True}
+        ]}})
+        assert "error" in parse_stream_json_line(line)
+
+    def test_user_tool_result_ok(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": ""}
+        ]}})
+        assert "ok" in parse_stream_json_line(line)
+
+    def test_user_text_block(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "user", "message": {"content": [
+            {"type": "text", "text": "user msg"}
+        ]}})
+        assert parse_stream_json_line(line) == "user msg"
+
+    def test_result_type(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "result", "result": "Done!"})
+        assert parse_stream_json_line(line) == "Done!"
+
+    def test_result_empty(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "result", "result": ""})
+        assert parse_stream_json_line(line) is None
+
+    def test_system_suppressed(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "system", "message": "init"})
+        assert parse_stream_json_line(line) is None
+
+
+# ---------------------------------------------------------------------------
+# AIRunner._run_streaming_json coverage
+# ---------------------------------------------------------------------------
+
+class TestRunStreamingJson:
+    def _fake_popen(self, lines, returncode=0):
+        import io
+        proc = MagicMock()
+        proc.stdout = iter(line + "\n" for line in lines)
+        proc.stderr = io.StringIO("")
+        proc.returncode = returncode
+        proc.stdin = MagicMock()
+        proc.wait.return_value = None
+        return proc
+
+    def test_parses_jsonl_lines(self):
+        from workflow_lib.runners import ClaudeRunner
+        runner = ClaudeRunner()
+        jsonl = json.dumps({"type": "result", "result": "hello"})
+        proc = self._fake_popen([jsonl])
+        collected = []
+        with patch("subprocess.Popen", return_value=proc):
+            result = runner._run_streaming_json(["cmd"], "/tmp", collected.append)
+        assert "hello" in collected
+        assert "hello" in result.stdout
+
+    def test_skips_non_json_lines(self):
+        from workflow_lib.runners import ClaudeRunner
+        runner = ClaudeRunner()
+        proc = self._fake_popen(["not json", "also not json"])
+        collected = []
+        with patch("subprocess.Popen", return_value=proc):
+            result = runner._run_streaming_json(["cmd"], "/tmp", collected.append)
+        assert collected == []
+        assert result.stdout == ""
+
+    def test_claude_non_streaming_parses_jsonl(self):
+        from workflow_lib.runners import ClaudeRunner
+        runner = ClaudeRunner()
+        jsonl_out = json.dumps({"type": "result", "result": "answer"})
+        fake = MagicMock(returncode=0, stdout=jsonl_out, stderr="", args=["claude"])
+        with patch("subprocess.run", return_value=fake):
+            result = runner.run("/tmp", "q")
+        assert "answer" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Additional runner coverage (ClineRunner, AiderRunner, CodexRunner)
+# ---------------------------------------------------------------------------
+
+class TestClineRunnerCoverage:
+    def test_get_cmd(self):
+        from workflow_lib.runners import ClineRunner
+        r = ClineRunner()
+        assert r.get_cmd()[:2] == ["cline", "--yolo"]
+
+    def test_get_cmd_with_model(self):
+        from workflow_lib.runners import ClineRunner
+        r = ClineRunner(model="m1")
+        cmd = r.get_cmd()
+        assert "-m" in cmd and "m1" in cmd
+
+    def test_run_no_on_line(self):
+        from workflow_lib.runners import ClineRunner
+        r = ClineRunner()
+        fake = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=fake):
+            result = r.run("/tmp", "prompt")
+        assert result.returncode == 0
+
+    def test_run_with_on_line(self):
+        from workflow_lib.runners import ClineRunner
+        import io
+        r = ClineRunner()
+        proc = MagicMock()
+        proc.stdout = iter(["output\n"])
+        proc.stderr = io.StringIO("")
+        proc.returncode = 0
+        proc.stdin = MagicMock()
+        proc.wait.return_value = None
+        collected = []
+        with patch("subprocess.Popen", return_value=proc):
+            r.run("/tmp", "prompt", on_line=collected.append)
+        assert "output" in collected
+
+
+class TestAiderRunnerCoverage:
+    def test_get_cmd(self):
+        from workflow_lib.runners import AiderRunner
+        r = AiderRunner()
+        cmd = r.get_cmd()
+        assert "aider" in cmd
+
+    def test_get_cmd_with_model(self):
+        from workflow_lib.runners import AiderRunner
+        r = AiderRunner(model="m1")
+        cmd = r.get_cmd()
+        assert "--model" in cmd and "m1" in cmd
+
+    def test_run_no_on_line(self):
+        from workflow_lib.runners import AiderRunner
+        r = AiderRunner()
+        fake = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=fake):
+            result = r.run("/tmp", "prompt")
+        assert result.returncode == 0
+
+    def test_run_with_on_line(self):
+        from workflow_lib.runners import AiderRunner
+        import io
+        r = AiderRunner()
+        proc = MagicMock()
+        proc.stdout = iter(["output\n"])
+        proc.stderr = io.StringIO("")
+        proc.returncode = 0
+        proc.stdin = MagicMock()
+        proc.wait.return_value = None
+        collected = []
+        with patch("subprocess.Popen", return_value=proc):
+            r.run("/tmp", "prompt", on_line=collected.append)
+        assert "output" in collected
+
+
+class TestCodexRunnerCoverage:
+    def test_get_cmd(self):
+        from workflow_lib.runners import CodexRunner
+        r = CodexRunner()
+        cmd = r.get_cmd()
+        assert cmd[:3] == ["codex", "exec", "--full-auto"]
+
+    def test_get_cmd_with_model_and_images(self):
+        from workflow_lib.runners import CodexRunner
+        r = CodexRunner(model="m1")
+        cmd = r.get_cmd(image_paths=["/img.png"])
+        assert "-m" in cmd and "m1" in cmd
+        assert "-i" in cmd and "/img.png" in cmd
+
+    def test_run_no_on_line(self):
+        from workflow_lib.runners import CodexRunner
+        r = CodexRunner()
+        fake = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=fake):
+            result = r.run("/tmp", "prompt")
+        assert result.returncode == 0
+
+    def test_run_with_on_line(self):
+        from workflow_lib.runners import CodexRunner
+        import io
+        r = CodexRunner()
+        proc = MagicMock()
+        proc.stdout = iter(["output\n"])
+        proc.stderr = io.StringIO("")
+        proc.returncode = 0
+        proc.stdin = MagicMock()
+        proc.wait.return_value = None
+        collected = []
+        with patch("subprocess.Popen", return_value=proc):
+            r.run("/tmp", "prompt", on_line=collected.append)
+        assert "output" in collected
+
+
+class TestCopilotRunnerCoverage:
+    def test_run_no_on_line(self):
+        from workflow_lib.runners import CopilotRunner
+        r = CopilotRunner()
+        fake = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=fake), \
+             patch("tempfile.NamedTemporaryFile") as mock_tmp:
+            mock_f = MagicMock()
+            mock_f.name = "/tmp/prompt"
+            mock_tmp.return_value.__enter__.return_value = mock_f
+            result = r.run("/tmp", "prompt")
+        assert result.returncode == 0
+
+    def test_run_with_on_line(self):
+        from workflow_lib.runners import CopilotRunner
+        import io
+        r = CopilotRunner()
+        proc = MagicMock()
+        proc.stdout = iter(["output\n"])
+        proc.stderr = io.StringIO("")
+        proc.returncode = 0
+        proc.stdin = MagicMock()
+        proc.wait.return_value = None
+        collected = []
+        with patch("subprocess.Popen", return_value=proc), \
+             patch("tempfile.NamedTemporaryFile") as mock_tmp:
+            mock_f = MagicMock()
+            mock_f.name = "/tmp/prompt"
+            mock_tmp.return_value.__enter__.return_value = mock_f
+            r.run("/tmp", "prompt", on_line=collected.append)
+        assert "output" in collected
