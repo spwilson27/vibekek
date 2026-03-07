@@ -49,8 +49,9 @@ def load_config() -> Dict[str, Any]:
     try:
         with open(cfg, "r", encoding="utf-8") as f:
             raw = f.read()
-        # Strip // line comments before parsing
+        # Strip // line comments and trailing commas before parsing
         stripped = re.sub(r"//[^\n]*", "", raw)
+        stripped = re.sub(r",\s*([}\]])", r"\1", stripped)
         return json.loads(stripped)
     except Exception:
         return {}
@@ -66,3 +67,26 @@ def get_serena_enabled() -> bool:
     :rtype: bool
     """
     return bool(load_config().get("serena", False))
+
+
+def get_config_defaults() -> Dict[str, Any]:
+    """Return workflow defaults from ``.workflow.jsonc``.
+
+    Supported keys (all optional):
+
+    * ``backend`` (str) — AI CLI backend (``"gemini"``, ``"claude"``,
+      ``"opencode"``, ``"copilot"``).
+    * ``model`` (str) — Model name passed through to the AI CLI.
+    * ``ignore_sandbox`` (bool) — Disable sandbox violation checks.
+    * ``timeout`` (int) — Timeout in seconds per AI agent invocation.
+    * ``retries`` (int) — Max retry attempts per phase on failure.
+
+    :returns: Dict of config values (only keys present in the file).
+    :rtype: dict
+    """
+    cfg = load_config()
+    defaults: Dict[str, Any] = {}
+    for key in ("backend", "model", "ignore_sandbox", "timeout", "retries"):
+        if key in cfg:
+            defaults[key] = cfg[key]
+    return defaults

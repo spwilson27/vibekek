@@ -63,7 +63,7 @@ from .context import ProjectContext
 from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade
 from .executor import execute_dag, Logger, signal_handler
 from .dashboard import make_dashboard, _DashboardStream
-from .config import get_serena_enabled
+from .config import get_serena_enabled, get_config_defaults
 from .state import load_workflow_state, load_dags, get_tasks_dir
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner
 
@@ -240,10 +240,12 @@ def main() -> None:
     the ``commands`` dispatch table.
     """
     # Shared flags available to all subcommands
+    # Defaults are None so we can distinguish "not passed" from "passed".
+    # Actual defaults are layered: hardcoded -> .workflow.jsonc -> CLI.
     shared = argparse.ArgumentParser(add_help=False)
-    shared.add_argument("--backend", choices=["gemini", "claude", "opencode", "copilot"], default="gemini", help="AI CLI backend to use (default: gemini)")
+    shared.add_argument("--backend", choices=["gemini", "claude", "opencode", "copilot"], default=None, help="AI CLI backend to use (default: gemini)")
     shared.add_argument("--model", default=None, help="Model name to pass through to the AI CLI (e.g. 'claude-sonnet-4-5-20250514')")
-    shared.add_argument("--ignore-sandbox", action="store_true", help="Disable sandbox violation checks")
+    shared.add_argument("--ignore-sandbox", action="store_true", default=None, help="Disable sandbox violation checks")
 
     parser = argparse.ArgumentParser(description="AI Project Planning and Execution Workflow")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -256,8 +258,8 @@ def main() -> None:
     p_plan.add_argument("--phase", default=None, help="Start from a specific phase, e.g. '4-merge'")
     p_plan.add_argument("--jobs", type=int, default=1, help="Maximum number of parallel AI agents/jobs")
     p_plan.add_argument("--force", action="store_true", help="Force re-run of the specified phase")
-    p_plan.add_argument("--retries", type=int, default=3, help="Max retries per phase on failure (default: 3, use 0 to disable)")
-    p_plan.add_argument("--timeout", type=int, default=600, help="Timeout in seconds per AI agent invocation (default: 600 = 10m)")
+    p_plan.add_argument("--retries", type=int, default=None, help="Max retries per phase on failure (default: 3, use 0 to disable)")
+    p_plan.add_argument("--timeout", type=int, default=None, help="Timeout in seconds per AI agent invocation (default: 600 = 10m)")
 
     # run
     p_run = sub.add_parser("run", parents=[shared], help="Parallel development workflow orchestrator")
@@ -312,6 +314,19 @@ def main() -> None:
     p_cascade.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args()
+
+    # Layer defaults: hardcoded -> .workflow.jsonc -> CLI args
+    _HARDCODED = {
+        "backend": "gemini",
+        "model": None,
+        "ignore_sandbox": False,
+        "timeout": 600,
+        "retries": 3,
+    }
+    cfg_defaults = get_config_defaults()
+    for key, hardcoded in _HARDCODED.items():
+        if getattr(args, key, None) is None:
+            setattr(args, key, cfg_defaults.get(key, hardcoded))
 
     commands = {
         "setup": cmd_setup,

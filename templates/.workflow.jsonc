@@ -4,6 +4,21 @@
   // it after each successful merge so agents have up-to-date code search.
   "serena": true,
 
+  // AI CLI backend: "gemini", "claude", "opencode", or "copilot"
+  // "backend": "gemini",
+
+  // Model name passed through to the AI CLI via --model (optional).
+  // "model": "claude-sonnet-4-5-20250514",
+
+  // Disable sandbox violation checks (default: false).
+  // "ignore_sandbox": false,
+
+  // Timeout in seconds per AI agent invocation (default: 600 = 10m).
+  // "timeout": 600,
+
+  // Max retry attempts per phase on failure (default: 3).
+  // "retries": 3,
+
   // Optional: GitHub repository (owner/repo) used by `./do ci` for remote checks.
   // "github_repo": "owner/repo"
 }

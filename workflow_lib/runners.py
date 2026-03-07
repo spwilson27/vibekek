@@ -8,6 +8,7 @@ Runner selection is handled at construction time in :mod:`workflow_lib.cli`
 and :mod:`workflow_lib.replan` via ``_make_runner()``.
 """
 
+import os
 import subprocess
 import tempfile
 import threading
@@ -24,6 +25,14 @@ class AIRunner:
 
     def __init__(self, model: Optional[str] = None) -> None:
         self.model = model
+
+    def _env(self) -> Dict[str, str]:
+        """Return the environment dict to pass to subprocesses.
+
+        Starts from the current process environment so that API keys,
+        PATH, and other variables are available to AI CLI tools.
+        """
+        return os.environ.copy()
 
     def _run_streaming(
         self,
@@ -58,6 +67,7 @@ class AIRunner:
             stderr=subprocess.PIPE,
             text=True,
             cwd=cwd,
+            env=self._env(),
         )
         stdout_lines: List[str] = []
 
@@ -160,7 +170,7 @@ class GeminiRunner(AIRunner):
         cmd = self.get_cmd(image_paths)
         if on_line is not None:
             return self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout)
-        return subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
 
 
 class ClaudeRunner(AIRunner):
@@ -196,7 +206,7 @@ class ClaudeRunner(AIRunner):
         cmd = self.get_cmd(image_paths)
         if on_line is not None:
             return self._run_streaming(cmd, full_prompt, cwd, on_line, timeout=timeout)
-        return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
 
 
 class OpencodeRunner(AIRunner):
@@ -229,7 +239,7 @@ class OpencodeRunner(AIRunner):
         cmd = self.get_cmd(image_paths)
         if on_line is not None:
             return self._run_streaming(cmd, full_prompt, cwd, on_line, timeout=timeout)
-        return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
 
 
 class CopilotRunner(AIRunner):
@@ -282,7 +292,7 @@ class CopilotRunner(AIRunner):
                         last_result = self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout)
                     else:
                         last_result = subprocess.run(
-                            cmd, input=prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout
+                            cmd, input=prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env()
                         )
                     if last_result.returncode == 0:
                         return last_result

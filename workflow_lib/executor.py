@@ -231,7 +231,8 @@ def run_ai_command(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         cwd=cwd,
-        text=True
+        text=True,
+        env=os.environ.copy(),
     )
 
     def write_input():
