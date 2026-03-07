@@ -12,6 +12,7 @@ Typical usage::
 """
 
 import os
+import signal
 import subprocess
 import sys
 from typing import Any, Optional
@@ -52,6 +53,8 @@ class Orchestrator:
         self.max_retries = max(max_retries, 1)  # At least 1 attempt
         self.auto_retries = auto_retries or 0
         self.ctx.agent_timeout = timeout if timeout > 0 else None
+        self.shutdown_requested = False
+        self._prev_sigint_handler = None
 
     def _log(self, message: str) -> None:
         if self.dashboard:
@@ -62,6 +65,23 @@ class Orchestrator:
     def _set_phase(self, name: str, status: str, stage: str = "") -> None:
         if self.dashboard:
             self.dashboard.set_agent(f"plan/{name}", stage, status)
+
+    def _handle_sigint(self, sig: int, frame: Any) -> None:
+        if not self.shutdown_requested:
+            self._log("\n[!] Ctrl-C detected. Current agent will finish. No new phases will start.")
+            self._log("    Press Ctrl-C again to force exit immediately.")
+            self.shutdown_requested = True
+        else:
+            self._log("\n[!] Ctrl-C detected again. Forcing immediate exit...")
+            os._exit(1)
+
+    def install_signal_handler(self) -> None:
+        self._prev_sigint_handler = signal.signal(signal.SIGINT, self._handle_sigint)
+
+    def restore_signal_handler(self) -> None:
+        if self._prev_sigint_handler is not None:
+            signal.signal(signal.SIGINT, self._prev_sigint_handler)
+            self._prev_sigint_handler = None
 
     def _prompt(self, message: str) -> str:
         if self.dashboard:
@@ -83,6 +103,9 @@ class Orchestrator:
         :raises SystemExit: When the user chooses ``q`` or the phase exhausts
             all retry attempts.
         """
+        if self.shutdown_requested:
+            self._log("[!] Shutdown requested. Exiting after last completed phase.")
+            sys.exit(0)
         if max_retries <= 0:
             max_retries = self.max_retries
         auto_failures = 0
@@ -211,6 +234,14 @@ class Orchestrator:
         :raises SystemExit: Propagated from :meth:`run_phase_with_retry` if any
             phase exhausts its retry budget.
         """
+        self.install_signal_handler()
+        try:
+            self._run_phases()
+        finally:
+            self.restore_signal_handler()
+
+    def _run_phases(self) -> None:
+        """Internal method that runs all planning phases sequentially."""
         self._log("Beginning multi-phase document generation and lifecycle orchestration...")
 
         # Startup validation: ensure all prompt files exist before running any phase

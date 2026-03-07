@@ -1,5 +1,6 @@
 import sys
 import os
+import signal
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -127,3 +128,61 @@ class TestAutoRetriesCounterResetsPerPhase:
             orc.run_phase_with_retry(phase)
 
         assert phase.execute.call_count == 2
+
+
+class TestGracefulShutdown:
+    def test_first_sigint_sets_shutdown_flag(self):
+        """First Ctrl-C sets shutdown_requested, does not exit."""
+        orc = _make_orchestrator()
+        orc.install_signal_handler()
+        try:
+            assert not orc.shutdown_requested
+            os.kill(os.getpid(), signal.SIGINT)
+            assert orc.shutdown_requested
+        finally:
+            orc.restore_signal_handler()
+
+    def test_shutdown_prevents_next_phase(self):
+        """After shutdown_requested, run_phase_with_retry exits cleanly."""
+        orc = _make_orchestrator()
+        orc.shutdown_requested = True
+        phase = _make_phase([None])
+
+        with pytest.raises(SystemExit) as exc_info:
+            orc.run_phase_with_retry(phase)
+
+        assert exc_info.value.code == 0
+        phase.execute.assert_not_called()
+
+    def test_current_phase_completes_before_shutdown(self):
+        """A running phase completes even after shutdown is requested."""
+        orc = _make_orchestrator()
+
+        def execute_and_set_shutdown(_ctx):
+            orc.shutdown_requested = True
+
+        phase_a = MagicMock()
+        phase_a.display_name = "PhaseA"
+        phase_a.operation = "test"
+        phase_a.execute.side_effect = execute_and_set_shutdown
+
+        phase_b = _make_phase([None])
+
+        # Phase A runs and sets shutdown during execution
+        orc.run_phase_with_retry(phase_a)
+        phase_a.execute.assert_called_once()
+
+        # Phase B should not run
+        with pytest.raises(SystemExit) as exc_info:
+            orc.run_phase_with_retry(phase_b)
+        assert exc_info.value.code == 0
+        phase_b.execute.assert_not_called()
+
+    def test_signal_handler_restored(self):
+        """restore_signal_handler puts back the previous handler."""
+        orc = _make_orchestrator()
+        prev = signal.getsignal(signal.SIGINT)
+        orc.install_signal_handler()
+        assert signal.getsignal(signal.SIGINT) != prev
+        orc.restore_signal_handler()
+        assert signal.getsignal(signal.SIGINT) == prev
