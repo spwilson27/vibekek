@@ -12,7 +12,7 @@ You will identify direct and indirect competitors, analyze their strengths and w
 Before generating the final document, plan your approach:
 1. Identify the core value proposition of the product based on the Context.
 2. Brainstorm 3-5 potential direct or indirect competitors that operate in this space.
-3. Use your search tools to find real-world data, competitor features, and pricing models to ground your analysis.
+3. Use your search tools (or curl via shell command) to find real-world data, competitor features, and pricing models to ground your analysis.
 4. Cross-reference your planned points against any provided `<previous_document>` tags (e.g., if a Market Research doc exists, ensure your competitor analysis aligns with its TAM and GTM recommendations).
 5. Outline the strategic gaps that 'devs' can exploit to win market share.
 6. Structure the final document according to the required `OUTPUT FORMAT`, ensuring you provide and verify references for all factual claims.

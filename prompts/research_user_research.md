@@ -11,7 +11,7 @@ You will identify target demographics, their primary needs, behaviors, and the k
 # CHAIN OF THOUGHT
 Before generating the final document, plan your approach:
 1. Identify the core problem the product solves based on the Context.
-2. Use your search tools to find real-world data, user behavior studies, and demographic statistics to ground your analysis.
+2. Use your search tools (or curl via shell command) to find real-world data, user behavior studies, and demographic statistics to ground your analysis.
 3. Formulate 3 distinct target audience segments that experience this problem.
 4. Cross-reference your planned segments against any provided `<previous_document>` tags (e.g., if Market or Competitive research identifies a specific niche, your personas must reflect that niche).
 5. Draft a core user journey for each persona showing how they interact with the product to solve their problem.

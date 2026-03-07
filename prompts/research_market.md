@@ -11,7 +11,7 @@ You will analyze the total addressable market (TAM), current industry trends, po
 # CHAIN OF THOUGHT
 Before generating the final document, plan your approach:
 1. Identify the core value proposition of the product based on the Context.
-2. Use your search tools to find real-world data, market size estimates, and industry trends to ground your analysis.
+2. Use your search tools (or curl via shell command) to find real-world data, market size estimates, and industry trends to ground your analysis.
 3. Outline the specific market segments, TAM/SAM/SOM estimates, and macro trends that apply to this value proposition.
 4. Cross-reference your planned points against any provided `<previous_document>` tags. If previous documents mention specific target audiences or constraints, ensure your market analysis directly addresses them.
 5. Structure the final document according to the required `OUTPUT FORMAT`, ensuring you provide and verify references for all factual claims.

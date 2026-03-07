@@ -11,7 +11,7 @@ Based on the product's vision, you will research the optimal technology stack, e
 # CHAIN OF THOUGHT
 Before generating the final document, plan your approach:
 1. Identify the core functional and non-functional requirements implied by the Context.
-2. Use your search tools to find real-world data, technical documentation, and technology landscape trends to ground your analysis.
+2. Use your search tools (or curl via shell command) to find real-world data, technical documentation, and technology landscape trends to ground your analysis.
 3. Formulate an initial technology stack (Frontend, Backend, Database, Infrastructure) that safely and scalably meets those needs.
 4. Cross-reference your planned architecture against any provided `<previous_document>` tags (e.g., if Market or Competitive research mentions specific platforms or compliance needs, your architecture must support them).
 5. Identify 2-3 major technical risks or integration challenges.
