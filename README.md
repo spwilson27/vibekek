@@ -197,7 +197,7 @@ graceful drain (in-flight tasks finish); twice for immediate exit.
 
 ## Configuration
 
-### `workflow.jsonc`
+### `.workflow.jsonc`
 
 ```jsonc
 {
@@ -387,7 +387,7 @@ Rescans tasks, checks requirement coverage, rebuilds the DAG, and validates.
 ```
 .tools/
   workflow.py          # Entry point (delegates to workflow_lib/)
-  workflow.jsonc       # Configuration (serena toggle, etc.)
+  .workflow.jsonc       # Configuration (serena toggle, etc.)
   verify_requirements.py  # Requirement verification script
   workflow_lib/        # Core library
     cli.py             # Argument parser + command dispatch
@@ -398,7 +398,7 @@ Rescans tasks, checks requirement coverage, rebuilds the DAG, and validates.
     context.py         # Shared project context + AI runner wrapper
     runners.py         # AI backend adapters (Gemini, Claude, Copilot, Opencode)
     state.py           # Workflow + replan state persistence
-    config.py          # workflow.jsonc loader
+    config.py          # .workflow.jsonc loader
     constants.py       # Paths + document catalogue
     prompt_registry.py # Canonical prompt placeholder registry
   prompts/             # Prompt templates for every AI step

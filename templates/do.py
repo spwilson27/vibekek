@@ -23,12 +23,12 @@ import subprocess
 import sys
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(ROOT_DIR, "workflow.jsonc")
+CONFIG_FILE = os.path.join(ROOT_DIR, ".workflow.jsonc")
 PRESUBMIT_TIMEOUT_SECONDS = 10 * 60
 
 
 def load_config():
-    """Read and parse workflow.jsonc, stripping // comments."""
+    """Read and parse .workflow.jsonc, stripping // comments."""
     if not os.path.exists(CONFIG_FILE):
         return {}
     try:

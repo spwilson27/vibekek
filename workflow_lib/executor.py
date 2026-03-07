@@ -967,7 +967,7 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
 
     Serena integration:
 
-    * If ``workflow.jsonc`` has ``"serena": true``, a ``.mcp.json`` is copied
+    * If ``.workflow.jsonc`` has ``"serena": true``, a ``.mcp.json`` is copied
       from the template if missing, and the Serena cache is bootstrapped before
       the first task runs.
 
