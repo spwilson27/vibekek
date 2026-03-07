@@ -352,6 +352,8 @@ class ProjectContext:
                         os.path.abspath(self.state_file),
                         os.path.abspath(os.path.join(self.root_dir, ".last_failed_command.sh")),
                         os.path.abspath(os.path.join(self.root_dir, ".last_failed_prompt.txt")),
+                        os.path.abspath(os.path.join(self.root_dir, "plan_workflow.log")),
+                        os.path.abspath(os.path.join(self.root_dir, "run_workflow.log")),
                     ]:
                         continue
                     print(f"\n[SANDBOX VIOLATION] Unauthorized change detected: {path}")
