@@ -443,6 +443,7 @@ class ProjectContext:
         effective_timeout = timeout if timeout is not None else self.agent_timeout
         result = self.runner.run(self.root_dir, full_prompt, self.image_paths, on_line=on_line, timeout=effective_timeout)
         if result.returncode != 0:
+            self._log_failure_summary(result)
             self._write_last_failed_command(full_prompt)
         if allowed_files is not None:
             if sandbox:
@@ -450,6 +451,23 @@ class ProjectContext:
             for f in allowed_files:
                 self.strip_thinking_tags(os.path.abspath(f))
         return result
+
+    def _log_failure_summary(self, result: subprocess.CompletedProcess) -> None:  # type: ignore[type-arg]
+        """Log a concise failure summary from the subprocess result.
+
+        Extracts the last meaningful lines from stderr (or stdout if stderr is
+        empty) so the user sees why the agent failed without raw output dumps.
+        """
+        source = (result.stderr or "").strip() or (result.stdout or "").strip()
+        if not source:
+            print(f"   -> Agent exited with code {result.returncode} (no output)")
+            return
+        # Take the last 5 non-empty lines as the error summary
+        lines = [l for l in source.splitlines() if l.strip()]
+        tail = lines[-5:] if len(lines) > 5 else lines
+        print(f"   -> Agent exited with code {result.returncode}. Last output:")
+        for line in tail:
+            print(f"      {line.rstrip()}")
 
     def _write_last_failed_command(self, full_prompt: str) -> None:
         """Write .last_failed_prompt.txt and .last_failed_command.sh for debugging."""

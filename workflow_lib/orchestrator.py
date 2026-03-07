@@ -112,12 +112,12 @@ class Orchestrator:
                     self._set_phase(name, "done", stage)
                     return
                 self.ctx.current_phase = ""
-                self._log(f"[!] Phase {name} failed on attempt {attempt}.")
+                self._log(f"[!] Phase {name} failed on attempt {attempt} (exit code {e.code}).")
                 self._set_phase(name, "failed", stage)
                 if attempt < max_retries:
                     self._set_phase(name, "waiting", stage)
                     action = self._prompt(
-                        f"Phase '{name}' failed (attempt {attempt}/{max_retries}). "
+                        f"Phase '{name}' failed (attempt {attempt}/{max_retries}, exit code {e.code}). "
                         "Press ENTER to retry, 'c' to continue (if manually resolved), or 'q' to quit"
                     )
                     if action.lower() == 'q':
