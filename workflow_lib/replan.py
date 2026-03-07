@@ -51,7 +51,7 @@ from .constants import TOOLS_DIR, ROOT_DIR, parse_requirements
 from .state import *
 from .executor import phase_sort_key
 from .context import ProjectContext
-from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner, QwenRunner
+from .runners import make_runner as _make_runner_from_runners
 from .phases import Phase5BSharedComponents, Phase7ADAGGeneration
 
 
@@ -818,31 +818,12 @@ def cmd_cascade(args: "argparse.Namespace") -> None:  # type: ignore[name-define
 def _make_runner(backend: str, model: Optional[str] = None) -> "AIRunner":  # type: ignore[name-defined]
     """Instantiate the correct AI runner for the given backend name.
 
-    :param backend: One of ``"claude"``, ``"copilot"``, or any other string
-        (defaults to :class:`~workflow_lib.runners.GeminiRunner`).
-    :type backend: str
-    :param model: Optional model name to pass through to the CLI via ``--model``.
-    :type model: str or None
-    :returns: An AI runner instance.
-    :rtype: AIRunner
+    Delegates to :func:`~workflow_lib.runners.make_runner`, reading
+    ``soft_timeout`` from the project config for backends that support it.
     """
-    if backend == "claude":
-        return ClaudeRunner(model=model)
-    elif backend == "copilot":
-        return CopilotRunner(model=model)
-    elif backend == "opencode":
-        return OpencodeRunner(model=model)
-    elif backend == "cline":
-        return ClineRunner(model=model)
-    elif backend == "aider":
-        return AiderRunner(model=model)
-    elif backend == "codex":
-        return CodexRunner(model=model)
-    elif backend == "qwen":
-        from .config import get_config_defaults as _get_cfg
-        soft_timeout = _get_cfg().get("soft_timeout", 480)
-        return QwenRunner(model=model, soft_timeout=soft_timeout)
-    return GeminiRunner(model=model)
+    from .config import get_config_defaults as _get_cfg
+    soft_timeout = _get_cfg().get("soft_timeout")
+    return _make_runner_from_runners(backend, model=model, soft_timeout=soft_timeout)
 
 
 def _rebuild_phase_dag(phase_dir: str, ctx: ProjectContext) -> None:

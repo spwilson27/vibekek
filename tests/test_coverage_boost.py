@@ -89,54 +89,53 @@ class TestLogger:
 # ---------------------------------------------------------------------------
 
 class TestRunAiCommand:
-    def _mock_proc(self, returncode=0, lines=None):
-        proc = MagicMock()
-        proc.returncode = returncode
-        mock_stdout = MagicMock()
-        mock_stdout.readline.side_effect = (lines or ["output line\n"]) + [""]
-        proc.stdout = mock_stdout
-        proc.wait.return_value = None
-        proc.stdin = MagicMock()
-        return proc
+    """Tests for run_ai_command which delegates to runner classes."""
+
+    def _mock_runner(self, returncode=0):
+        runner = MagicMock()
+        runner.run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout="output", stderr=""
+        )
+        return runner
 
     def test_claude_backend(self):
-        proc = self._mock_proc()
-        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc):
+        runner = self._mock_runner()
+        with patch("workflow_lib.executor.make_runner", return_value=runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
             rc = run_ai_command("prompt", "/tmp", backend="claude")
         assert rc == 0
 
     def test_copilot_backend(self):
-        proc = self._mock_proc()
-        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc), \
-             patch("tempfile.mkstemp", return_value=(0, "/tmp/mock.txt")), \
-             patch("os.fdopen", return_value=MagicMock().__enter__.return_value), \
-             patch("os.remove"):
+        runner = self._mock_runner()
+        with patch("workflow_lib.executor.make_runner", return_value=runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
             rc = run_ai_command("prompt", "/tmp", backend="copilot")
         assert rc == 0
 
     def test_gemini_backend(self):
-        proc = self._mock_proc(returncode=1)
-        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc):
+        runner = self._mock_runner(returncode=1)
+        with patch("workflow_lib.executor.make_runner", return_value=runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
             rc = run_ai_command("prompt", "/tmp", backend="gemini")
         assert rc == 1
 
-    def test_write_input_exception(self):
-        """stdin.write raises — should not propagate."""
-        proc = self._mock_proc()
-        proc.stdin.write.side_effect = Exception("pipe broken")
-        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc):
+    def test_timeout_returns_1(self):
+        """TimeoutExpired from runner should return exit code 1."""
+        runner = MagicMock()
+        runner.run.side_effect = subprocess.TimeoutExpired(["cmd"], 10)
+        with patch("workflow_lib.executor.make_runner", return_value=runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
             rc = run_ai_command("prompt", "/tmp")
-        assert rc == 0
+        assert rc == 1
 
-    def test_copilot_cleanup_on_oserror(self):
-        """tmp file cleanup handles OSError silently."""
-        proc = self._mock_proc()
-        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc), \
-             patch("tempfile.mkstemp", return_value=(0, "/tmp/mock.txt")), \
-             patch("os.fdopen", return_value=MagicMock().__enter__.return_value), \
-             patch("os.remove", side_effect=OSError):
-            rc = run_ai_command("prompt", "/tmp", backend="copilot")
-        assert rc == 0
+    def test_file_not_found_returns_1(self):
+        """FileNotFoundError from runner should return exit code 1."""
+        runner = MagicMock()
+        runner.run.side_effect = FileNotFoundError("not found")
+        with patch("workflow_lib.executor.make_runner", return_value=runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
+            rc = run_ai_command("prompt", "/tmp")
+        assert rc == 1
 
 
 # ---------------------------------------------------------------------------
@@ -503,49 +502,44 @@ class TestExecuteDag:
 # ---------------------------------------------------------------------------
 
 class TestRunAiCommandOnLine:
-    """Tests for the on_line callback path in run_ai_command."""
+    """Tests for the on_line callback path in run_ai_command (delegates to runners)."""
 
-    def _mock_proc(self, lines=None):
-        proc = MagicMock()
-        proc.returncode = 0
-        mock_stdout = MagicMock()
-        mock_stdout.readline.side_effect = (lines or ["hello\n"]) + [""]
-        proc.stdout = mock_stdout
-        proc.wait.return_value = None
-        proc.stdin = MagicMock()
-        return proc
+    def _mock_runner(self, returncode=0):
+        runner = MagicMock()
+        runner.run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout="output", stderr=""
+        )
+        return runner
 
-    def test_on_line_called_per_line(self):
-        received = []
-        proc = self._mock_proc(["line1\n", "line2\n"])
-        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc):
-            run_ai_command("prompt", "/tmp", on_line=received.append)
-        assert received == ["line1", "line2"]
+    def test_on_line_forwarded_to_runner(self):
+        runner = self._mock_runner()
+        with patch("workflow_lib.executor.make_runner", return_value=runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
+            run_ai_command("prompt", "/tmp", on_line=lambda l: None)
+        # Verify on_line was passed through to runner.run
+        call_kwargs = runner.run.call_args.kwargs
+        assert call_kwargs.get("on_line") is not None
 
-    def test_gemini_with_images_prepends_refs(self):
-        proc = self._mock_proc()
-        captured_prompt = []
-        orig_popen = __import__("subprocess").Popen
-
-        def fake_popen(cmd, **kwargs):
-            stdin_data = kwargs.get("stdin")
-            return proc
-
-        with patch("workflow_lib.executor.subprocess.Popen", side_effect=fake_popen):
-            run_ai_command("prompt", "/tmp", backend="gemini", image_paths=["/a.png"])
+    def test_gemini_with_images(self):
+        runner = self._mock_runner()
+        with patch("workflow_lib.executor.make_runner", return_value=runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
+            rc = run_ai_command("prompt", "/tmp", backend="gemini", image_paths=["/a.png"])
+        assert rc == 0
+        call_kwargs = runner.run.call_args.kwargs
+        assert call_kwargs.get("image_paths") == ["/a.png"]
 
     def test_opencode_with_images(self):
-        proc = self._mock_proc()
-        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc):
+        runner = self._mock_runner()
+        with patch("workflow_lib.executor.make_runner", return_value=runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
             rc = run_ai_command("prompt", "/tmp", backend="opencode", image_paths=["/img.png"])
         assert rc == 0
 
     def test_copilot_with_images(self):
-        proc = self._mock_proc()
-        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc), \
-             patch("tempfile.mkstemp", return_value=(0, "/tmp/mock.txt")), \
-             patch("os.fdopen", return_value=MagicMock().__enter__.return_value), \
-             patch("os.remove"):
+        runner = self._mock_runner()
+        with patch("workflow_lib.executor.make_runner", return_value=runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
             rc = run_ai_command("prompt", "/tmp", backend="copilot", image_paths=["/img.png"])
         assert rc == 0
 
@@ -572,20 +566,18 @@ class TestRunAgentWithDashboard:
         dash.log.assert_called()
 
     def test_on_line_callback_fires(self):
-        """When dashboard + task_id, on_line callback updates dashboard per line."""
+        """When dashboard + task_id, on_line callback is passed to run_ai_command."""
         dash = MagicMock()
-        proc = MagicMock()
-        proc.returncode = 0
-        proc.stdout = MagicMock()
-        proc.stdout.readline.side_effect = ["output line\n", ""]
-        proc.wait.return_value = None
-        proc.stdin = MagicMock()
         with patch("builtins.open", mock_open(read_data="tpl")), \
-             patch("workflow_lib.executor.subprocess.Popen", return_value=proc), \
+             patch("workflow_lib.executor.run_ai_command", return_value=0) as mock_cmd, \
              patch("workflow_lib.executor.get_project_images", return_value=[]):
             run_agent("Impl", "impl.md", {"task_name": "t", "phase_filename": "p"}, "/tmp",
                       dashboard=dash, task_id="phase_1/t.md")
-        dash.set_agent.assert_called()
+        # Verify on_line callback was passed to run_ai_command
+        call_kwargs = mock_cmd.call_args
+        assert call_kwargs.kwargs.get("on_line") is not None or (len(call_kwargs.args) > 5 and call_kwargs.args[5] is not None)
+        dash.set_agent.assert_not_called()  # mock doesn't invoke on_line, so set_agent won't be called
+        dash.log.assert_called()  # but log is called directly
 
 
 class TestProcessTaskWithDashboard:

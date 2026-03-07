@@ -9,7 +9,6 @@ and :mod:`workflow_lib.replan` via ``_make_runner()``.
 """
 
 import os
-import signal
 import subprocess
 import tempfile
 import threading
@@ -17,6 +16,12 @@ import uuid
 from typing import Callable, List, Dict, Any, Optional
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
+
+RESUME_PROMPT = (
+    "You have run out of time. Immediately finish up your current work: "
+    "complete any in-progress file edits, ensure the code compiles/runs, "
+    "and stop. Do not start any new tasks."
+)
 
 
 class AIRunner:
@@ -60,7 +65,6 @@ class AIRunner:
             :class:`subprocess.TimeoutExpired` is raised.
         :returns: Completed process with combined stdout (streamed lines) and
             stderr captured separately.
-        :rtype: subprocess.CompletedProcess
         :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
         """
         use_stdin = bool(prompt)
@@ -93,7 +97,6 @@ class AIRunner:
 
         reader.join(timeout=timeout)
         if reader.is_alive():
-            # Timeout: kill the process
             proc.kill()
             proc.wait()
             raise subprocess.TimeoutExpired(cmd, timeout or 0)
@@ -123,28 +126,87 @@ class AIRunner:
         """Invoke the AI CLI and return its completed process result.
 
         :param cwd: Working directory for the subprocess.
-        :type cwd: str
         :param full_prompt: Full rendered prompt to pass to the CLI.
-        :type full_prompt: str
         :param image_paths: Optional list of absolute paths to image files to
             attach to the request.  How images are delivered depends on the
             backend — see concrete subclass implementations.
-        :type image_paths: list[str] or None
+        :param on_line: Optional streaming callback invoked once per output line.
         :param timeout: Maximum seconds to wait for the AI process.
             ``None`` means no limit.
-        :type timeout: int or None
         :raises NotImplementedError: Always — subclasses must override this.
         :returns: The completed subprocess result.
-        :rtype: subprocess.CompletedProcess
         """
         raise NotImplementedError()
+
+
+class SessionResumableRunner(AIRunner):
+    """Base for runners supporting ``--session-id`` / ``--resume`` soft timeouts.
+
+    When *soft_timeout* is set, each invocation is spawned with a unique
+    ``--session-id``.  If the soft timeout elapses the process is killed
+    and a new ``--resume <id>`` process is launched with a wrap-up prompt.
+    """
+
+    DEFAULT_SOFT_TIMEOUT = 480
+    RESUME_HARD_TIMEOUT = 120
+
+    def __init__(self, model: Optional[str] = None, soft_timeout: Optional[int] = DEFAULT_SOFT_TIMEOUT) -> None:
+        super().__init__(model=model)
+        self.soft_timeout = soft_timeout
+
+    def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
+        raise NotImplementedError()
+
+    def _build_resume_cmd_and_prompt(self, session_id: str) -> tuple:
+        """Return ``(cmd_list, prompt_for_stdin)`` for the resume session.
+
+        Subclasses override to control how the resume prompt is delivered
+        (positional arg vs stdin).
+        """
+        raise NotImplementedError()
+
+    def _run_session(
+        self,
+        cmd: List[str],
+        prompt: str,
+        cwd: str,
+        on_line: Callable[[str], None],
+        timeout: Optional[int] = None,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Run a single session.  Subclasses override for JSON parsing etc."""
+        return self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout)
+
+    def _run_with_soft_timeout(
+        self,
+        cmd: List[str],
+        prompt: str,
+        cwd: str,
+        on_line: Callable[[str], None],
+        session_id: str,
+        timeout: Optional[int] = None,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Run with soft timeout.  If it fires, kill and resume."""
+        backend_name = self.__class__.__name__.replace("Runner", "").lower()
+        try:
+            return self._run_session(cmd, prompt, cwd, on_line, timeout=self.soft_timeout)
+        except subprocess.TimeoutExpired:
+            on_line(f"[soft-timeout] Interrupting {backend_name} session to resume with finish-up prompt...")
+            resume_cmd, resume_prompt = self._build_resume_cmd_and_prompt(session_id)
+            hard_timeout = timeout or self.RESUME_HARD_TIMEOUT
+            on_line(f"[soft-timeout] Resuming session {session_id} with {hard_timeout}s to finish...")
+            try:
+                return self._run_session(resume_cmd, resume_prompt, cwd, on_line, timeout=hard_timeout)
+            except subprocess.TimeoutExpired:
+                on_line(f"[soft-timeout] Resume session exceeded {hard_timeout}s hard limit, killed.")
+                return subprocess.CompletedProcess(
+                    args=resume_cmd, returncode=1, stdout="", stderr="soft-timeout: resume exceeded hard limit"
+                )
 
 
 class GeminiRunner(AIRunner):
     """Runner for the ``gemini`` CLI (Google Gemini).
 
-    Passes the prompt via stdin to ``gemini -y`` (auto-confirm mode) and
-    captures stdout/stderr.
+    Passes the prompt via stdin to ``gemini -y`` (auto-confirm mode).
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
@@ -217,7 +279,7 @@ class ClaudeRunner(AIRunner):
 class OpencodeRunner(AIRunner):
     """Runner for the ``opencode`` CLI.
 
-    Passes the prompt via stdin to ``opencode --print --yes`` and captures
+    Passes the prompt via stdin to ``opencode run`` and captures
     stdout/stderr.
     """
 
@@ -309,25 +371,13 @@ class AiderRunner(AIRunner):
         return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
 
 
-class QwenRunner(AIRunner):
+class QwenRunner(SessionResumableRunner):
     """Runner for the ``qwen`` CLI (Qwen Code).
 
     Uses ``--output-format stream-json`` and parses the JSONL stream to
-    extract human-readable text from ``assistant`` and ``result`` messages,
-    filtering out the raw JSON noise.
-
-    Supports a *soft_timeout* (seconds).  When set, each invocation is
-    spawned with a unique ``--session-id``.  If the soft timeout elapses
-    the process is interrupted (SIGINT) and a new ``qwen --resume <id>``
-    process is launched with a prompt telling the agent to wrap up.
+    extract human-readable text.  Supports soft-timeout via
+    ``--session-id`` / ``--resume``.
     """
-
-    # Default soft timeout: 8 minutes (480s).  ``None`` disables the feature.
-    DEFAULT_SOFT_TIMEOUT = 480
-
-    def __init__(self, model: Optional[str] = None, soft_timeout: Optional[int] = DEFAULT_SOFT_TIMEOUT) -> None:
-        super().__init__(model=model)
-        self.soft_timeout = soft_timeout
 
     def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
         cmd = ["qwen", "-y", "--output-format", "stream-json"]
@@ -340,13 +390,18 @@ class QwenRunner(AIRunner):
                 cmd += ["--session-id", session_id]
         return cmd
 
+    def _build_resume_cmd_and_prompt(self, session_id: str) -> tuple:
+        """Build the resume command for qwen.
+
+        The resume prompt is appended as a positional argument (not stdin).
+        """
+        cmd = self.get_cmd(session_id=session_id, resume=True)
+        cmd.append(RESUME_PROMPT)  # prompt as positional arg
+        return cmd, ""  # empty stdin
+
     @staticmethod
     def _parse_stream_line(raw: str) -> Optional[str]:
-        """Extract human-readable text from a single JSONL line.
-
-        Returns a trimmed string for lines worth displaying, or ``None``
-        to suppress the line entirely.
-        """
+        """Extract human-readable text from a single JSONL line."""
         import json as _json
         stripped = raw.strip()
         if not stripped or not stripped.startswith("{"):
@@ -369,7 +424,6 @@ class QwenRunner(AIRunner):
                 elif block.get("type") == "tool_use":
                     name = block.get("name", "unknown")
                     inp = block.get("input", {})
-                    # Show a concise summary of the tool call
                     if name == "web_fetch":
                         parts.append(f"[tool] {name}: {inp.get('url', '')}")
                     elif name in ("read_file", "write_file", "edit"):
@@ -384,7 +438,7 @@ class QwenRunner(AIRunner):
 
         if msg_type == "user":
             content = obj.get("message", {}).get("content", [])
-            parts: List[str] = []
+            parts = []
             for block in content:
                 if block.get("type") == "tool_result":
                     tool_id = block.get("tool_use_id", "")
@@ -405,7 +459,6 @@ class QwenRunner(AIRunner):
             result_text = obj.get("result", "").strip()
             return result_text or None
 
-        # system and other types are suppressed
         return None
 
     def _run_streaming_json(
@@ -416,7 +469,10 @@ class QwenRunner(AIRunner):
         timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run *cmd* and parse its stream-json output, calling *on_line* for
-        each meaningful extracted line."""
+        each meaningful extracted line.
+
+        :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
+        """
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -426,13 +482,11 @@ class QwenRunner(AIRunner):
             cwd=cwd,
             env=self._env(),
         )
-        stdout_lines: List[str] = []
         result_text: List[str] = []
 
         def _read_stdout() -> None:
             assert proc.stdout is not None
             for raw_line in proc.stdout:
-                stdout_lines.append(raw_line.rstrip("\n"))
                 parsed = self._parse_stream_line(raw_line)
                 if parsed:
                     result_text.append(parsed)
@@ -459,38 +513,16 @@ class QwenRunner(AIRunner):
             stderr=stderr_raw,
         )
 
-    def _interrupt_and_resume(
+    def _run_session(
         self,
-        proc: subprocess.Popen,  # type: ignore[type-arg]
-        reader: threading.Thread,
-        session_id: str,
+        cmd: List[str],
+        prompt: str,
         cwd: str,
         on_line: Callable[[str], None],
-        result_text: List[str],
-        hard_timeout: Optional[int] = None,
+        timeout: Optional[int] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
-        """Send SIGINT to *proc*, then launch a ``--resume`` session.
-
-        The resumed session gets a 2-minute hard timeout to wrap up.
-        """
-        on_line("[soft-timeout] Interrupting qwen session to resume with finish-up prompt...")
-        proc.kill()
-        proc.wait()
-        reader.join(timeout=5)
-
-        # Launch resume session
-        resume_prompt = (
-            "You have run out of time. Immediately finish up your current work: "
-            "complete any in-progress file edits, ensure the code compiles/runs, "
-            "and stop. Do not start any new tasks."
-        )
-        resume_cmd = self.get_cmd(session_id=session_id, resume=True)
-        resume_cmd.append(resume_prompt)
-
-        resume_timeout = hard_timeout or 120  # 2 min default for resume
-        on_line(f"[soft-timeout] Resuming session {session_id} with {resume_timeout}s to finish...")
-
-        return self._run_streaming_json(resume_cmd, cwd, on_line, timeout=resume_timeout)
+        """Override to use JSONL-parsing streaming instead of plain text."""
+        return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout)
 
     def run(
         self,
@@ -514,61 +546,11 @@ class QwenRunner(AIRunner):
         cmd.append(full_prompt)
 
         if on_line is not None and self.soft_timeout and session_id:
-            # Streaming with soft timeout: manually manage the process
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=cwd,
-                env=self._env(),
-            )
-            result_text: List[str] = []
-
-            def _read_stdout() -> None:
-                assert proc.stdout is not None
-                for raw_line in proc.stdout:
-                    parsed = self._parse_stream_line(raw_line)
-                    if parsed:
-                        result_text.append(parsed)
-                        for sub in parsed.splitlines():
-                            if sub.strip():
-                                on_line(sub)
-
-            reader = threading.Thread(target=_read_stdout, daemon=True)
-            reader.start()
-
-            reader.join(timeout=self.soft_timeout)
-            if reader.is_alive():
-                # Soft timeout reached — interrupt and resume
-                resume_result = self._interrupt_and_resume(
-                    proc, reader, session_id, cwd, on_line, result_text,
-                    hard_timeout=timeout,
-                )
-                # Combine output from both sessions
-                combined_stdout = "\n".join(result_text) + "\n" + resume_result.stdout
-                return subprocess.CompletedProcess(
-                    args=cmd,
-                    returncode=resume_result.returncode,
-                    stdout=combined_stdout,
-                    stderr=resume_result.stderr,
-                )
-
-            # Finished within soft timeout
-            stderr_raw = proc.stderr.read() if proc.stderr else ""
-            proc.wait()
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=proc.returncode,
-                stdout="\n".join(result_text),
-                stderr=stderr_raw,
-            )
-
+            return self._run_with_soft_timeout(cmd, "", cwd, on_line, session_id, timeout)
         if on_line is not None:
             return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout)
 
-        # Non-streaming: still use stream-json and parse it
+        # Non-streaming fallback
         result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
         parsed_lines: List[str] = []
         for line in result.stdout.splitlines():
@@ -641,8 +623,8 @@ class CopilotRunner(AIRunner):
         """Run the Copilot CLI with *full_prompt* written to a temp file.
 
         Tries the ``copilot -p @<tempfile> --yolo`` invocation.  If the
-        binary is not found, moves on and ultimately re-raises the last
-        :exc:`FileNotFoundError` or raises :exc:`RuntimeError`.
+        binary is not found, re-raises the :exc:`FileNotFoundError` or
+        raises :exc:`RuntimeError`.
 
         :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
         """
@@ -679,3 +661,34 @@ class CopilotRunner(AIRunner):
         raise last_exc if last_exc is not None else RuntimeError("Failed to invoke copilot CLI")
 
 
+def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optional[int] = None) -> AIRunner:
+    """Instantiate the correct AI runner for the given backend name.
+
+    :param backend: One of ``"gemini"``, ``"claude"``, ``"copilot"``,
+        ``"opencode"``, ``"cline"``, ``"aider"``, ``"codex"``, or ``"qwen"``.
+        Unknown values default to Gemini.
+    :param model: Optional model name to pass through to the CLI via ``--model``.
+    :param soft_timeout: For backends that support soft timeout (qwen),
+        overrides the default soft timeout.  If ``None``, the runner's
+        class default is used.
+    :returns: An AI runner instance.
+    """
+    if backend == "claude":
+        return ClaudeRunner(model=model)
+    elif backend == "copilot":
+        return CopilotRunner(model=model)
+    elif backend == "opencode":
+        return OpencodeRunner(model=model)
+    elif backend == "cline":
+        return ClineRunner(model=model)
+    elif backend == "aider":
+        return AiderRunner(model=model)
+    elif backend == "codex":
+        return CodexRunner(model=model)
+    elif backend == "qwen":
+        kwargs: Dict[str, Any] = {"model": model}
+        if soft_timeout is not None:
+            kwargs["soft_timeout"] = soft_timeout
+        return QwenRunner(**kwargs)
+    # default: gemini
+    return GeminiRunner(model=model)

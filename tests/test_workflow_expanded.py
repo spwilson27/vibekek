@@ -155,7 +155,7 @@ def test_gemini_runner():
         mock_run.return_value = mock_res
         res = runner.run(".", "hello")
         assert res.returncode == 0
-        mock_run.assert_called_with(["gemini", "-y"], input="hello", cwd=".", capture_output=True, text=True, timeout=None)
+        mock_run.assert_called_with(["gemini", "-y"], input="hello", cwd=".", capture_output=True, text=True, timeout=None, env=ANY)
 
 def test_claude_runner():
     runner = ClaudeRunner()

@@ -40,7 +40,7 @@ _PST = ZoneInfo("America/Los_Angeles")
 
 from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR
 from .context import ProjectContext
-from .runners import IMAGE_EXTENSIONS
+from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state
 from .config import get_serena_enabled
 from .dashboard import make_dashboard
@@ -157,7 +157,6 @@ class Logger(object):
             self.log_stream.flush()
 
 
-# Default CLI backends config for gemini/claude. Assumes same runner logic as gen_all.py
 def run_ai_command(
     prompt: str,
     cwd: str,
@@ -169,249 +168,39 @@ def run_ai_command(
 ) -> int:
     """Launch an AI CLI process and stream its output, returning the exit code.
 
-    The prompt is fed to the process via ``stdin``.  Output lines are printed
-    to ``stdout`` with an optional *prefix* so concurrent tasks can be
-    distinguished in the log.
-
-    Supported backends:
-
-    * ``"gemini"`` — ``gemini -y``.  Images are appended as ``@<path>``
-      references in the prompt text.
-    * ``"claude"`` — ``claude -p --dangerously-skip-permissions``.  Images are
-      passed as ``--image <path>`` CLI flags.
-    * ``"copilot"`` — writes prompt to a temp file and invokes
-      ``copilot --model gpt-5-mini --yolo``.  Images are appended as
-      ``@<path>`` references in the prompt file.
+    Delegates to the appropriate :class:`~workflow_lib.runners.AIRunner`
+    subclass.  Output lines are printed to ``stdout`` with an optional
+    *prefix* so concurrent tasks can be distinguished in the log.
 
     :param prompt: Full prompt text to pass to the AI CLI.
-    :type prompt: str
     :param cwd: Working directory for the subprocess.
-    :type cwd: str
     :param prefix: String prepended to each output line (e.g. task ID).
-    :type prefix: str
-    :param backend: AI backend to use.  One of ``"gemini"``, ``"claude"``,
-        or ``"copilot"``.  Defaults to ``"gemini"``.
-    :type backend: str
-    :param image_paths: Optional list of absolute paths to image files to
-        attach to the request.
-    :type image_paths: list[str] or None
+    :param backend: AI backend name (``"gemini"``, ``"claude"``, etc.).
+    :param image_paths: Optional list of absolute paths to image files.
+    :param on_line: Optional callback invoked per output line.
+    :param model: Optional model name passed to the CLI.
     :returns: Process return code (``0`` on success).
-    :rtype: int
     """
-    images = image_paths or []
-    cmd = ["gemini", "-y"]
-    tmp_file_name = None
+    from .config import get_config_defaults
+    cfg = get_config_defaults()
+    soft_timeout = cfg.get("soft_timeout")
 
-    if backend == "gemini" and images:
-        refs = "\n".join(f"@{p}" for p in images)
-        prompt = f"{prompt}\n\n{refs}"
-    elif backend == "claude":
-        cmd = ["claude", "-p", "--dangerously-skip-permissions"]
-        for path in images:
-            cmd += ["--image", path]
-    elif backend == "opencode":
-        cmd = ["opencode", "--print", "--yes"]
-        for path in images:
-            cmd += ["--image", path]
-    elif backend == "copilot":
-        if images:
-            refs = "\n".join(f"@{p}" for p in images)
-            prompt = f"{prompt}\n\n{refs}"
-        fd, tmp_file_name = tempfile.mkstemp(text=True)
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            f.write(prompt)
-        cmd = ["copilot", "--model", "gpt-5-mini", "-p", f"Follow the instructions in @{tmp_file_name}", "--yolo"]
-    elif backend == "cline":
-        cmd = ["cline", "--yolo", prompt]
-        prompt = ""  # prompt is passed as arg, not stdin
-    elif backend == "aider":
-        cmd = ["aider", "--yes-always", "--no-auto-commits", "--message", prompt]
-        prompt = ""  # prompt is passed as arg, not stdin
-    elif backend == "codex":
-        cmd = ["codex", "exec", "--full-auto"]
-        for path in images:
-            cmd += ["-i", path]
-        cmd.append(prompt)
-        prompt = ""  # prompt is passed as arg, not stdin
-    elif backend == "qwen":
-        import uuid as _uuid
-        from .config import get_config_defaults as _get_cfg
-        _qwen_soft_timeout = _get_cfg().get("soft_timeout", 480)
-        _qwen_session_id = str(_uuid.uuid4())
-        cmd = ["qwen", "-y", "--output-format", "stream-json",
-               "--session-id", _qwen_session_id, prompt]
-        prompt = ""  # prompt is passed as arg, not stdin
+    runner = make_runner(backend, model=model, soft_timeout=soft_timeout)
 
-    if model:
-        model_flag = "-m" if backend in ("cline", "codex", "qwen") else "--model"
-        cmd += [model_flag, model]
-
-    use_stdin = bool(prompt)
-    process = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=cwd,
-        text=True,
-        env=os.environ.copy(),
-    )
-
-    def write_input():
-        try:
-            if process.stdin:
-                process.stdin.write(prompt)
-        except Exception:
-            pass
-        finally:
-            if process.stdin:
-                process.stdin.close()
-
-    writer: Optional[threading.Thread] = None
-    if use_stdin:
-        writer = threading.Thread(target=write_input)
-        writer.start()
-
-    # For qwen with soft timeout, use a threaded reader so we can interrupt
-    _qwen_soft_hit = False
-    if backend == "qwen" and _qwen_soft_timeout:
-        _stdout_lines: List[str] = []
-
-        def _qwen_reader() -> None:
-            from .runners import QwenRunner
-            if process.stdout:
-                for raw_line in iter(process.stdout.readline, ""):
-                    if raw_line:
-                        stripped = raw_line.rstrip("\n")
-                        parsed = QwenRunner._parse_stream_line(stripped)
-                        if not parsed:
-                            continue
-                        for sub in parsed.splitlines():
-                            if sub.strip():
-                                _stdout_lines.append(sub)
-                                if on_line:
-                                    on_line(sub)
-                                else:
-                                    print(f"{prefix}{sub}")
-                                    sys.stdout.flush()
-
-        reader_thread = threading.Thread(target=_qwen_reader, daemon=True)
-        reader_thread.start()
-        reader_thread.join(timeout=_qwen_soft_timeout)
-
-        if reader_thread.is_alive():
-            # Soft timeout reached — interrupt and resume
-            _qwen_soft_hit = True
-            _timeout_msg = "[soft-timeout] Interrupting qwen session to resume with finish-up prompt..."
-            if on_line:
-                on_line(_timeout_msg)
-            else:
-                print(f"{prefix}{_timeout_msg}")
-                sys.stdout.flush()
-
-            process.kill()
-            process.wait()
-            reader_thread.join(timeout=5)
-
-            # Resume session with wrap-up prompt
-            _resume_timeout = 120  # hard cap for resume session
-            _resume_prompt = (
-                "You have run out of time. Immediately finish up your current work: "
-                "complete any in-progress file edits, ensure the code compiles/runs, "
-                "and stop. Do not start any new tasks."
-            )
-            _resume_cmd = ["qwen", "-y", "--output-format", "stream-json",
-                           "--resume", _qwen_session_id, _resume_prompt]
-            if model:
-                _resume_cmd += ["-m", model]
-
-            _resume_msg = f"[soft-timeout] Resuming session {_qwen_session_id} with {_resume_timeout}s to finish..."
-            if on_line:
-                on_line(_resume_msg)
-            else:
-                print(f"{prefix}{_resume_msg}")
-                sys.stdout.flush()
-
-            process = subprocess.Popen(
-                _resume_cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=cwd,
-                text=True,
-                env=os.environ.copy(),
-            )
-
-            # Read resume output with a hard timeout
-            def _resume_reader() -> None:
-                from .runners import QwenRunner
-                if process.stdout:
-                    for raw_line in iter(process.stdout.readline, ""):
-                        if raw_line:
-                            stripped = raw_line.rstrip("\n")
-                            parsed = QwenRunner._parse_stream_line(stripped)
-                            if not parsed:
-                                continue
-                            for sub in parsed.splitlines():
-                                if sub.strip():
-                                    if on_line:
-                                        on_line(sub)
-                                    else:
-                                        print(f"{prefix}{sub}")
-                                        sys.stdout.flush()
-
-            _resume_thread = threading.Thread(target=_resume_reader, daemon=True)
-            _resume_thread.start()
-            _resume_thread.join(timeout=_resume_timeout)
-            if _resume_thread.is_alive():
-                _kill_msg = f"[soft-timeout] Resume session exceeded {_resume_timeout}s hard limit, killing..."
-                if on_line:
-                    on_line(_kill_msg)
-                else:
-                    print(f"{prefix}{_kill_msg}")
-                    sys.stdout.flush()
-                process.kill()
-                process.wait()
-                _resume_thread.join(timeout=5)
-            else:
-                process.wait()
+    def output_line(line: str) -> None:
+        if on_line:
+            on_line(line)
         else:
-            process.wait()
-    else:
-        if process.stdout:
-            for line in iter(process.stdout.readline, ""):
-                if line:
-                    stripped = line.rstrip("\n")
-                    if backend == "qwen":
-                        from .runners import QwenRunner
-                        parsed = QwenRunner._parse_stream_line(stripped)
-                        if not parsed:
-                            continue
-                        for sub in parsed.splitlines():
-                            if sub.strip():
-                                if on_line:
-                                    on_line(sub)
-                                else:
-                                    print(f"{prefix}{sub}")
-                                    sys.stdout.flush()
-                    elif on_line:
-                        on_line(stripped)
-                    else:
-                        print(f"{prefix}{stripped}")
-                        sys.stdout.flush()
+            print(f"{prefix}{line}")
+            sys.stdout.flush()
 
-        process.wait()
-
-    if writer is not None:
-        writer.join()
-
-    if tmp_file_name:
-        try:
-            os.remove(tmp_file_name)
-        except OSError:
-            pass
-
-    return process.returncode
+    try:
+        result = runner.run(cwd, prompt, image_paths=image_paths, on_line=output_line)
+        return result.returncode
+    except subprocess.TimeoutExpired:
+        return 1
+    except FileNotFoundError:
+        return 1
 
 
 def phase_sort_key(task_id: str) -> tuple:  # type: ignore[type-arg]
