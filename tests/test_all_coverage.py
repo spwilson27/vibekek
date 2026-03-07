@@ -73,8 +73,6 @@ def custom_open(filename, *args, **kwargs):
 def custom_exists(path):
     # Let most things exist
     path_str = str(path)
-    if "backup_ignore" in path_str:
-        return False
     return True
 
 
@@ -660,14 +658,10 @@ def test_orchestrator(mock_subprocess, mock_open_file, super_mock):
     orchestrator = Orchestrator(ctx)
 
     # Test run method
-    with (
-        patch.object(orchestrator.ctx, "backup_ignore_file"),
-        patch.object(orchestrator.ctx, "restore_ignore_file"),
-    ):
-        try:
-            orchestrator.run()
-        except Exception:
-            pass
+    try:
+        orchestrator.run()
+    except Exception:
+        pass
 
     # Test run_phase_with_retry with SystemExit(0) success
     from workflow_lib.phases import BasePhase

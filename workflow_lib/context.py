@@ -10,7 +10,6 @@ phase.  It owns:
 """
 
 import os
-import shutil
 import subprocess
 import sys
 import json
@@ -55,17 +54,12 @@ class ProjectContext:
         self.current_phase: str = ""
         self.agent_timeout: Optional[int] = None
 
-        self.ignore_file = os.path.join(root_dir, self.runner.ignore_file_name)
-        self.backup_ignore = self.ignore_file + ".bak"
-        
         # Ensures directories exist
         os.makedirs(self.specs_dir, exist_ok=True)
         os.makedirs(self.research_dir, exist_ok=True)
         os.makedirs(self.requirements_dir, exist_ok=True)
-        
-        self.shared_components_file = os.path.join(self.plan_dir, "shared_components.md")
 
-        self.has_existing_ignore = os.path.exists(self.ignore_file)
+        self.shared_components_file = os.path.join(self.plan_dir, "shared_components.md")
         self.state = self._load_state()
         self.image_paths = self._load_images()
         self.description_ctx = self._load_description()
@@ -221,29 +215,6 @@ class ProjectContext:
                   f"{', '.join('{' + p + '}' for p in sorted(missing))}")
         return self.format_prompt(tmpl, **kwargs)
 
-    def backup_ignore_file(self) -> None:
-        """Back up the AI runner's ignore file if it already exists.
-
-        Copies ``<root>/<runner.ignore_file_name>`` to
-        ``<root>/<runner.ignore_file_name>.bak`` so it can be restored after
-        the planning run.
-        """
-        if self.has_existing_ignore:
-            shutil.copy(self.ignore_file, self.backup_ignore)
-
-    def restore_ignore_file(self) -> None:
-        """Restore the AI runner's ignore file from its backup.
-
-        If the ignore file existed before the run, the ``.bak`` copy is moved
-        back.  If it did not exist originally but was created during the run,
-        it is deleted.
-        """
-        if self.has_existing_ignore:
-            if os.path.exists(self.backup_ignore):
-                shutil.move(self.backup_ignore, self.ignore_file)
-        elif os.path.exists(self.ignore_file):
-            os.remove(self.ignore_file)
-
     def get_document_path(self, doc: Dict[str, Any]) -> str:
         """Return the absolute filesystem path for a planning document.
 
@@ -346,8 +317,7 @@ class ProjectContext:
         :func:`sys.exit(1) <sys.exit>` if any new, modified, or deleted file
         is not in *allowed_files* (or under an allowed directory).
 
-        Internal files (state file, ignore file, backup ignore) are always
-        permitted.
+        Internal files (state file, debug files) are always permitted.
 
         :param before: Snapshot taken before the AI ran, as returned by
             :meth:`get_workspace_snapshot`.
@@ -380,8 +350,6 @@ class ProjectContext:
                 if not is_allowed:
                     if abs_path in [
                         os.path.abspath(self.state_file),
-                        os.path.abspath(self.ignore_file),
-                        os.path.abspath(self.backup_ignore),
                         os.path.abspath(os.path.join(self.root_dir, ".last_failed_command.sh")),
                         os.path.abspath(os.path.join(self.root_dir, ".last_failed_prompt.txt")),
                     ]:
@@ -434,7 +402,6 @@ class ProjectContext:
     def run_ai(
         self,
         full_prompt: str,
-        ignore_content: str,
         allowed_files: Optional[List[str]] = None,
         sandbox: bool = True,
         timeout: Optional[int] = None,
@@ -447,8 +414,6 @@ class ProjectContext:
 
         :param full_prompt: Fully rendered prompt string passed to the runner.
         :type full_prompt: str
-        :param ignore_content: Content written to the runner's ignore file.
-        :type ignore_content: str
         :param allowed_files: Paths the AI is permitted to create or modify.
             Pass ``None`` to skip both sandbox verification and tag stripping.
         :type allowed_files: list[str] or None
@@ -474,9 +439,9 @@ class ProjectContext:
                 if _task_id:
                     _dash.update_last_line(_task_id, line)
         effective_timeout = timeout if timeout is not None else self.agent_timeout
-        result = self.runner.run(self.root_dir, full_prompt, ignore_content, self.ignore_file, self.image_paths, on_line=on_line, timeout=effective_timeout)
+        result = self.runner.run(self.root_dir, full_prompt, self.image_paths, on_line=on_line, timeout=effective_timeout)
         if result.returncode != 0:
-            self._write_last_failed_command(full_prompt, ignore_content)
+            self._write_last_failed_command(full_prompt)
         if allowed_files is not None:
             if sandbox:
                 self.verify_changes(before, allowed_files)
@@ -484,7 +449,7 @@ class ProjectContext:
                 self.strip_thinking_tags(os.path.abspath(f))
         return result
 
-    def _write_last_failed_command(self, full_prompt: str, ignore_content: str) -> None:
+    def _write_last_failed_command(self, full_prompt: str) -> None:
         """Write .last_failed_prompt.txt and .last_failed_command.sh for debugging."""
         import shlex
         prompt_file = os.path.join(self.root_dir, ".last_failed_prompt.txt")
@@ -497,8 +462,6 @@ class ProjectContext:
             f.write("#!/usr/bin/env bash\n")
             f.write(f"# Last failed workflow command\n")
             f.write(f"cd {shlex.quote(self.root_dir)}\n")
-            if ignore_content:
-                f.write(f"# Ignore file: {self.ignore_file}\n")
             f.write(f"{cmd_str} < .last_failed_prompt.txt\n")
         os.chmod(script_file, 0o755)
         print(f"   -> Debug: saved .last_failed_command.sh and .last_failed_prompt.txt")
@@ -506,7 +469,6 @@ class ProjectContext:
     def run_gemini(
         self,
         full_prompt: str,
-        ignore_content: str,
         allowed_files: Optional[List[str]] = None,
         sandbox: bool = True,
         timeout: Optional[int] = None,
@@ -515,8 +477,6 @@ class ProjectContext:
 
         :param full_prompt: Fully rendered prompt string.
         :type full_prompt: str
-        :param ignore_content: Content written to the runner's ignore file.
-        :type ignore_content: str
         :param allowed_files: Paths the AI is permitted to touch.
         :type allowed_files: list[str] or None
         :param sandbox: Enforce sandbox rules when ``True``.
@@ -526,7 +486,7 @@ class ProjectContext:
         :returns: The completed process result.
         :rtype: subprocess.CompletedProcess
         """
-        return self.run_ai(full_prompt, ignore_content, allowed_files, sandbox, timeout=timeout)
+        return self.run_ai(full_prompt, allowed_files, sandbox, timeout=timeout)
 
     def count_task_files(self, directory: str) -> int:
         count = 0

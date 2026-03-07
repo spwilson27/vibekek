@@ -9,10 +9,6 @@ from unittest.mock import patch, MagicMock, mock_open, call, ANY
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Grab real write_ignore_file BEFORE conftest autouse fixture mocks it
-from workflow_lib.runners import AIRunner as _AIRunnerReal
-_real_write_ignore_file = _AIRunnerReal.write_ignore_file
-
 import workflow
 from workflow import (
     AIRunner, GeminiRunner, ClaudeRunner, CopilotRunner,
@@ -802,75 +798,31 @@ class TestStateCoverage:
 
 
 # ---------------------------------------------------------------------------
-# runners.py – write_ignore_file and CopilotRunner
+# runners.py – CopilotRunner
 # ---------------------------------------------------------------------------
 
 class TestRunners:
-    def test_write_ignore_file_same_content(self):
-        """No write happens when content matches existing file."""
-        runner = GeminiRunner()
-        with patch.object(AIRunner, "write_ignore_file", new=_real_write_ignore_file), \
-             patch("os.path.exists", return_value=True), \
-             patch("workflow_lib.runners.ignore_file_lock", threading.Lock()), \
-             patch("builtins.open", mock_open(read_data="content")) as m:
-            runner.write_ignore_file("/fake/.geminiignore", "content")
-        calls = [str(c) for c in m.call_args_list]
-        assert not any("'w'" in c for c in calls)
-
-    def test_write_ignore_file_different_content(self):
-        """File is written when content differs."""
-        runner = GeminiRunner()
-        with patch.object(AIRunner, "write_ignore_file", new=_real_write_ignore_file), \
-             patch("os.path.exists", return_value=True), \
-             patch("workflow_lib.runners.ignore_file_lock", threading.Lock()), \
-             patch("builtins.open", mock_open(read_data="old content")) as m:
-            runner.write_ignore_file("/fake/.geminiignore", "new content")
-        calls = [str(c) for c in m.call_args_list]
-        assert any("'w'" in c for c in calls)
-
-    def test_write_ignore_file_not_exists(self):
-        """File is created when it doesn't exist."""
-        runner = ClaudeRunner()
-        with patch.object(AIRunner, "write_ignore_file", new=_real_write_ignore_file), \
-             patch("os.path.exists", return_value=False), \
-             patch("workflow_lib.runners.ignore_file_lock", threading.Lock()), \
-             patch("builtins.open", mock_open()) as m:
-            runner.write_ignore_file("/fake/.claudeignore", "content")
-        calls = [str(c) for c in m.call_args_list]
-        assert any("'w'" in c for c in calls)
-
     def test_copilot_runner_success(self):
         runner = CopilotRunner()
         mock_result = MagicMock(returncode=0)
-        with patch("subprocess.run", return_value=mock_result), \
-             patch("workflow_lib.runners.ignore_file_lock", threading.Lock()), \
-             patch("builtins.open", mock_open(read_data="")):
-            result = runner.run("/tmp", "prompt", "", "/fake/.copilotignore")
+        with patch("subprocess.run", return_value=mock_result):
+            result = runner.run("/tmp", "prompt")
         assert result.returncode == 0
 
     def test_copilot_runner_file_not_found_then_raises(self):
         """All candidates raise FileNotFoundError → re-raise."""
         runner = CopilotRunner()
-        with patch("subprocess.run", side_effect=FileNotFoundError("not found")), \
-             patch("workflow_lib.runners.ignore_file_lock", threading.Lock()), \
-             patch("builtins.open", mock_open(read_data="")):
+        with patch("subprocess.run", side_effect=FileNotFoundError("not found")):
             with pytest.raises(FileNotFoundError):
-                runner.run("/tmp", "prompt", "", "/fake/.copilotignore")
+                runner.run("/tmp", "prompt")
 
     def test_copilot_runner_non_zero_returned(self):
         """All candidates run but return nonzero → return last result."""
         runner = CopilotRunner()
         mock_result = MagicMock(returncode=1)
-        with patch("subprocess.run", return_value=mock_result), \
-             patch("workflow_lib.runners.ignore_file_lock", threading.Lock()), \
-             patch("builtins.open", mock_open(read_data="")):
-            result = runner.run("/tmp", "prompt", "", "/fake/.copilotignore")
+        with patch("subprocess.run", return_value=mock_result):
+            result = runner.run("/tmp", "prompt")
         assert result.returncode == 1
-
-    def test_ignore_file_name_properties(self):
-        assert GeminiRunner().ignore_file_name == ".geminiignore"
-        assert ClaudeRunner().ignore_file_name == ".claudeignore"
-        assert CopilotRunner().ignore_file_name == ".copilotignore"
 
 
 # ---------------------------------------------------------------------------
@@ -894,9 +846,6 @@ class TestContextCoverage:
             ctx.state_file = "/fake/.gen_state.json"
             ctx.input_dir = "/fake/.tools/input"
             ctx.shared_components_file = "/fake/root/docs/plan/shared_components.md"
-            ctx.ignore_file = "/fake/root/.geminiignore"
-            ctx.backup_ignore = "/fake/root/.geminiignore.bak"
-            ctx.has_existing_ignore = kwargs.get("has_ignore", False)
             ctx.state = kwargs.get("state", {})
             ctx.description_ctx = "project desc"
             ctx.runner = MagicMock()
@@ -920,26 +869,6 @@ class TestContextCoverage:
              patch("builtins.open", mock_open(read_data="template content")):
             result = ctx.load_prompt("test.md")
         assert result == "template content"
-
-    def test_backup_ignore_file_when_exists(self):
-        ctx = self._make_ctx(has_ignore=True)
-        with patch("shutil.copy") as mock_copy:
-            ctx.backup_ignore_file()
-        mock_copy.assert_called_once_with(ctx.ignore_file, ctx.backup_ignore)
-
-    def test_restore_ignore_file_when_exists_and_backup_present(self):
-        ctx = self._make_ctx(has_ignore=True)
-        with patch("os.path.exists", return_value=True), \
-             patch("shutil.move") as mock_move:
-            ctx.restore_ignore_file()
-        mock_move.assert_called_once()
-
-    def test_restore_ignore_file_no_original_but_ignore_exists(self):
-        ctx = self._make_ctx(has_ignore=False)
-        with patch("os.path.exists", return_value=True), \
-             patch("os.remove") as mock_remove:
-            ctx.restore_ignore_file()
-        mock_remove.assert_called_once_with(ctx.ignore_file)
 
     def test_get_accumulated_context_skip_research(self):
         ctx = self._make_ctx()
@@ -2639,7 +2568,7 @@ class TestRunnerImagePaths:
         runner = GeminiRunner()
         mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
         with patch("subprocess.run", return_value=mock_result) as mock_run:
-            runner.run("prompt", "/tmp", "ignore", "content",
+            runner.run("/tmp", "prompt",
                        image_paths=["/img/a.png", "/img/b.jpg"])
         call_args = mock_run.call_args
         # Images should be appended as @refs in the prompt
@@ -2650,7 +2579,7 @@ class TestRunnerImagePaths:
         runner = ClaudeRunner()
         mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
         with patch("subprocess.run", return_value=mock_result) as mock_run:
-            runner.run("prompt", "/tmp", ".claudeignore", "content",
+            runner.run("/tmp", "prompt",
                        image_paths=["/img/a.png"])
         cmd = mock_run.call_args[0][0]
         assert "--image" in cmd
@@ -2661,7 +2590,7 @@ class TestRunnerImagePaths:
         runner = OpencodeRunner()
         mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
         with patch("subprocess.run", return_value=mock_result) as mock_run:
-            runner.run("prompt", "/tmp", ".opencodeignore", "content",
+            runner.run("/tmp", "prompt",
                        image_paths=["/img/a.png"])
         cmd = mock_run.call_args[0][0]
         assert "opencode" in cmd[0]
@@ -2908,9 +2837,8 @@ class TestRunnerStreaming:
         runner = GeminiRunner()
         collected = []
         proc = self._fake_popen(["line1", "line2"])
-        with patch("subprocess.Popen", return_value=proc), \
-             patch.object(runner, "write_ignore_file"):
-            runner.run("/cwd", "prompt", "", "/ignore", on_line=collected.append)
+        with patch("subprocess.Popen", return_value=proc):
+            runner.run("/cwd", "prompt", on_line=collected.append)
         assert "line1" in collected
         assert "line2" in collected
 
@@ -2919,9 +2847,8 @@ class TestRunnerStreaming:
         runner = GeminiRunner()
         collected = []
         proc = self._fake_popen(["  ", "real line"])
-        with patch("subprocess.Popen", return_value=proc), \
-             patch.object(runner, "write_ignore_file"):
-            runner.run("/cwd", "prompt", "", "/ignore", on_line=collected.append)
+        with patch("subprocess.Popen", return_value=proc):
+            runner.run("/cwd", "prompt", on_line=collected.append)
         assert "  " not in collected
         assert "real line" in collected
 
@@ -2930,9 +2857,8 @@ class TestRunnerStreaming:
         import subprocess
         runner = GeminiRunner()
         proc = self._fake_popen(["output"], returncode=0)
-        with patch("subprocess.Popen", return_value=proc), \
-             patch.object(runner, "write_ignore_file"):
-            result = runner.run("/cwd", "prompt", "", "/ignore", on_line=lambda l: None)
+        with patch("subprocess.Popen", return_value=proc):
+            result = runner.run("/cwd", "prompt", on_line=lambda l: None)
         assert isinstance(result, subprocess.CompletedProcess)
         assert result.returncode == 0
 
@@ -2940,19 +2866,17 @@ class TestRunnerStreaming:
         from workflow_lib.runners import GeminiRunner
         runner = GeminiRunner()
         fake = MagicMock(returncode=0, stdout="", stderr="")
-        with patch("subprocess.run", return_value=fake) as mock_run, \
-             patch.object(runner, "write_ignore_file"):
-            runner.run("/cwd", "prompt", "", "/ignore")
+        with patch("subprocess.run", return_value=fake) as mock_run:
+            runner.run("/cwd", "prompt")
         mock_run.assert_called_once()
 
     def test_claude_runner_on_line_uses_popen(self):
         from workflow_lib.runners import ClaudeRunner
         runner = ClaudeRunner()
         proc = self._fake_popen(["claude output"])
-        with patch("subprocess.Popen", return_value=proc), \
-             patch.object(runner, "write_ignore_file"):
+        with patch("subprocess.Popen", return_value=proc):
             collected = []
-            runner.run("/cwd", "prompt", "", "/ignore", on_line=collected.append)
+            runner.run("/cwd", "prompt", on_line=collected.append)
         assert "claude output" in collected
 
     def test_opencode_runner_on_line_uses_popen(self):
@@ -2961,36 +2885,33 @@ class TestRunnerStreaming:
         proc = self._fake_popen(["opencode output"])
         with patch("subprocess.Popen", return_value=proc):
             collected = []
-            runner.run("/cwd", "prompt", "", "/ignore", on_line=collected.append)
+            runner.run("/cwd", "prompt", on_line=collected.append)
         assert "opencode output" in collected
 
     def test_copilot_runner_on_line_uses_streaming(self):
         from workflow_lib.runners import CopilotRunner
         runner = CopilotRunner()
         proc = self._fake_popen(["copilot output"])
-        with patch("subprocess.Popen", return_value=proc), \
-             patch.object(runner, "write_ignore_file"):
+        with patch("subprocess.Popen", return_value=proc):
             collected = []
-            runner.run("/cwd", "prompt", "", "/ignore", on_line=collected.append)
+            runner.run("/cwd", "prompt", on_line=collected.append)
         assert "copilot output" in collected
 
     def test_gemini_runner_with_images_and_on_line(self):
         from workflow_lib.runners import GeminiRunner
         runner = GeminiRunner()
         proc = self._fake_popen(["with image"])
-        with patch("subprocess.Popen", return_value=proc), \
-             patch.object(runner, "write_ignore_file"):
+        with patch("subprocess.Popen", return_value=proc):
             collected = []
-            runner.run("/cwd", "prompt", "", "/ignore", image_paths=["/img.png"], on_line=collected.append)
+            runner.run("/cwd", "prompt", image_paths=["/img.png"], on_line=collected.append)
         assert "with image" in collected
 
     def test_gemini_runner_with_images_no_on_line(self):
         from workflow_lib.runners import GeminiRunner
         runner = GeminiRunner()
         fake = MagicMock(returncode=0, stdout="out", stderr="")
-        with patch("subprocess.run", return_value=fake) as mock_run, \
-             patch.object(runner, "write_ignore_file"):
-            runner.run("/cwd", "prompt", "", "/ignore", image_paths=["/img.png"])
+        with patch("subprocess.run", return_value=fake) as mock_run:
+            runner.run("/cwd", "prompt", image_paths=["/img.png"])
         # prompt should contain @/img.png reference
         called_input = mock_run.call_args.kwargs.get("input", mock_run.call_args[1].get("input", ""))
         assert "@/img.png" in called_input
@@ -2999,9 +2920,8 @@ class TestRunnerStreaming:
         from workflow_lib.runners import ClaudeRunner
         runner = ClaudeRunner()
         fake = MagicMock(returncode=0, stdout="", stderr="")
-        with patch("subprocess.run", return_value=fake) as mock_run, \
-             patch.object(runner, "write_ignore_file"):
-            runner.run("/cwd", "prompt", "", "/ignore", image_paths=["/img.png"])
+        with patch("subprocess.run", return_value=fake) as mock_run:
+            runner.run("/cwd", "prompt", image_paths=["/img.png"])
         mock_run.assert_called_once()
 
     def test_opencode_runner_no_on_line(self):
@@ -3009,7 +2929,7 @@ class TestRunnerStreaming:
         runner = OpencodeRunner()
         fake = MagicMock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", return_value=fake) as mock_run:
-            runner.run("/cwd", "prompt", "", "/ignore")
+            runner.run("/cwd", "prompt")
         mock_run.assert_called_once()
 
     def test_opencode_runner_with_images_no_on_line(self):
@@ -3017,7 +2937,7 @@ class TestRunnerStreaming:
         runner = OpencodeRunner()
         fake = MagicMock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", return_value=fake) as mock_run:
-            runner.run("/cwd", "prompt", "", "/ignore", image_paths=["/img.png"])
+            runner.run("/cwd", "prompt", image_paths=["/img.png"])
         call_args = mock_run.call_args[0][0]
         assert "-f" in call_args and "/img.png" in call_args
 
@@ -3025,9 +2945,8 @@ class TestRunnerStreaming:
         from workflow_lib.runners import CopilotRunner
         runner = CopilotRunner()
         fake = MagicMock(returncode=0, stdout="ok", stderr="")
-        with patch("subprocess.run", return_value=fake), \
-             patch.object(runner, "write_ignore_file"):
-            result = runner.run("/cwd", "prompt", "", "/ignore")
+        with patch("subprocess.run", return_value=fake):
+            result = runner.run("/cwd", "prompt")
         assert result.returncode == 0
 
     def test_base_airunner_abstract_methods_raise(self):
@@ -3036,9 +2955,7 @@ class TestRunnerStreaming:
         with pytest.raises(NotImplementedError):
             runner.get_cmd()
         with pytest.raises(NotImplementedError):
-            runner.run("/cwd", "p", "", "/f")
-        with pytest.raises(NotImplementedError):
-            _ = runner.ignore_file_name
+            runner.run("/cwd", "p")
 
     def test_claude_runner_get_cmd_with_images(self):
         from workflow_lib.runners import ClaudeRunner
@@ -3060,7 +2977,7 @@ class TestRunnerStreaming:
         proc = self._fake_popen(["opencode with image"])
         with patch("subprocess.Popen", return_value=proc):
             collected = []
-            runner.run("/cwd", "prompt", "", "/ignore", image_paths=["/img.png"], on_line=collected.append)
+            runner.run("/cwd", "prompt", image_paths=["/img.png"], on_line=collected.append)
         assert "opencode with image" in collected
 
 
@@ -3190,7 +3107,6 @@ class TestContextCurrentPhase:
     def _make_ctx(self, tmp_path, dashboard=None):
         from workflow_lib.context import ProjectContext
         mock_runner = MagicMock()
-        mock_runner.ignore_file_name = ".geminiignore"
         with patch("workflow_lib.context.GeminiRunner", return_value=mock_runner), \
              patch("os.makedirs"), \
              patch("workflow_lib.context.GEN_STATE_FILE", str(tmp_path / "state.json")), \
@@ -3215,7 +3131,7 @@ class TestContextCurrentPhase:
         ctx.current_phase = "Phase1: User Research"
 
         captured_on_line = []
-        def fake_run(cwd, prompt, ignore, ignore_file, images, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, images=None, on_line=None, timeout=None):
             if on_line:
                 captured_on_line.append(on_line)
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -3223,7 +3139,7 @@ class TestContextCurrentPhase:
 
         with patch.object(ctx, "_write_last_failed_command"), \
              patch.object(ctx, "get_workspace_snapshot", return_value={}):
-            ctx.run_ai("prompt", "ignore")
+            ctx.run_ai("prompt")
 
         assert captured_on_line, "on_line callback was not passed to runner"
         on_line = captured_on_line[0]
@@ -3236,7 +3152,7 @@ class TestContextCurrentPhase:
         ctx.current_phase = "Phase1: Doc"
 
         captured_on_line = []
-        def fake_run(cwd, prompt, ignore, ignore_file, images, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, images=None, on_line=None, timeout=None):
             if on_line:
                 captured_on_line.append(on_line)
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -3244,7 +3160,7 @@ class TestContextCurrentPhase:
 
         with patch.object(ctx, "_write_last_failed_command"), \
              patch.object(ctx, "get_workspace_snapshot", return_value={}):
-            ctx.run_ai("prompt", "ignore")
+            ctx.run_ai("prompt")
 
         on_line = captured_on_line[0]
         on_line("output line")
@@ -3370,16 +3286,4 @@ class TestOrchestratorWithDashboard:
         with pytest.raises(SystemExit):
             orc.run_phase_with_retry(phase, max_retries=1)
 
-    @patch("workflow_lib.orchestrator.validate_all_prompts_exist", return_value=[])
-    def test_run_calls_backup_and_restore(self, _mock_validate):
-        from workflow_lib.orchestrator import Orchestrator
-        ctx = self._make_ctx()
-        ctx.backup_ignore_file = MagicMock()
-        ctx.restore_ignore_file = MagicMock()
-        orc = Orchestrator(ctx)
-        # patch run_phase_with_retry to avoid real execution
-        orc.run_phase_with_retry = MagicMock()
-        orc._validate_artifacts = MagicMock()
-        orc.run()
-        ctx.backup_ignore_file.assert_called_once()
-        ctx.restore_ignore_file.assert_called_once()
+

@@ -25,10 +25,6 @@ Module-level constants
     Path to the JSON file that persists replan metadata (blocked tasks,
     history, etc.).
 
-.. data:: ignore_file_lock
-    :class:`threading.Lock` that serialises writes to AI runner ignore files
-    so concurrent agents do not corrupt them.
-
 .. data:: DOCS
     Ordered list of planning document descriptors.  Each entry is a dict
     with keys: ``id``, ``type`` (``"research"`` or ``"spec"``), ``name``,
@@ -37,7 +33,6 @@ Module-level constants
 
 import os
 import sys
-import threading
 
 TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT_DIR = os.path.dirname(TOOLS_DIR)
@@ -48,8 +43,6 @@ INPUT_DIR = os.path.join(ROOT_DIR, "input")
 GEN_STATE_FILE = os.path.join(ROOT_DIR, ".gen_state.json")
 WORKFLOW_STATE_FILE = os.path.join(TOOLS_DIR, ".workflow_state.json")
 REPLAN_STATE_FILE = os.path.join(TOOLS_DIR, ".replan_state.json")
-
-ignore_file_lock = threading.Lock()
 
 DOCS = [
     # Research

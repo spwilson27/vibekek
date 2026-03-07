@@ -107,7 +107,7 @@ def _make_agent(side_effects: dict):
     allowed_file path.
     """
 
-    def _run_gemini(self, full_prompt, ignore_content, allowed_files=None, sandbox=False):
+    def _run_gemini(self, full_prompt, allowed_files=None, sandbox=False):
         if allowed_files:
             for f in allowed_files:
                 if isinstance(f, str) and not f.endswith(os.sep):
@@ -376,7 +376,7 @@ class TestPlanningE2E:
         review_stub = "# Review\nAll good.\n"
         sub_epics_json = json.dumps({"Core": ["REQ-001"]})
 
-        def _tracking_run_gemini(self, full_prompt, ignore_content,
+        def _tracking_run_gemini(self, full_prompt,
                                   allowed_files=None, sandbox=False):
             # Record what type of output is being generated
             if allowed_files:

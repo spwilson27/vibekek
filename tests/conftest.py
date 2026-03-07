@@ -49,6 +49,5 @@ def _host_protection():
     """Prevent tests from writing to the host filesystem or invoking agent CLIs."""
     with patch("subprocess.run", side_effect=_make_subprocess_guard(subprocess.run)), \
          patch("subprocess.Popen", side_effect=_make_subprocess_guard(subprocess.Popen)), \
-         patch("builtins.open", new=_guarded_open), \
-         patch("workflow_lib.runners.AIRunner.write_ignore_file"):
+         patch("builtins.open", new=_guarded_open):
         yield

@@ -146,32 +146,27 @@ def test_signal_handler():
 def test_runner_base():
     runner = AIRunner()
     with pytest.raises(NotImplementedError):
-        runner.run("cwd", "prompt", "ignore", "file")
-    with pytest.raises(NotImplementedError):
-        _ = runner.ignore_file_name
+        runner.run("cwd", "prompt")
 
 def test_gemini_runner():
     runner = GeminiRunner()
-    assert runner.ignore_file_name == ".geminiignore"
     with patch('subprocess.run') as mock_run:
         mock_res = MagicMock(returncode=0)
         mock_run.return_value = mock_res
-        res = runner.run(".", "hello", "ignore_this", ".geminiignore")
+        res = runner.run(".", "hello")
         assert res.returncode == 0
         mock_run.assert_called_with(["gemini", "-y"], input="hello", cwd=".", capture_output=True, text=True, timeout=None)
 
 def test_claude_runner():
     runner = ClaudeRunner()
-    assert runner.ignore_file_name == ".claudeignore"
     with patch('subprocess.run') as mock_run:
         mock_res = MagicMock(returncode=0)
         mock_run.return_value = mock_res
-        res = runner.run(".", "hello", "ignore_this", ".claudeignore")
+        res = runner.run(".", "hello")
         assert res.returncode == 0
 
 def test_copilot_runner():
     runner = CopilotRunner()
-    assert runner.ignore_file_name == ".copilotignore"
     with patch('subprocess.run') as mock_run:
         mock_res = MagicMock(returncode=0)
         mock_run.return_value = mock_res
@@ -179,7 +174,7 @@ def test_copilot_runner():
             mock_f = MagicMock()
             mock_f.name = "tmp.txt"
             mock_temp.return_value.__enter__.return_value = mock_f
-            res = runner.run(".", "hello", "ignore_this", ".copilotignore")
+            res = runner.run(".", "hello")
             assert res.returncode == 0
 
 # --- 3. Project Context ---
@@ -224,7 +219,7 @@ def test_project_context_run_ai(mock_ctx):
         mock_res = MagicMock(returncode=0)
         mock_run.return_value = mock_res
         
-        res = mock_ctx.run_ai("prompt", "ignore", allowed_files=["file1"])
+        res = mock_ctx.run_ai("prompt", allowed_files=["file1"])
         assert res.returncode == 0
 
 def test_parse_markdown_headers(mock_ctx):
@@ -416,9 +411,8 @@ def test_write_last_failed_command(tmp_path):
         ctx.root_dir = str(tmp_path)
         ctx.runner = runner
         ctx.image_paths = None
-        ctx.ignore_file = str(tmp_path / ".geminiignore")
 
-        ctx._write_last_failed_command("test prompt content", "/*\n!/docs/\n")
+        ctx._write_last_failed_command("test prompt content")
 
     prompt_file = tmp_path / ".last_failed_prompt.txt"
     script_file = tmp_path / ".last_failed_command.sh"
@@ -429,7 +423,6 @@ def test_write_last_failed_command(tmp_path):
     assert "gemini -y" in script
     assert "< .last_failed_prompt.txt" in script
     assert f"cd {str(tmp_path)!r}" in script or f"cd '{tmp_path}'" in script or f"cd {tmp_path}" in script
-    assert "# Ignore file:" in script
     mock_chmod.assert_called_once_with(str(script_file), 0o755)
 
 
@@ -442,14 +435,12 @@ def test_write_last_failed_command_no_ignore(tmp_path):
         ctx.root_dir = str(tmp_path)
         ctx.runner = runner
         ctx.image_paths = ["/img/screenshot.png"]
-        ctx.ignore_file = str(tmp_path / ".claudeignore")
 
-        ctx._write_last_failed_command("prompt here", "")
+        ctx._write_last_failed_command("prompt here")
 
     script = (tmp_path / ".last_failed_command.sh").read_text()
     assert "claude" in script
     assert "--image" in script
-    assert "# Ignore file:" not in script
 
 
 def test_run_ai_writes_last_failed_on_failure(tmp_path):
@@ -465,12 +456,11 @@ def test_run_ai_writes_last_failed_on_failure(tmp_path):
         ctx.root_dir = str(tmp_path)
         ctx.runner = runner
         ctx.image_paths = None
-        ctx.ignore_file = str(tmp_path / ".geminiignore")
         ctx.dashboard = None
         ctx.current_phase = ""
         ctx.agent_timeout = None
 
-        result = ctx.run_ai("my prompt", "ignore stuff")
+        result = ctx.run_ai("my prompt")
 
     assert result.returncode == 1
     assert (tmp_path / ".last_failed_command.sh").exists()
@@ -491,12 +481,11 @@ def test_run_ai_no_debug_files_on_success(tmp_path):
         ctx.root_dir = str(tmp_path)
         ctx.runner = runner
         ctx.image_paths = None
-        ctx.ignore_file = str(tmp_path / ".geminiignore")
         ctx.dashboard = None
         ctx.current_phase = ""
         ctx.agent_timeout = None
 
-        result = ctx.run_ai("my prompt", "ignore stuff")
+        result = ctx.run_ai("my prompt")
 
     assert result.returncode == 0
     assert not (tmp_path / ".last_failed_command.sh").exists()

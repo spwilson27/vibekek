@@ -171,11 +171,10 @@ class Phase1GenerateDoc(BasePhase):
             f"5. You MUST end your turn immediately after writing the file.\n"
         )
         
-        ignore_content = f"/*\n!/docs/plan/{out_folder}/\n"
         print(f"\n=> [Phase 1: Generate] {self.doc['name']} into docs/plan/{out_folder}/{self.doc['id']}.md ...")
         
         allowed_files = [expected_file]
-        result = ctx.run_gemini(full_prompt, ignore_content, allowed_files=allowed_files)
+        result = ctx.run_gemini(full_prompt, allowed_files=allowed_files)
         
         if result.returncode != 0 or not os.path.exists(expected_file):
             print(f"\n[!] Error generating {self.doc['name']}.")
@@ -256,10 +255,8 @@ class Phase2FleshOutDoc(BasePhase):
                 description_ctx=ctx.description_ctx,
                 accumulated_context=accumulated_context
             )
-            
-            ignore_content = f"/*\n!/docs/plan/{out_folder}/\n"
             allowed_files = [expected_file]
-            result = ctx.run_gemini(flesh_prompt, ignore_content, allowed_files=allowed_files)
+            result = ctx.run_gemini(flesh_prompt, allowed_files=allowed_files)
             
             if result.returncode != 0:
                 print(f"\n[!] Error fleshing out section {header_clean} in {self.doc['name']}.")
@@ -296,11 +293,10 @@ class Phase3FinalReview(BasePhase):
         print("\n=> [Phase 3: Final Alignment Review] Reviewing all documents for consistency...")
         final_prompt_tmpl = ctx.load_prompt("final_review.md")
         final_prompt = ctx.format_prompt(final_prompt_tmpl, description_ctx=ctx.description_ctx)
-        ignore_content = "/*\n!/docs/plan/specs/\n!/docs/plan/research/\n"
         
         # Final review can modify all existing specs and research files
         allowed_files = [ctx.get_document_path(d) for d in DOCS]
-        result = ctx.run_gemini(final_prompt, ignore_content, allowed_files=allowed_files)
+        result = ctx.run_gemini(final_prompt, allowed_files=allowed_files)
         
         if result.returncode != 0:
             print("\n[!] Error during final alignment review.")
@@ -345,9 +341,8 @@ class Phase3BAdversarialReview(BasePhase):
             target_path=target_path
         )
 
-        ignore_content = "/*\n!/docs/plan/specs/\n!/docs/plan/research/\n!/docs/plan/adversarial_review.md\n"
         allowed_files = [expected_file]
-        result = ctx.run_gemini(prompt, ignore_content, allowed_files=allowed_files)
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
 
         if result.returncode != 0 or not os.path.exists(expected_file):
             print("\n[!] Error during adversarial review.")
@@ -442,9 +437,8 @@ class Phase4AExtractRequirements(BasePhase):
             target_path=target_path
         )
         
-        ignore_content = f"/*\n!/docs/plan/requirements/\n!/.tools/verify_requirements.py\n!/{doc_rel_path}\n"
         allowed_files = [expected_file, doc_path]
-        result = ctx.run_gemini(prompt, ignore_content, allowed_files=allowed_files)
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
         
         if result.returncode != 0:
             print(f"\n[!] Error extracting requirements from {self.doc['name']}.")
@@ -489,13 +483,12 @@ class Phase4BMergeRequirements(BasePhase):
         prompt = ctx.format_prompt(prompt_tmpl, description_ctx=ctx.description_ctx)
         
         # This phase can modify requirements.md AND any source doc in docs/plan/specs/
-        ignore_content = "/*\n!/docs/plan/requirements/\n!/requirements.md\n!/docs/plan/specs/\n!/.tools/verify_requirements.py\n"
         
         # Allowed files include the final requirements.md and specs for potential conflict resolution
         allowed_files = [os.path.join(ctx.root_dir, "requirements.md")]
         allowed_files.extend([ctx.get_document_path(d) for d in DOCS if d["type"] != "research"])
         
-        result = ctx.run_gemini(prompt, ignore_content, allowed_files=allowed_files)
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
         
         if result.returncode != 0:
             print("\n[!] Error merging requirements.")
@@ -602,10 +595,9 @@ class Phase4COrderRequirements(BasePhase):
         prompt_tmpl = ctx.load_prompt("order_requirements.md")
         prompt = ctx.format_prompt(prompt_tmpl, description_ctx=ctx.description_ctx)
         
-        ignore_content = "/*\n!/requirements.md\n!/ordered_requirements.md\n!/.tools/verify_requirements.py\n"
         allowed_files = [os.path.join(ctx.root_dir, "ordered_requirements.md")]
         
-        result = ctx.run_gemini(prompt, ignore_content, allowed_files=allowed_files)
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
         
         if result.returncode != 0:
             print(result.stdout)
@@ -657,13 +649,12 @@ class Phase5GenerateEpics(BasePhase):
         print("\n=> [Phase 5: Generate Epics] Generating detailed phases/")
         phases_prompt_tmpl = ctx.load_prompt("phases.md")
         phases_prompt = ctx.format_prompt(phases_prompt_tmpl, description_ctx=ctx.description_ctx)
-        ignore_content = "/*\n!/requirements.md\n!/docs/plan/phases/\n!/.tools/verify_requirements.py\n"
         
         phases_dir = os.path.join(ctx.plan_dir, "phases")
         os.makedirs(phases_dir, exist_ok=True)
         # Adding trailing slash allows creating content inside it
         allowed_files = [phases_dir + os.sep]
-        result = ctx.run_gemini(phases_prompt, ignore_content, allowed_files=allowed_files)
+        result = ctx.run_gemini(phases_prompt, allowed_files=allowed_files)
         
         if result.returncode != 0:
             print("\n[!] Error generating phases.")
@@ -717,9 +708,8 @@ class Phase5BSharedComponents(BasePhase):
             target_path=target_path
         )
 
-        ignore_content = "/*\n!/requirements.md\n!/docs/plan/phases/\n!/docs/plan/shared_components.md\n"
         allowed_files = [expected_file]
-        result = ctx.run_gemini(prompt, ignore_content, allowed_files=allowed_files)
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
 
         if result.returncode != 0 or not os.path.exists(expected_file):
             print("\n[!] Error generating shared components manifest.")
@@ -785,17 +775,15 @@ class Phase6BreakDownTasks(BasePhase):
             
             # 1. Project Manager Pass: Group Requirements
             print(f"   -> Grouping requirements for {phase_filename} into Sub-Epics...")
-            grouping_prompt = ctx.format_prompt(grouping_prompt_tmpl, 
+            grouping_prompt = ctx.format_prompt(grouping_prompt_tmpl,
                                              description_ctx=ctx.description_ctx,
                                              phase_filename=phase_filename,
                                              group_filename=group_filename)
-            
-            ignore_content = f"/*\n!/docs/plan/phases/\n!/docs/plan/tasks/\n!/.tools/verify_requirements.py\n"
             group_filepath = os.path.join(tasks_dir, group_filename)
             allowed_files = [group_filepath]
             
             if not os.path.exists(group_filepath):
-                group_result = ctx.run_gemini(grouping_prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
+                group_result = ctx.run_gemini(grouping_prompt, allowed_files=allowed_files, sandbox=False)
             
                 if group_result.returncode != 0:
                     print(f"\n[!] Error grouping tasks for {phase_filename}.")
@@ -852,10 +840,9 @@ class Phase6BreakDownTasks(BasePhase):
                                                  target_dir=target_dir,
                                                  shared_components_ctx=shared_components_ctx)
                 
-                ignore_content = f"/*\n!/requirements.md\n!/docs/plan/phases/\n!/docs/plan/tasks/\n!/.tools/verify_requirements.py\n"
-                
+                        
                 allowed_files = [phase_task_dir + os.sep]
-                result = ctx.run_gemini(tasks_prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
+                result = ctx.run_gemini(tasks_prompt, allowed_files=allowed_files, sandbox=False)
                 
                 if result.returncode != 0:
                     print(f"\n[!] Error generating tasks for {target_dir}.")
@@ -971,12 +958,10 @@ class Phase6BReviewTasks(BasePhase):
                 description_ctx=ctx.description_ctx,
                 tasks_content=tasks_content
             )
-
-            ignore_content = f"/*\n!/docs/plan/tasks/{phase_id}/\n!/docs/plan/phases/{phase_id}.md\n"
             allowed_files = [phase_dir_path + os.sep]
 
             for attempt in range(1, 4):
-                result = ctx.run_gemini(prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
+                result = ctx.run_gemini(prompt, allowed_files=allowed_files, sandbox=False)
 
                 if result.returncode == 0 and os.path.exists(review_summary_path):
                     after_count = ctx.count_task_files(phase_dir_path)
@@ -1094,11 +1079,10 @@ class Phase6CCrossPhaseReview(BasePhase):
             tasks_content=tasks_content
         )
 
-        ignore_content = f"/*\n!/docs/plan/tasks/\n"
         allowed_files = [tasks_dir + os.sep]
 
         for attempt in range(1, 4):
-            result = ctx.run_gemini(prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
+            result = ctx.run_gemini(prompt, allowed_files=allowed_files, sandbox=False)
 
             if result.returncode == 0 and os.path.exists(review_summary_path):
                 after_count = ctx.count_task_files(tasks_dir)
@@ -1201,11 +1185,10 @@ class Phase6DReorderTasks(BasePhase):
             tasks_content=tasks_content
         )
 
-        ignore_content = f"/*\n!/docs/plan/tasks/\n"
         allowed_files = [tasks_dir + os.sep]
         
         for attempt in range(1, 4):
-            result = ctx.run_gemini(prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
+            result = ctx.run_gemini(prompt, allowed_files=allowed_files, sandbox=False)
             
             if result.returncode == 0 and os.path.exists(reorder_summary_path):
                 ctx.stage_changes([tasks_dir])
@@ -1443,12 +1426,10 @@ class Phase7ADAGGeneration(BasePhase):
                 description_ctx=ctx.description_ctx,
                 tasks_content=tasks_content
             )
-
-            ignore_content = f"/*\n!/docs/plan/tasks/{phase_id}/dag.json\n"
             allowed_files = [dag_file_path]
 
             for attempt in range(1, 4):
-                result = ctx.run_gemini(prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
+                result = ctx.run_gemini(prompt, allowed_files=allowed_files, sandbox=False)
 
                 if result.returncode == 0 and os.path.exists(dag_file_path):
                     return True
@@ -1503,10 +1484,9 @@ class Phase3AConflictResolution(BasePhase):
             target_path=target_path
         )
 
-        ignore_content = "/*\n!/docs/plan/specs/\n!/docs/plan/research/\n!/docs/plan/conflict_resolution.md\n"
         allowed_files = [expected_file]
         allowed_files.extend([ctx.get_document_path(d) for d in DOCS])
-        result = ctx.run_ai(prompt, ignore_content, allowed_files=allowed_files, sandbox=False)
+        result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
 
         if result.returncode != 0 or not os.path.exists(expected_file):
             print("\n[!] Error during conflict resolution review.")
@@ -1543,9 +1523,8 @@ class Phase5CInterfaceContracts(BasePhase):
             target_path=target_path
         )
 
-        ignore_content = "/*\n!/requirements.md\n!/docs/plan/phases/\n!/docs/plan/shared_components.md\n!/docs/plan/interface_contracts.md\n"
         allowed_files = [expected_file]
-        result = ctx.run_ai(prompt, ignore_content, allowed_files=allowed_files)
+        result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
         if result.returncode != 0 or not os.path.exists(expected_file):
             print("\n[!] Error generating interface contracts.")
@@ -1582,9 +1561,8 @@ class Phase6EIntegrationTestPlan(BasePhase):
             target_path=target_path
         )
 
-        ignore_content = "/*\n!/docs/plan/tasks/\n!/docs/plan/shared_components.md\n!/docs/plan/interface_contracts.md\n!/docs/plan/integration_test_plan.md\n"
         allowed_files = [expected_file]
-        result = ctx.run_ai(prompt, ignore_content, allowed_files=allowed_files)
+        result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
         if result.returncode != 0 or not os.path.exists(expected_file):
             print("\n[!] Error generating integration test plan.")

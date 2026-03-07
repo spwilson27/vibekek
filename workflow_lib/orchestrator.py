@@ -203,75 +203,71 @@ class Orchestrator:
             self._log(f"[!] {len(missing)} prompt file(s) missing from {self.ctx.prompts_dir}. Aborting.")
             sys.exit(1)
 
-        self.ctx.backup_ignore_file()
-        try:
-            # Phase 1 and 2 for each document
+        # Phase 1 and 2 for each document
+        for doc in DOCS:
+            self.run_phase_with_retry(Phase1GenerateDoc(doc))
+            expected = self.ctx.get_document_path(doc)
+            self._validate_artifacts([expected], f"Phase1/{doc['id']}")
+
+            self.run_phase_with_retry(Phase2FleshOutDoc(doc))
+
+        self.run_phase_with_retry(Phase3FinalReview())
+        self.run_phase_with_retry(Phase3AConflictResolution())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "conflict_resolution.md")],
+            "Phase3A"
+        )
+        self.run_phase_with_retry(Phase3BAdversarialReview())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "adversarial_review.md")],
+            "Phase3B"
+        )
+
+        if not self.ctx.state.get("requirements_extracted", False):
             for doc in DOCS:
-                self.run_phase_with_retry(Phase1GenerateDoc(doc))
-                expected = self.ctx.get_document_path(doc)
-                self._validate_artifacts([expected], f"Phase1/{doc['id']}")
+                self.run_phase_with_retry(Phase4AExtractRequirements(doc))
+            self.ctx.state["requirements_extracted"] = True
+            self.ctx.save_state()
 
-                self.run_phase_with_retry(Phase2FleshOutDoc(doc))
+        self.run_phase_with_retry(Phase4BMergeRequirements())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.root_dir, "requirements.md")],
+            "Phase4B"
+        )
+        self.run_phase_with_retry(Phase4BScopeGate())
+        self.run_phase_with_retry(Phase4COrderRequirements())
+        self.run_phase_with_retry(Phase5GenerateEpics())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "phases")],
+            "Phase5"
+        )
+        self.run_phase_with_retry(Phase5BSharedComponents())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "shared_components.md")],
+            "Phase5B"
+        )
+        self.run_phase_with_retry(Phase5CInterfaceContracts())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "interface_contracts.md")],
+            "Phase5C"
+        )
+        self.run_phase_with_retry(Phase6BreakDownTasks())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "tasks")],
+            "Phase6"
+        )
+        self.run_phase_with_retry(Phase6BReviewTasks())
+        self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=1))
+        self.run_phase_with_retry(Phase6DReorderTasks(pass_num=1))
+        self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=2))
+        self.run_phase_with_retry(Phase6DReorderTasks(pass_num=2))
+        self.run_phase_with_retry(Phase6EIntegrationTestPlan())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "integration_test_plan.md")],
+            "Phase6E"
+        )
 
-            self.run_phase_with_retry(Phase3FinalReview())
-            self.run_phase_with_retry(Phase3AConflictResolution())
-            self._validate_artifacts(
-                [os.path.join(self.ctx.plan_dir, "conflict_resolution.md")],
-                "Phase3A"
-            )
-            self.run_phase_with_retry(Phase3BAdversarialReview())
-            self._validate_artifacts(
-                [os.path.join(self.ctx.plan_dir, "adversarial_review.md")],
-                "Phase3B"
-            )
-
-            if not self.ctx.state.get("requirements_extracted", False):
-                for doc in DOCS:
-                    self.run_phase_with_retry(Phase4AExtractRequirements(doc))
-                self.ctx.state["requirements_extracted"] = True
-                self.ctx.save_state()
-
-            self.run_phase_with_retry(Phase4BMergeRequirements())
-            self._validate_artifacts(
-                [os.path.join(self.ctx.root_dir, "requirements.md")],
-                "Phase4B"
-            )
-            self.run_phase_with_retry(Phase4BScopeGate())
-            self.run_phase_with_retry(Phase4COrderRequirements())
-            self.run_phase_with_retry(Phase5GenerateEpics())
-            self._validate_artifacts(
-                [os.path.join(self.ctx.plan_dir, "phases")],
-                "Phase5"
-            )
-            self.run_phase_with_retry(Phase5BSharedComponents())
-            self._validate_artifacts(
-                [os.path.join(self.ctx.plan_dir, "shared_components.md")],
-                "Phase5B"
-            )
-            self.run_phase_with_retry(Phase5CInterfaceContracts())
-            self._validate_artifacts(
-                [os.path.join(self.ctx.plan_dir, "interface_contracts.md")],
-                "Phase5C"
-            )
-            self.run_phase_with_retry(Phase6BreakDownTasks())
-            self._validate_artifacts(
-                [os.path.join(self.ctx.plan_dir, "tasks")],
-                "Phase6"
-            )
-            self.run_phase_with_retry(Phase6BReviewTasks())
-            self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=1))
-            self.run_phase_with_retry(Phase6DReorderTasks(pass_num=1))
-            self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=2))
-            self.run_phase_with_retry(Phase6DReorderTasks(pass_num=2))
-            self.run_phase_with_retry(Phase6EIntegrationTestPlan())
-            self._validate_artifacts(
-                [os.path.join(self.ctx.plan_dir, "integration_test_plan.md")],
-                "Phase6E"
-            )
-
-            # DAG Generation
-            self.run_phase_with_retry(Phase7ADAGGeneration())
-        finally:
-            self.ctx.restore_ignore_file()
+        # DAG Generation
+        self.run_phase_with_retry(Phase7ADAGGeneration())
         self._log("Project generation orchestration complete.")
 
