@@ -9,9 +9,11 @@ and :mod:`workflow_lib.replan` via ``_make_runner()``.
 """
 
 import os
+import signal
 import subprocess
 import tempfile
 import threading
+import uuid
 from typing import Callable, List, Dict, Any, Optional
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
@@ -313,12 +315,29 @@ class QwenRunner(AIRunner):
     Uses ``--output-format stream-json`` and parses the JSONL stream to
     extract human-readable text from ``assistant`` and ``result`` messages,
     filtering out the raw JSON noise.
+
+    Supports a *soft_timeout* (seconds).  When set, each invocation is
+    spawned with a unique ``--session-id``.  If the soft timeout elapses
+    the process is interrupted (SIGINT) and a new ``qwen --resume <id>``
+    process is launched with a prompt telling the agent to wrap up.
     """
 
-    def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
+    # Default soft timeout: 8 minutes (480s).  ``None`` disables the feature.
+    DEFAULT_SOFT_TIMEOUT = 480
+
+    def __init__(self, model: Optional[str] = None, soft_timeout: Optional[int] = DEFAULT_SOFT_TIMEOUT) -> None:
+        super().__init__(model=model)
+        self.soft_timeout = soft_timeout
+
+    def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
         cmd = ["qwen", "-y", "--output-format", "stream-json"]
         if self.model:
             cmd += ["-m", self.model]
+        if session_id:
+            if resume:
+                cmd += ["--resume", session_id]
+            else:
+                cmd += ["--session-id", session_id]
         return cmd
 
     @staticmethod
@@ -440,6 +459,39 @@ class QwenRunner(AIRunner):
             stderr=stderr_raw,
         )
 
+    def _interrupt_and_resume(
+        self,
+        proc: subprocess.Popen,  # type: ignore[type-arg]
+        reader: threading.Thread,
+        session_id: str,
+        cwd: str,
+        on_line: Callable[[str], None],
+        result_text: List[str],
+        hard_timeout: Optional[int] = None,
+    ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        """Send SIGINT to *proc*, then launch a ``--resume`` session.
+
+        The resumed session gets a 2-minute hard timeout to wrap up.
+        """
+        on_line("[soft-timeout] Interrupting qwen session to resume with finish-up prompt...")
+        proc.kill()
+        proc.wait()
+        reader.join(timeout=5)
+
+        # Launch resume session
+        resume_prompt = (
+            "You have run out of time. Immediately finish up your current work: "
+            "complete any in-progress file edits, ensure the code compiles/runs, "
+            "and stop. Do not start any new tasks."
+        )
+        resume_cmd = self.get_cmd(session_id=session_id, resume=True)
+        resume_cmd.append(resume_prompt)
+
+        resume_timeout = hard_timeout or 120  # 2 min default for resume
+        on_line(f"[soft-timeout] Resuming session {session_id} with {resume_timeout}s to finish...")
+
+        return self._run_streaming_json(resume_cmd, cwd, on_line, timeout=resume_timeout)
+
     def run(
         self,
         cwd: str,
@@ -450,15 +502,74 @@ class QwenRunner(AIRunner):
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``qwen -y --output-format stream-json`` and parse the output.
 
+        When *soft_timeout* is configured, the process is spawned with a
+        unique ``--session-id``.  If the soft timeout elapses before it
+        finishes, the session is interrupted and resumed with a "wrap up"
+        prompt.
+
         :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
         """
-        cmd = self.get_cmd(image_paths)
+        session_id = str(uuid.uuid4()) if self.soft_timeout else None
+        cmd = self.get_cmd(image_paths, session_id=session_id)
         cmd.append(full_prompt)
+
+        if on_line is not None and self.soft_timeout and session_id:
+            # Streaming with soft timeout: manually manage the process
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=cwd,
+                env=self._env(),
+            )
+            result_text: List[str] = []
+
+            def _read_stdout() -> None:
+                assert proc.stdout is not None
+                for raw_line in proc.stdout:
+                    parsed = self._parse_stream_line(raw_line)
+                    if parsed:
+                        result_text.append(parsed)
+                        for sub in parsed.splitlines():
+                            if sub.strip():
+                                on_line(sub)
+
+            reader = threading.Thread(target=_read_stdout, daemon=True)
+            reader.start()
+
+            reader.join(timeout=self.soft_timeout)
+            if reader.is_alive():
+                # Soft timeout reached — interrupt and resume
+                resume_result = self._interrupt_and_resume(
+                    proc, reader, session_id, cwd, on_line, result_text,
+                    hard_timeout=timeout,
+                )
+                # Combine output from both sessions
+                combined_stdout = "\n".join(result_text) + "\n" + resume_result.stdout
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=resume_result.returncode,
+                    stdout=combined_stdout,
+                    stderr=resume_result.stderr,
+                )
+
+            # Finished within soft timeout
+            stderr_raw = proc.stderr.read() if proc.stderr else ""
+            proc.wait()
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=proc.returncode,
+                stdout="\n".join(result_text),
+                stderr=stderr_raw,
+            )
+
         if on_line is not None:
             return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout)
+
         # Non-streaming: still use stream-json and parse it
         result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
-        # Parse stdout lines into clean text
         parsed_lines: List[str] = []
         for line in result.stdout.splitlines():
             parsed = self._parse_stream_line(line)

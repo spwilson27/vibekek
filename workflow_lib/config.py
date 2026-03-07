@@ -80,13 +80,16 @@ def get_config_defaults() -> Dict[str, Any]:
     * ``ignore_sandbox`` (bool) — Disable sandbox violation checks.
     * ``timeout`` (int) — Timeout in seconds per AI agent invocation.
     * ``retries`` (int) — Max retry attempts per phase on failure.
+    * ``soft_timeout`` (int) — Soft timeout in seconds for Qwen sessions.
+      When reached, the session is interrupted and resumed with a
+      "finish up" prompt.  Defaults to 480 (8 minutes).
 
     :returns: Dict of config values (only keys present in the file).
     :rtype: dict
     """
     cfg = load_config()
     defaults: Dict[str, Any] = {}
-    for key in ("backend", "model", "ignore_sandbox", "timeout", "retries"):
+    for key in ("backend", "model", "ignore_sandbox", "timeout", "retries", "soft_timeout"):
         if key in cfg:
             defaults[key] = cfg[key]
     return defaults

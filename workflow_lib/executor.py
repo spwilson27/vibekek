@@ -234,7 +234,12 @@ def run_ai_command(
         cmd.append(prompt)
         prompt = ""  # prompt is passed as arg, not stdin
     elif backend == "qwen":
-        cmd = ["qwen", "-y", "--output-format", "stream-json", prompt]
+        import uuid as _uuid
+        from .config import get_config_defaults as _get_cfg
+        _qwen_soft_timeout = _get_cfg().get("soft_timeout", 480)
+        _qwen_session_id = str(_uuid.uuid4())
+        cmd = ["qwen", "-y", "--output-format", "stream-json",
+               "--session-id", _qwen_session_id, prompt]
         prompt = ""  # prompt is passed as arg, not stdin
 
     if model:
@@ -267,29 +272,136 @@ def run_ai_command(
         writer = threading.Thread(target=write_input)
         writer.start()
 
-    if process.stdout:
-        for line in iter(process.stdout.readline, ""):
-            if line:
-                stripped = line.rstrip("\n")
-                if backend == "qwen":
-                    from .runners import QwenRunner
-                    parsed = QwenRunner._parse_stream_line(stripped)
-                    if not parsed:
-                        continue
-                    for sub in parsed.splitlines():
-                        if sub.strip():
-                            if on_line:
-                                on_line(sub)
-                            else:
-                                print(f"{prefix}{sub}")
-                                sys.stdout.flush()
-                elif on_line:
-                    on_line(stripped)
-                else:
-                    print(f"{prefix}{stripped}")
-                    sys.stdout.flush()
+    # For qwen with soft timeout, use a threaded reader so we can interrupt
+    _qwen_soft_hit = False
+    if backend == "qwen" and _qwen_soft_timeout:
+        _stdout_lines: List[str] = []
 
-    process.wait()
+        def _qwen_reader() -> None:
+            from .runners import QwenRunner
+            if process.stdout:
+                for raw_line in iter(process.stdout.readline, ""):
+                    if raw_line:
+                        stripped = raw_line.rstrip("\n")
+                        parsed = QwenRunner._parse_stream_line(stripped)
+                        if not parsed:
+                            continue
+                        for sub in parsed.splitlines():
+                            if sub.strip():
+                                _stdout_lines.append(sub)
+                                if on_line:
+                                    on_line(sub)
+                                else:
+                                    print(f"{prefix}{sub}")
+                                    sys.stdout.flush()
+
+        reader_thread = threading.Thread(target=_qwen_reader, daemon=True)
+        reader_thread.start()
+        reader_thread.join(timeout=_qwen_soft_timeout)
+
+        if reader_thread.is_alive():
+            # Soft timeout reached — interrupt and resume
+            _qwen_soft_hit = True
+            _timeout_msg = "[soft-timeout] Interrupting qwen session to resume with finish-up prompt..."
+            if on_line:
+                on_line(_timeout_msg)
+            else:
+                print(f"{prefix}{_timeout_msg}")
+                sys.stdout.flush()
+
+            process.kill()
+            process.wait()
+            reader_thread.join(timeout=5)
+
+            # Resume session with wrap-up prompt
+            _resume_timeout = 120  # hard cap for resume session
+            _resume_prompt = (
+                "You have run out of time. Immediately finish up your current work: "
+                "complete any in-progress file edits, ensure the code compiles/runs, "
+                "and stop. Do not start any new tasks."
+            )
+            _resume_cmd = ["qwen", "-y", "--output-format", "stream-json",
+                           "--resume", _qwen_session_id, _resume_prompt]
+            if model:
+                _resume_cmd += ["-m", model]
+
+            _resume_msg = f"[soft-timeout] Resuming session {_qwen_session_id} with {_resume_timeout}s to finish..."
+            if on_line:
+                on_line(_resume_msg)
+            else:
+                print(f"{prefix}{_resume_msg}")
+                sys.stdout.flush()
+
+            process = subprocess.Popen(
+                _resume_cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=cwd,
+                text=True,
+                env=os.environ.copy(),
+            )
+
+            # Read resume output with a hard timeout
+            def _resume_reader() -> None:
+                from .runners import QwenRunner
+                if process.stdout:
+                    for raw_line in iter(process.stdout.readline, ""):
+                        if raw_line:
+                            stripped = raw_line.rstrip("\n")
+                            parsed = QwenRunner._parse_stream_line(stripped)
+                            if not parsed:
+                                continue
+                            for sub in parsed.splitlines():
+                                if sub.strip():
+                                    if on_line:
+                                        on_line(sub)
+                                    else:
+                                        print(f"{prefix}{sub}")
+                                        sys.stdout.flush()
+
+            _resume_thread = threading.Thread(target=_resume_reader, daemon=True)
+            _resume_thread.start()
+            _resume_thread.join(timeout=_resume_timeout)
+            if _resume_thread.is_alive():
+                _kill_msg = f"[soft-timeout] Resume session exceeded {_resume_timeout}s hard limit, killing..."
+                if on_line:
+                    on_line(_kill_msg)
+                else:
+                    print(f"{prefix}{_kill_msg}")
+                    sys.stdout.flush()
+                process.kill()
+                process.wait()
+                _resume_thread.join(timeout=5)
+            else:
+                process.wait()
+        else:
+            process.wait()
+    else:
+        if process.stdout:
+            for line in iter(process.stdout.readline, ""):
+                if line:
+                    stripped = line.rstrip("\n")
+                    if backend == "qwen":
+                        from .runners import QwenRunner
+                        parsed = QwenRunner._parse_stream_line(stripped)
+                        if not parsed:
+                            continue
+                        for sub in parsed.splitlines():
+                            if sub.strip():
+                                if on_line:
+                                    on_line(sub)
+                                else:
+                                    print(f"{prefix}{sub}")
+                                    sys.stdout.flush()
+                    elif on_line:
+                        on_line(stripped)
+                    else:
+                        print(f"{prefix}{stripped}")
+                        sys.stdout.flush()
+
+        process.wait()
+
     if writer is not None:
         writer.join()
 

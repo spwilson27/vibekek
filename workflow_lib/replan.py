@@ -839,7 +839,9 @@ def _make_runner(backend: str, model: Optional[str] = None) -> "AIRunner":  # ty
     elif backend == "codex":
         return CodexRunner(model=model)
     elif backend == "qwen":
-        return QwenRunner(model=model)
+        from .config import get_config_defaults as _get_cfg
+        soft_timeout = _get_cfg().get("soft_timeout", 480)
+        return QwenRunner(model=model, soft_timeout=soft_timeout)
     return GeminiRunner(model=model)
 
 

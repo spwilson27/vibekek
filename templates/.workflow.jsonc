@@ -19,6 +19,11 @@
   // Max retry attempts per phase on failure (default: 3).
   // "retries": 3,
 
+  // Soft timeout in seconds for Qwen sessions (default: 480 = 8m).
+  // When reached, the session is interrupted via SIGINT and resumed
+  // with a "finish up" prompt using --resume.  Set to null to disable.
+  // "soft_timeout": 480,
+
   // Optional: GitHub repository (owner/repo) used by `./do ci` for remote checks.
   // "github_repo": "owner/repo"
 }
