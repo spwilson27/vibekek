@@ -1,0 +1,9 @@
+{
+  // Enable Serena MCP server integration for agent code intelligence.
+  // When true, workflow seeds each worktree with a Serena cache and rebuilds
+  // it after each successful merge so agents have up-to-date code search.
+  "serena": true,
+
+  // Optional: GitHub repository (owner/repo) used by `./do ci` for remote checks.
+  // "github_repo": "owner/repo"
+}

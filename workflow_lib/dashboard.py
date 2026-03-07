@@ -159,7 +159,7 @@ class Dashboard:
             if task_id in self._agents:
                 _, _, lines, started = self._agents[task_id]
             else:
-                lines: Deque[Tuple[str, str]] = deque()
+                lines = deque()
                 started = datetime.now(tz=_PST)
             short = last_line.strip()[:120] if last_line else ""
             if short:
@@ -327,7 +327,7 @@ class Dashboard:
 
                 rows_budget = max(allocs[idx] - 1, 0)
                 if output_lines:
-                    selected = []
+                    selected: list[Tuple[str, str]] = []
                     rows_used = 0
                     for ts, line in reversed(output_lines):
                         line_len = 14 + len(line)
@@ -368,16 +368,16 @@ class Dashboard:
         text = Text()
         with self._lock:
             lines = list(self._ring)
-        selected = []
+        log_selected: list[str] = []
         rows_used = 0
         for line in reversed(lines):
             line_rows = max(1, -(-len(line) // content_width))
-            if rows_used + line_rows > log_height and selected:
+            if rows_used + line_rows > log_height and log_selected:
                 break
-            selected.append(line)
+            log_selected.append(line)
             rows_used += line_rows
-        selected.reverse()
-        for line in selected:
+        log_selected.reverse()
+        for line in log_selected:
             text.append(line + "\n", style="dim")
         for _ in range(log_height - rows_used):
             text.append("\n")

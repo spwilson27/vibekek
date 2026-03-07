@@ -44,11 +44,13 @@ investigate, and design all of the features we want to build out later on.
 - All code should receive 90% line coverage from tests.
 - A single python entrypoint script should be available after the first commit so we can verify every subsequent development cycle.
 - The entrypoint script should support the following commands:
+  - `./do setup` - Install all dev dependencies
+  - `./do build` - Build for release
   - `./do test` - Run all tests
   - `./do lint` - Run all linters
   - `./do format` - Run all formatters
   - `./do coverage` - Run all coverage tools
-  - `./do presubmit` - Run all formatters, tests, linters, formatters, and coverage tools, and triggers `./do ci`.
+  - `./do presubmit` - Run setup, formatters, linters, tests, coverage, and triggers `./do ci`.
   - `./do ci` - Automatically run all presubmit checks on CI runners by copying the working directory to make a temporary commit.
 - Success of presubmit checks will gate commits and forward progress.  The `./do presubmit` command will enforce a timeout of 15 minutes.
 

@@ -18,9 +18,18 @@ import re
 import json
 from typing import Any, Dict
 
-from .constants import TOOLS_DIR
+from .constants import TOOLS_DIR, ROOT_DIR
 
-_CONFIG_FILE = os.path.join(TOOLS_DIR, "workflow.jsonc")
+# Prefer root-level config (copied from templates); fall back to .tools/.
+_CONFIG_FILE_ROOT = os.path.join(ROOT_DIR, "workflow.jsonc")
+_CONFIG_FILE_TOOLS = os.path.join(TOOLS_DIR, "workflow.jsonc")
+
+
+def _config_file() -> str:
+    """Return the path to the config file, preferring root over .tools/."""
+    if os.path.exists(_CONFIG_FILE_ROOT):
+        return _CONFIG_FILE_ROOT
+    return _CONFIG_FILE_TOOLS
 
 
 def load_config() -> Dict[str, Any]:
@@ -34,10 +43,11 @@ def load_config() -> Dict[str, Any]:
         the file does not exist.
     :rtype: dict
     """
-    if not os.path.exists(_CONFIG_FILE):
+    cfg = _config_file()
+    if not os.path.exists(cfg):
         return {}
     try:
-        with open(_CONFIG_FILE, "r", encoding="utf-8") as f:
+        with open(cfg, "r", encoding="utf-8") as f:
             raw = f.read()
         # Strip // line comments before parsing
         stripped = re.sub(r"//[^\n]*", "", raw)
