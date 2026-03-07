@@ -171,7 +171,12 @@ class AIRunner:
             proc.stdin.write(prompt)
             proc.stdin.close()
 
-        reader.join(timeout=timeout)
+        try:
+            reader.join(timeout=timeout)
+        except KeyboardInterrupt:
+            # Let the subprocess finish naturally; the orchestrator's SIGINT
+            # handler has already flagged a graceful shutdown.
+            reader.join()
         if reader.is_alive():
             self._kill_process(proc)
             raise subprocess.TimeoutExpired(cmd, timeout or 0)
@@ -225,7 +230,10 @@ class AIRunner:
         reader = threading.Thread(target=_read_stdout, daemon=True)
         reader.start()
 
-        reader.join(timeout=timeout)
+        try:
+            reader.join(timeout=timeout)
+        except KeyboardInterrupt:
+            reader.join()
         if reader.is_alive():
             self._kill_process(proc)
             raise subprocess.TimeoutExpired(cmd, timeout or 0)
