@@ -43,6 +43,7 @@ PROMPT_NAMES = [
     "spec_risks_mitigation.md",
     "spec_project_roadmap.md",
     "flesh_out.md",
+    "summarize_doc.md",
     "adversarial_review.md",
     "conflict_resolution_review.md",
     "final_review.md",
@@ -324,6 +325,7 @@ class TestPlanningE2E:
                 ctx.state.setdefault("generated", []).append(doc["id"])
                 if doc["type"] == "spec":
                     ctx.state.setdefault("fleshed_out", []).append(doc["id"])
+                ctx.state.setdefault("summarized", []).append(doc["id"])
                 ctx.state.setdefault("extracted_requirements", []).append(doc["id"])
 
             ctx.state.update({

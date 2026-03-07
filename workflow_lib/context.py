@@ -47,7 +47,8 @@ class ProjectContext:
         self.input_dir = INPUT_DIR
         
         self.requirements_dir = os.path.join(self.plan_dir, "requirements")
-        
+        self.summaries_dir = os.path.join(self.plan_dir, "summaries")
+
         self.runner = runner or GeminiRunner()
         self.dashboard = dashboard
         self.ignore_sandbox = False
@@ -58,6 +59,7 @@ class ProjectContext:
         os.makedirs(self.specs_dir, exist_ok=True)
         os.makedirs(self.research_dir, exist_ok=True)
         os.makedirs(self.requirements_dir, exist_ok=True)
+        os.makedirs(self.summaries_dir, exist_ok=True)
 
         self.shared_components_file = os.path.join(self.plan_dir, "shared_components.md")
         self.state = self._load_state()
@@ -258,12 +260,32 @@ class ProjectContext:
         out_folder = "docs/plan/specs" if doc["type"] == "spec" else "docs/plan/research"
         return f"{out_folder}/{doc['id']}.md"
 
+    def get_summary_path(self, doc: Dict[str, Any]) -> str:
+        """Return the absolute path for a document's summary file.
+
+        :param doc: Document descriptor from :data:`~.constants.DOCS`.
+        :returns: Absolute path under ``docs/plan/summaries/``.
+        """
+        return os.path.join(self.summaries_dir, f"{doc['id']}.md")
+
+    def get_summary_target_path(self, doc: Dict[str, Any]) -> str:
+        """Return the project-root-relative path for a document's summary.
+
+        :param doc: Document descriptor from :data:`~.constants.DOCS`.
+        :returns: Relative path such as ``"docs/plan/summaries/1_prd.md"``.
+        """
+        return f"docs/plan/summaries/{doc['id']}.md"
+
     def get_accumulated_context(
         self,
         current_doc: Dict[str, Any],
         include_research: bool = True,
     ) -> str:
         """Build an XML-tagged context string from all documents preceding *current_doc*.
+
+        When a summary exists for a preceding document (in ``docs/plan/summaries/``),
+        the summary is used instead of the full document to keep the prompt within
+        model input limits.
 
         Research documents can be excluded when generating spec documents to
         prevent hallucinated market data from influencing architectural choices.
@@ -284,9 +306,18 @@ class ProjectContext:
                 break
             if not include_research and prev_doc["type"] == "research":
                 continue
-            prev_file = self.get_document_path(prev_doc)
-            if os.path.exists(prev_file):
-                with open(prev_file, "r", encoding="utf-8") as f:
+            # Prefer summary over full document
+            summary_file = self.get_summary_path(prev_doc)
+            full_file = self.get_document_path(prev_doc)
+            if os.path.exists(summary_file):
+                with open(summary_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    accumulated_context += (
+                        f'\n\n<previous_document name="{prev_doc["name"]}" type="summary">'
+                        f'\n{content}\n</previous_document>\n'
+                    )
+            elif os.path.exists(full_file):
+                with open(full_file, "r", encoding="utf-8") as f:
                     content = f.read()
                     accumulated_context += (
                         f'\n\n<previous_document name="{prev_doc["name"]}">'

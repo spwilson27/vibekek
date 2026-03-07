@@ -211,6 +211,7 @@ class Orchestrator:
 
         1. **Phase 1** — Generate each planning document (research + specs).
         2. **Phase 2** — Flesh out each spec document section by section.
+        2b. **Phase 2B** — Summarize each document for compact context carriage.
         3. **Phase 3** — Final holistic review of all documents.
         4. **Phase 3A** — Conflict resolution between documents.
         5. **Phase 3B** — Adversarial review to stress-test the plan.
@@ -252,13 +253,14 @@ class Orchestrator:
             self._log(f"[!] {len(missing)} prompt file(s) missing from {self.ctx.prompts_dir}. Aborting.")
             sys.exit(1)
 
-        # Phase 1 and 2 for each document
+        # Phase 1, 2, and 2B for each document
         for doc in DOCS:
             self.run_phase_with_retry(Phase1GenerateDoc(doc))
             expected = self.ctx.get_document_path(doc)
             self._validate_artifacts([expected], f"Phase1/{doc['id']}")
 
             self.run_phase_with_retry(Phase2FleshOutDoc(doc))
+            self.run_phase_with_retry(Phase2BSummarizeDoc(doc))
 
         self.run_phase_with_retry(Phase3FinalReview())
         self.run_phase_with_retry(Phase3AConflictResolution())

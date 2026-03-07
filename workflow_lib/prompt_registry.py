@@ -27,6 +27,9 @@ PROMPT_PLACEHOLDERS = {
     # Phase 2: Flesh out
     "flesh_out.md": {"description_ctx", "target_path", "header", "accumulated_context"},
 
+    # Phase 2B: Summarize
+    "summarize_doc.md": {"document_name", "document_content", "summary_path"},
+
     # Phase 3: Reviews
     "final_review.md": {"description_ctx", "source_doc"},
     "conflict_resolution_review.md": {"description_ctx", "target_path"},

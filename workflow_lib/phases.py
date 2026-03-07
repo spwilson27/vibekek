@@ -271,6 +271,74 @@ class Phase2FleshOutDoc(BasePhase):
         ctx.state.setdefault("fleshed_out", []).append(self.doc["id"])
         ctx.save_state()
 
+
+class Phase2BSummarizeDoc(BasePhase):
+    """Generate a condensed summary of a planning document for use as context.
+
+    Runs after Phase 2 (flesh out) for each document.  The summary preserves
+    key decisions, identifiers, and architectural details while reducing size
+    to ~15-25% of the original, keeping subsequent prompts within model input
+    limits.
+
+    :param doc: Document descriptor dict.
+    :type doc: dict
+    """
+
+    def __init__(self, doc: dict) -> None:
+        self.doc = doc
+
+    @property
+    def operation(self) -> str:
+        return "Summarize"
+
+    @property
+    def display_name(self) -> str:
+        return f"Phase2B: Summarize {self.doc.get('name', self.doc.get('id', '?'))}"
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Generate a summary of the document for accumulated context use.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On AI runner failure.
+        """
+        if self.doc["id"] in ctx.state.get("summarized", []):
+            print(f"Skipping summarization for {self.doc['name']} (already summarized).")
+            return
+
+        source_file = ctx.get_document_path(self.doc)
+        if not os.path.exists(source_file):
+            print(f"Skipping summarization for {self.doc['name']} (source not found).")
+            return
+
+        with open(source_file, "r", encoding="utf-8") as f:
+            document_content = f.read()
+
+        summary_path = ctx.get_summary_target_path(self.doc)
+        summary_abs = ctx.get_summary_path(self.doc)
+
+        print(f"   -> [Phase 2B: Summarize] {self.doc['name']} into {summary_path} ...")
+        prompt_tmpl = ctx.load_prompt("summarize_doc.md")
+        prompt = ctx.format_prompt(prompt_tmpl,
+            document_name=self.doc["name"],
+            document_content=document_content,
+            summary_path=summary_path,
+        )
+
+        allowed_files = [summary_abs]
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
+
+        if result.returncode != 0:
+            print(f"\n[!] Error summarizing {self.doc['name']}.")
+            print(result.stdout)
+            print(result.stderr)
+            sys.exit(1)
+
+        ctx.stage_changes(allowed_files)
+        ctx.state.setdefault("summarized", []).append(self.doc["id"])
+        ctx.save_state()
+
+
 class Phase3FinalReview(BasePhase):
     """Holistic alignment review of all planning documents.
 

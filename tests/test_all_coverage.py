@@ -132,6 +132,7 @@ def test_all_phases(
             if phase_cls in (
                 workflow.Phase1GenerateDoc,
                 workflow.Phase2FleshOutDoc,
+                workflow.Phase2BSummarizeDoc,
                 workflow.Phase4AExtractRequirements,
             ):
                 instance = phase_cls(workflow.DOCS[0])
@@ -292,6 +293,7 @@ def test_all_phases_failure(
             if phase_cls in (
                 workflow.Phase1GenerateDoc,
                 workflow.Phase2FleshOutDoc,
+                workflow.Phase2BSummarizeDoc,
                 workflow.Phase4AExtractRequirements,
             ):
                 instance = phase_cls(workflow.DOCS[0])

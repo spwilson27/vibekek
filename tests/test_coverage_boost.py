@@ -13,7 +13,7 @@ import workflow
 from workflow import (
     AIRunner, GeminiRunner, ClaudeRunner, CopilotRunner,
     ProjectContext, BasePhase,
-    Phase1GenerateDoc, Phase2FleshOutDoc,
+    Phase1GenerateDoc, Phase2FleshOutDoc, Phase2BSummarizeDoc,
     Phase3FinalReview, Phase3BAdversarialReview,
     Phase4AExtractRequirements, Phase4BMergeRequirements,
     Phase4BScopeGate, Phase4COrderRequirements,
@@ -834,6 +834,7 @@ class TestContextCoverage:
             ctx.specs_dir = "/fake/root/docs/plan/specs"
             ctx.research_dir = "/fake/root/docs/plan/research"
             ctx.requirements_dir = "/fake/root/docs/plan/requirements"
+            ctx.summaries_dir = "/fake/root/docs/plan/summaries"
             ctx.prompts_dir = "/fake/.tools/prompts"
             ctx.state_file = "/fake/.gen_state.json"
             ctx.input_dir = "/fake/.tools/input"
@@ -874,6 +875,26 @@ class TestContextCoverage:
             result = ctx.get_accumulated_context(doc, include_research=False)
         # research doc should be skipped
         assert "market" not in result or result == ""
+
+    def test_get_accumulated_context_prefers_summary(self):
+        ctx = self._make_ctx()
+        doc = {"id": "arch", "type": "spec", "name": "Arch"}
+        prev = {"id": "prd", "type": "spec", "name": "PRD"}
+
+        def fake_exists(path):
+            return "summaries" in path  # summary exists, full doc doesn't matter
+
+        def fake_summary_path(d):
+            return f"/fake/root/docs/plan/summaries/{d['id']}.md"
+
+        ctx.get_summary_path = lambda d: fake_summary_path(d)
+
+        with patch("workflow_lib.context.DOCS", [prev, doc]), \
+             patch("os.path.exists", side_effect=fake_exists), \
+             patch("builtins.open", mock_open(read_data="summary content")):
+            result = ctx.get_accumulated_context(doc)
+        assert 'type="summary"' in result
+        assert "summary content" in result
 
     def test_get_workspace_snapshot_oserror(self):
         ctx = self._make_ctx()
@@ -1009,6 +1030,54 @@ class TestPhase2:
         doc = {"id": "doc1", "type": "spec", "name": "Doc1"}
         with pytest.raises(SystemExit):
             Phase2FleshOutDoc(doc).execute(ctx)
+
+
+class TestPhase2BSummarize:
+    def test_already_summarized_skip(self):
+        ctx = _mock_ctx(state={"summarized": ["doc1"]})
+        doc = {"id": "doc1", "type": "spec", "name": "Doc1"}
+        Phase2BSummarizeDoc(doc).execute(ctx)
+        ctx.run_gemini.assert_not_called()
+
+    def test_source_not_found_skip(self):
+        ctx = _mock_ctx()
+        ctx.get_document_path.return_value = "/nonexistent/path.md"
+        doc = {"id": "doc1", "type": "spec", "name": "Doc1"}
+        with patch("os.path.exists", return_value=False):
+            Phase2BSummarizeDoc(doc).execute(ctx)
+        ctx.run_gemini.assert_not_called()
+
+    def test_success(self):
+        ctx = _mock_ctx()
+        ctx.get_summary_target_path.return_value = "docs/plan/summaries/doc1.md"
+        ctx.get_summary_path.return_value = "/fake/root/docs/plan/summaries/doc1.md"
+        doc = {"id": "doc1", "type": "spec", "name": "Doc1"}
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data="# Doc content")):
+            Phase2BSummarizeDoc(doc).execute(ctx)
+        ctx.run_gemini.assert_called_once()
+        assert "doc1" in ctx.state.get("summarized", [])
+
+    def test_failure_exits(self):
+        ctx = _mock_ctx()
+        ctx.get_summary_target_path.return_value = "docs/plan/summaries/doc1.md"
+        ctx.get_summary_path.return_value = "/fake/root/docs/plan/summaries/doc1.md"
+        ctx.run_gemini.return_value = MagicMock(returncode=1, stdout="", stderr="")
+        doc = {"id": "doc1", "type": "spec", "name": "Doc1"}
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data="# Doc content")), \
+             pytest.raises(SystemExit):
+            Phase2BSummarizeDoc(doc).execute(ctx)
+
+    def test_operation_property(self):
+        doc = {"id": "x", "name": "X"}
+        phase = Phase2BSummarizeDoc(doc)
+        assert phase.operation == "Summarize"
+
+    def test_display_name(self):
+        doc = {"id": "x", "name": "X"}
+        phase = Phase2BSummarizeDoc(doc)
+        assert "Summarize X" in phase.display_name
 
 
 class TestPhase3:
