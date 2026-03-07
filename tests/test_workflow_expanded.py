@@ -477,8 +477,8 @@ def test_run_ai_writes_last_failed_on_failure(tmp_path):
     assert (tmp_path / ".last_failed_prompt.txt").exists()
 
 
-def test_run_ai_writes_last_command_on_success_too(tmp_path):
-    """The debug script is always written so sandbox violations can be reproduced."""
+def test_run_ai_no_debug_files_on_success(tmp_path):
+    """Debug script should NOT be written when the AI succeeds."""
     runner = GeminiRunner()
     mock_result = MagicMock()
     mock_result.returncode = 0
@@ -499,8 +499,8 @@ def test_run_ai_writes_last_command_on_success_too(tmp_path):
         result = ctx.run_ai("my prompt", "ignore stuff")
 
     assert result.returncode == 0
-    assert (tmp_path / ".last_failed_command.sh").exists()
-    assert (tmp_path / ".last_failed_prompt.txt").exists()
+    assert not (tmp_path / ".last_failed_command.sh").exists()
+    assert not (tmp_path / ".last_failed_prompt.txt").exists()
 
 
 def _real_open_for_tmp(tmp_path):

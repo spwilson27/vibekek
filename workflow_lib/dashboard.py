@@ -30,9 +30,7 @@ from typing import Deque, Dict, IO, Optional, Tuple, Type
 from zoneinfo import ZoneInfo
 
 from rich.console import Console, ConsoleOptions, Group, RenderResult
-from rich.layout import Layout
 from rich.live import Live
-from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
@@ -86,6 +84,7 @@ class Dashboard:
         self._console = Console(highlight=False)
         self._spinner_idx = 0
         self._last_spinner_time = 0.0
+        self._start_time = datetime.now(tz=_PST)
 
     # ------------------------------------------------------------------
     # Context manager
@@ -238,6 +237,19 @@ class Dashboard:
             self._last_spinner_time = mono
         spinner = _SPINNER_FRAMES[self._spinner_idx]
 
+        content_width = max(self._console.size.width, 20)
+
+        # --- Format script timer ---
+        script_elapsed = now - self._start_time
+        script_secs = int(script_elapsed.total_seconds())
+        if script_secs >= 3600:
+            script_elapsed_str = f"{script_secs // 3600}h{(script_secs % 3600) // 60:02d}m{script_secs % 60:02d}s"
+        elif script_secs >= 60:
+            script_elapsed_str = f"{script_secs // 60}m{script_secs % 60:02d}s"
+        else:
+            script_elapsed_str = f"{script_secs}s"
+        script_start_str = self._start_time.strftime("%H:%M:%S")
+
         # --- Gather visible agents ---
         with self._lock:
             visible = {
@@ -247,29 +259,32 @@ class Dashboard:
             }
 
         # --- Compute agent allocations ---
-        # Each agent card costs: 1 header + N output lines + 1 separator (except last)
-        # Panel border costs 2 lines.
+        # Separator = 1 line between agents, header rule = 1 line
         if visible:
             n = len(visible)
-            # Panel border (top + bottom) = 2, separators between agents = n-1
-            chrome = 2 + max(n - 1, 0)
+            # Chrome: 1 header rule + separators between agents
+            chrome = 1 + max(n - 1, 0)
             content_budget = max(half - chrome, n)  # at least 1 line per agent
             per_agent = content_budget // n
 
-            # First pass: figure out how many content lines each agent needs
-            # (1 for header + output lines, minimum 2: header + at least 1 line)
+            # First pass: figure out how many terminal rows each agent needs,
+            # accounting for line wrapping in agent output.
             agent_data = []
             for task_id in sorted(visible):
                 stage, status, output_lines, started = visible[task_id]
-                # need = header(1) + output lines (at least 1 for "waiting...")
-                need = 1 + max(len(output_lines), 1)
+                rows_needed = 1  # header
+                if output_lines:
+                    for _ts, line in output_lines:
+                        line_len = 14 + len(line)
+                        rows_needed += max(1, -(-line_len // content_width))
+                else:
+                    rows_needed += 1  # "waiting for output..."
                 elapsed = now - started
-                agent_data.append((task_id, stage, status, output_lines, need, started, elapsed))
+                agent_data.append((task_id, stage, status, output_lines, rows_needed, started, elapsed))
 
             # Two-pass allocation: give each agent min(need, share), redistribute surplus
             allocs = [min(a[4], per_agent) for a in agent_data]
             surplus = content_budget - sum(allocs)
-            # Redistribute surplus to agents that could use more
             if surplus > 0:
                 hungry = [i for i, a in enumerate(agent_data) if allocs[i] < a[4]]
                 while surplus > 0 and hungry:
@@ -284,15 +299,14 @@ class Dashboard:
                             still_hungry.append(i)
                     hungry = still_hungry
 
-            # Build agent cards with allocated lines
-            cards = []
+            # Build agent section
+            parts: list = []
+            parts.append(Rule("[bold]Active Agents[/bold]", style="green"))
             for idx, (task_id, stage, status, output_lines, _need, started, elapsed) in enumerate(agent_data):
                 style, symbol = _STATUS_STYLE.get(status, ("white", "?"))
-                # Use spinner for active statuses
                 if status in ("running", "cloning", "merging"):
                     symbol = spinner
 
-                # Format elapsed time
                 total_secs = int(elapsed.total_seconds())
                 if total_secs >= 3600:
                     elapsed_str = f"{total_secs // 3600}h{(total_secs % 3600) // 60:02d}m"
@@ -309,59 +323,67 @@ class Dashboard:
                     f"[bold]{task_id}[/bold]  [dim]{stage}[/dim]",
                     f"[dim]{start_str}[/dim] [dim]({elapsed_str})[/dim]  [{style}]{symbol} {status}[/{style}]",
                 )
-                cards.append(header)
+                parts.append(header)
 
-                # Output lines: show the most recent that fit (alloc - 1 for header)
-                max_lines = max(allocs[idx] - 1, 0)
+                rows_budget = max(allocs[idx] - 1, 0)
                 if output_lines:
-                    for ts, line in output_lines[-max_lines:]:
-                        cards.append(Text(f"  [{ts}] {line}", style="dim", no_wrap=True))
+                    selected = []
+                    rows_used = 0
+                    for ts, line in reversed(output_lines):
+                        line_len = 14 + len(line)
+                        line_rows = max(1, -(-line_len // content_width))
+                        if rows_used + line_rows > rows_budget and selected:
+                            break
+                        selected.append((ts, line))
+                        rows_used += line_rows
+                    selected.reverse()
+                    for ts, line in selected:
+                        parts.append(Text(f"  [{ts}] {line}", style="dim"))
                 else:
-                    cards.append(Text("  waiting for output...", style="dim"))
+                    parts.append(Text("  waiting for output...", style="dim"))
 
                 if idx < len(agent_data) - 1:
-                    cards.append(Rule(style="dim"))
+                    parts.append(Rule(style="dim"))
 
             agents_used = sum(allocs) + chrome
-            agents_panel = Panel(
-                Group(*cards),
-                title="[bold]Active Agents[/bold]",
-                border_style="green",
-                height=agents_used,
-            )
         else:
-            agents_used = 3  # border(2) + 1 line of text
-            agents_panel = Panel(
+            agents_used = 2  # header rule + 1 line of text
+            parts = [
+                Rule("[bold]Active Agents[/bold]", style="green"),
                 Text("No active agents", style="dim"),
-                title="[bold]Active Agents[/bold]",
-                border_style="green",
-                height=agents_used,
+            ]
+
+        # --- Build log section with remaining space ---
+        # Chrome: 1 line for header rule
+        log_height = max(usable - agents_used - 1, 3)
+
+        log_parts: list = []
+        log_parts.append(
+            Rule(
+                f"[bold]Log[/bold]  [dim]{script_start_str} ({script_elapsed_str})[/dim]",
+                style="blue",
             )
-
-        # --- Build log panel with remaining space ---
-        log_height = max(usable - agents_used, 5)
-        # Panel border = 2, so content lines = log_height - 2
-        log_content_lines = max(log_height - 2, 1)
-
-        text = Text(no_wrap=True, overflow="ellipsis")
-        with self._lock:
-            lines = list(self._ring)
-        # Show newest lines first, limited to available space
-        shown = list(reversed(lines))[:log_content_lines]
-        for line in shown:
-            text.append(line + "\n", style="dim")
-        # Pad to fill allocated height so the layout stays stable
-        for _ in range(log_content_lines - len(shown)):
-            text.append("\n")
-
-        log_panel = Panel(
-            text,
-            title="[bold]Log[/bold]",
-            border_style="blue",
-            height=log_height,
         )
 
-        return Group(log_panel, agents_panel)
+        text = Text()
+        with self._lock:
+            lines = list(self._ring)
+        selected = []
+        rows_used = 0
+        for line in reversed(lines):
+            line_rows = max(1, -(-len(line) // content_width))
+            if rows_used + line_rows > log_height and selected:
+                break
+            selected.append(line)
+            rows_used += line_rows
+        selected.reverse()
+        for line in selected:
+            text.append(line + "\n", style="dim")
+        for _ in range(log_height - rows_used):
+            text.append("\n")
+        log_parts.append(text)
+
+        return Group(*log_parts, *parts)
 
     def _refresh(self) -> None:
         if self._live is None:

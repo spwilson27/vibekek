@@ -475,7 +475,8 @@ class ProjectContext:
                     _dash.update_last_line(_task_id, line)
         effective_timeout = timeout if timeout is not None else self.agent_timeout
         result = self.runner.run(self.root_dir, full_prompt, ignore_content, self.ignore_file, self.image_paths, on_line=on_line, timeout=effective_timeout)
-        self._write_last_failed_command(full_prompt, ignore_content)
+        if result.returncode != 0:
+            self._write_last_failed_command(full_prompt, ignore_content)
         if allowed_files is not None:
             if sandbox:
                 self.verify_changes(before, allowed_files)
