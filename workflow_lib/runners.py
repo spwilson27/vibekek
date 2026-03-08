@@ -632,7 +632,7 @@ class QwenRunner(SessionResumableRunner):
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
-        cmd = ["qwen", "-y", "--output-format", "stream-json", "--include-partial-messages"]
+        cmd = ["qwen", "-y", "--output-format", "stream-json", "--include-partial-messages", "--chat-recording"]
         if self.model:
             cmd += ["-m", self.model]
         if session_id:
