@@ -2793,6 +2793,42 @@ class TestConfigCoverage:
         assert result.get("serena") is True
 
 
+    def test_get_dev_branch_default(self):
+        """get_dev_branch returns 'dev' when no config file exists."""
+        with patch("os.path.exists", return_value=False):
+            from workflow_lib.config import get_dev_branch
+            result = get_dev_branch()
+        assert result == "dev"
+
+    def test_get_dev_branch_custom(self):
+        """get_dev_branch returns configured branch name."""
+        jsonc = '{"dev_branch": "integration"}'
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data=jsonc)):
+            from workflow_lib.config import get_dev_branch
+            result = get_dev_branch()
+        assert result == "integration"
+
+    def test_dev_branch_created_custom(self):
+        """When dev_branch is customized, execute_dag creates that branch."""
+        run_results = [
+            MagicMock(returncode=1),  # rev-parse fails
+            MagicMock(returncode=0),  # branch creation
+        ]
+        state = {"completed_tasks": [], "merged_tasks": []}
+        with patch("subprocess.run", side_effect=run_results + [MagicMock(returncode=0)] * 100) as mock_run, \
+             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
+             patch("workflow_lib.executor.get_dev_branch", return_value="integration"), \
+             patch("workflow_lib.executor.get_ready_tasks", return_value=[]), \
+             patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"):
+            execute_dag("/root", {}, state, 1, "./do presubmit")
+        # First call: rev-parse --verify integration
+        assert mock_run.call_args_list[0][0][0] == ["git", "rev-parse", "--verify", "integration"]
+        # Second call: branch integration main
+        assert mock_run.call_args_list[1][0][0] == ["git", "branch", "integration", "main"]
+
+
 class TestGetProjectDescriptionAndImages:
     """Tests for get_project_context and get_project_images."""
 

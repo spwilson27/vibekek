@@ -42,7 +42,7 @@ from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR
 from .context import ProjectContext
 from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state
-from .config import get_serena_enabled
+from .config import get_serena_enabled, get_dev_branch
 from .dashboard import make_dashboard
 
 shutdown_requested = False
@@ -455,7 +455,7 @@ def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.L
 
 
 
-def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False, dashboard: Any = None, model: Optional[str] = None) -> bool:
+def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev") -> bool:
     """Run the full implementation lifecycle for one task.
 
     Steps performed:
@@ -517,7 +517,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
             dashboard.set_agent(full_task_id, "Impl", "cloning", "")
         try:
             subprocess.run(["git", "clone", root_dir, tmpdir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            subprocess.run(["git", "checkout", "-B", branch_name, "origin/dev"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            subprocess.run(["git", "checkout", "-B", branch_name, f"origin/{dev_branch}"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as e:
             _log(f"      [!] Failed to create clone:\n{e.stderr.decode('utf-8')}")
             if dashboard:
@@ -627,7 +627,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
                 dashboard.set_agent(full_task_id, "failed", "failed", "Task failed")
 
 
-def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False, dashboard: Any = None, model: Optional[str] = None) -> bool:
+def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev") -> bool:
     """Squash-merge a task branch into ``dev`` via a temporary clone and verify.
 
     Steps performed:
@@ -693,7 +693,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
     gitlab_url = get_gitlab_remote_url(root_dir)
     subprocess.run(["git", "remote", "add", "gitlab", gitlab_url], cwd=tmpdir, check=False)
     
-    subprocess.run(["git", "checkout", "dev"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["git", "checkout", dev_branch], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     push_succeeded = False
     try:
@@ -734,7 +734,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                     
                     if presubmit_res.returncode == 0:
                         _log(f"      [Merge] Presubmit passed! Pushing to local origin.")
-                        res = subprocess.run(["git", "push", "origin", "dev"], cwd=tmpdir, capture_output=True, text=True)
+                        res = subprocess.run(["git", "push", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
                         if res.returncode != 0:
                             _log(f"      [!] Failed to push merge to local origin:\n{res.stderr}")
                             return False
@@ -749,13 +749,13 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                     subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     
                     # Let's try to rebase the task branch onto the current dev to help resolve conflicts
-                    rebase_res = subprocess.run(["git", "rebase", "dev", f"origin/{branch_name}"], cwd=tmpdir, capture_output=True, text=True)
+                    rebase_res = subprocess.run(["git", "rebase", dev_branch, f"origin/{branch_name}"], cwd=tmpdir, capture_output=True, text=True)
                     if rebase_res.returncode == 0:
                         _log(f"      [Merge] Rebase successful. Retrying squash merge...")
                         # Now that we rebased origin/{branch_name} locally, let's try to squash it into dev
                         new_task_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmpdir, capture_output=True, text=True).stdout.strip()
-                        subprocess.run(["git", "checkout", "dev"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        
+                        subprocess.run(["git", "checkout", dev_branch], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
                         # Try squash again from the newly rebased head
                         merge_res = subprocess.run(["git", "merge", "--squash", new_task_head], cwd=tmpdir, capture_output=True, text=True)
                         if merge_res.returncode == 0:
@@ -770,7 +770,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                             presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True)
                             if presubmit_res.returncode == 0:
                                 _log(f"      [Merge] Presubmit passed after rebase + squash! Pushing to local origin.")
-                                res = subprocess.run(["git", "push", "origin", "dev"], cwd=tmpdir, capture_output=True, text=True)
+                                res = subprocess.run(["git", "push", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
                                 if res.returncode != 0:
                                     _log(f"      [!] Failed to push merge to local origin:\n{res.stderr}")
                                     return False
@@ -786,19 +786,19 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                         _log(f"      [Merge] Rebase failed to apply cleanly. Aborting rebase.")
                         subprocess.run(["git", "rebase", "--abort"], cwd=tmpdir, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         # Ensure we are back on dev
-                        subprocess.run(["git", "checkout", "dev"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run(["git", "checkout", dev_branch], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         failure_output = f"{rebase_res.stdout}\n{rebase_res.stderr}"
             else:
                 # Merge Agent Attempt
                 _log(f"      [Merge] Spawning Merge Agent to resolve conflicts (Attempt {attempt}/{max_retries})...")
                 
                 # Reset to clean dev before the agent tries
-                subprocess.run(["git", "reset", "--hard", "origin/dev"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["git", "reset", "--hard", f"origin/{dev_branch}"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 subprocess.run(["git", "clean", "-fd"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
                 failure_ctx = dict(context)
                 failure_ctx["description_ctx"] += f"\n\n### PREVIOUS ATTEMPT FAILURE\nThe previous squash merge or presubmit failed with:\n```\n{failure_output}\n```\n"
-                failure_ctx["description_ctx"] += f"\nPlease resolve the conflicts and ensure the final state is a single commit on the dev branch with the message: {commit_msg}"
+                failure_ctx["description_ctx"] += f"\nPlease resolve the conflicts and ensure the final state is a single commit on the {dev_branch} branch with the message: {commit_msg}"
                 
                 if not run_agent("Merge", "merge_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=task_id, model=model):
                     _log(f"      [!] Merge agent failed to cleanly exit.")
@@ -811,7 +811,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                 
                 if presubmit_res.returncode == 0:
                      _log(f"      [Merge] Presubmit passed! Pushing to local origin.")
-                     res = subprocess.run(["git", "push", "origin", "dev"], cwd=tmpdir, capture_output=True, text=True)
+                     res = subprocess.run(["git", "push", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
                      if res.returncode != 0:
                          _log(f"      [!] Failed to push merge to local origin:\n{res.stderr}")
                          return False
@@ -953,19 +953,20 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
     :raises SystemExit: When one or more tasks fail.
     """
     serena_enabled = get_serena_enabled()
+    dev_branch = get_dev_branch()
 
     # Ensure dev branch exists
-    res = subprocess.run(["git", "rev-parse", "--verify", "dev"], cwd=root_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    res = subprocess.run(["git", "rev-parse", "--verify", dev_branch], cwd=root_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if res.returncode != 0:
-        subprocess.run(["git", "branch", "dev", "main"], cwd=root_dir, check=True)
+        subprocess.run(["git", "branch", dev_branch, "main"], cwd=root_dir, check=True)
 
     cache_lock = threading.Lock()
 
     with make_dashboard(log_file=log_file) as dashboard:
-        _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, serena_enabled, cache_lock, dashboard, model=model)
+        _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, serena_enabled, cache_lock, dashboard, model=model, dev_branch=dev_branch)
 
 
-def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str, serena_enabled: bool, cache_lock: threading.Lock, dashboard: Any, model: Optional[str] = None) -> None:
+def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str, serena_enabled: bool, cache_lock: threading.Lock, dashboard: Any, model: Optional[str] = None, dev_branch: str = "dev") -> None:
     """Inner DAG execution loop run inside the dashboard context manager."""
     if serena_enabled:
         # Ensure .mcp.json exists at project root (copy from template if missing)
@@ -979,12 +980,12 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
         # Bootstrap Serena cache from dev if not present
         serena_cache = os.path.join(root_dir, ".serena", "cache")
         if not os.path.isdir(serena_cache):
-            dashboard.log("=> [Serena] No cache found. Bootstrapping index from dev branch...")
+            dashboard.log(f"=> [Serena] No cache found. Bootstrapping index from {dev_branch} branch...")
             init_clone = tempfile.mkdtemp(prefix="serena_init_")
             try:
                 subprocess.run(["git", "clone", root_dir, init_clone],
                                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                subprocess.run(["git", "checkout", "dev"],
+                subprocess.run(["git", "checkout", dev_branch],
                                cwd=init_clone, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 rebuild_serena_cache(init_clone, root_dir, cache_lock, dashboard=dashboard)
             finally:
@@ -1015,7 +1016,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                 with state_lock:
                     active_tasks.add(task_id)
 
-                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled, dashboard=dashboard, model=model)
+                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch)
                 future_to_task[future] = task_id
 
             # If no tasks are running and (none are ready or shutdown requested), we are done/deadlocked
@@ -1057,21 +1058,21 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                         dashboard.log(f"   -> [Implementation] Task {task_id} completed successfully.")
 
                         # Trigger DAG Merge Workflow immediately
-                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model):
+                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch):
                             with state_lock:
                                 state["completed_tasks"].append(task_id)
                                 state["merged_tasks"].append(task_id)
                                 save_workflow_state(state)
-                            dashboard.log(f"   -> [Success] Task {task_id} fully integrated into dev.")
-                            dashboard.log(f"      Pushing dev to remote origin...")
-                            push_res = subprocess.run(["git", "push", "origin", "dev"], cwd=root_dir, capture_output=True, text=True)
+                            dashboard.log(f"   -> [Success] Task {task_id} fully integrated into {dev_branch}.")
+                            dashboard.log(f"      Pushing {dev_branch} to remote origin...")
+                            push_res = subprocess.run(["git", "push", "origin", dev_branch], cwd=root_dir, capture_output=True, text=True)
                             if push_res.returncode != 0:
                                 dashboard.log(f"      [!] Failed to push to remote:\n{push_res.stderr}")
                             else:
                                 dashboard.log(f"      [Push] Success.")
                         else:
                             with state_lock:
-                                failed_tasks.add(f"Task {task_id} failed merging into dev.")
+                                failed_tasks.add(f"Task {task_id} failed merging into {dev_branch}.")
                             executor.shutdown(wait=True, cancel_futures=True)
                     else:
                         with state_lock:

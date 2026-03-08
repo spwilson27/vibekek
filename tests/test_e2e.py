@@ -823,3 +823,171 @@ class TestImplementationE2E:
         assert set(processed) == set(dag.keys()), (
             f"Not all tasks ran: {processed}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Custom dev_branch E2E
+# ---------------------------------------------------------------------------
+
+
+def _init_git_repo_custom_branch(path: str, branch_name: str):
+    """Initialise a minimal git repo with a custom integration branch."""
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "t@t.com",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "t@t.com",
+    }
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path,
+                   check=True, capture_output=True, env=env)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "init", "-q"],
+                   cwd=path, check=True, capture_output=True, env=env)
+    subprocess.run(["git", "branch", branch_name], cwd=path, check=True,
+                   capture_output=True, env=env)
+
+
+class TestCustomDevBranchE2E:
+    """E2E tests verifying that a custom dev_branch config is respected."""
+
+    def test_custom_dev_branch_tasks_complete(self, tmp_path):
+        """execute_dag with custom dev_branch completes all tasks."""
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        custom_branch = "integration"
+        _init_git_repo_custom_branch(root, custom_branch)
+
+        dag = {
+            "phase_1/sub/01_a.md": [],
+            "phase_1/sub/01_b.md": ["phase_1/sub/01_a.md"],
+        }
+        state = {"completed_tasks": [], "merged_tasks": []}
+
+        def _fake_process(root_dir, task_id, presubmit_cmd, backend,
+                          serena=False, **kwargs):
+            # Verify the custom dev_branch is passed through
+            assert kwargs.get("dev_branch") == custom_branch, (
+                f"Expected dev_branch={custom_branch!r}, got {kwargs.get('dev_branch')!r}"
+            )
+            return True
+
+        def _fake_merge(root_dir, task_id, presubmit_cmd, backend,
+                        cache_lock=None, serena=False, **kwargs):
+            assert kwargs.get("dev_branch") == custom_branch
+            return True
+
+        with patch("workflow_lib.executor.process_task",
+                   side_effect=_fake_process), \
+             patch("workflow_lib.executor.merge_task",
+                   side_effect=_fake_merge), \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.get_dev_branch",
+                   return_value=custom_branch), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="",
+                                          stderr="")):
+            execute_dag(root, dag, state, jobs=1,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        assert set(state["completed_tasks"]) == set(dag.keys())
+
+    def test_custom_dev_branch_created_if_missing(self, tmp_path):
+        """When the custom branch doesn't exist, execute_dag creates it."""
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        custom_branch = "my-dev"
+
+        # Init repo WITHOUT the custom branch
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "t@t.com",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "t@t.com",
+        }
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root,
+                       check=True, capture_output=True, env=env)
+        subprocess.run(["git", "commit", "--allow-empty", "-m", "init", "-q"],
+                       cwd=root, check=True, capture_output=True, env=env)
+
+        # Verify branch doesn't exist yet
+        res = subprocess.run(["git", "rev-parse", "--verify", custom_branch],
+                             cwd=root, capture_output=True)
+        assert res.returncode != 0, "Branch should not exist before test"
+
+        dag = {}
+        state = {"completed_tasks": [], "merged_tasks": []}
+
+        with patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.get_dev_branch",
+                   return_value=custom_branch), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"):
+            execute_dag(root, dag, state, jobs=1,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        # Verify the custom branch was created
+        res = subprocess.run(["git", "rev-parse", "--verify", custom_branch],
+                             cwd=root, capture_output=True)
+        assert res.returncode == 0, f"Branch {custom_branch!r} should have been created"
+
+    def test_push_uses_custom_dev_branch(self, tmp_path):
+        """After merge, the push targets the custom dev branch name."""
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        custom_branch = "staging"
+        _init_git_repo_custom_branch(root, custom_branch)
+
+        dag = {"phase_1/sub/01_a.md": []}
+        state = {"completed_tasks": [], "merged_tasks": []}
+        push_calls = []
+
+        original_run = subprocess.run
+
+        def _tracking_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "push" in cmd:
+                push_calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        def _fake_process(root_dir, task_id, presubmit_cmd, backend,
+                          serena=False, **kwargs):
+            return True
+
+        def _fake_merge(root_dir, task_id, presubmit_cmd, backend,
+                        cache_lock=None, serena=False, **kwargs):
+            return True
+
+        with patch("workflow_lib.executor.process_task",
+                   side_effect=_fake_process), \
+             patch("workflow_lib.executor.merge_task",
+                   side_effect=_fake_merge), \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.get_dev_branch",
+                   return_value=custom_branch), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("subprocess.run", side_effect=_tracking_run):
+            execute_dag(root, dag, state, jobs=1,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        # Verify push used the custom branch name
+        assert any(custom_branch in cmd for cmd in push_calls), (
+            f"Expected push to {custom_branch!r}, got: {push_calls}"
+        )

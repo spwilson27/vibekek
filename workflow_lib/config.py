@@ -69,6 +69,18 @@ def get_serena_enabled() -> bool:
     return bool(load_config().get("serena", False))
 
 
+def get_dev_branch() -> str:
+    """Return the configured dev branch name.
+
+    Reads the ``"dev_branch"`` key from ``.workflow.jsonc``.  Defaults to
+    ``"dev"`` when absent.
+
+    :returns: Branch name to use as the integration branch.
+    :rtype: str
+    """
+    return str(load_config().get("dev_branch", "dev"))
+
+
 def get_config_defaults() -> Dict[str, Any]:
     """Return workflow defaults from ``.workflow.jsonc``.
 
