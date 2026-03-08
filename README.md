@@ -347,14 +347,15 @@ python .tools/workflow.py modify-req --remove AUTH-005
 python .tools/workflow.py modify-req --add "New feature description"
 ```
 
-### Regenerate a DAG
+### Regenerate DAGs
 
 ```bash
-python .tools/workflow.py regen-dag phase_1
+python .tools/workflow.py regen-dag              # all phases
+python .tools/workflow.py regen-dag --phase phase_1  # single phase
 ```
 
-Rebuilds `dag.json` for a phase — programmatically from task `depends_on` metadata
-when available, AI-generated otherwise.
+Rebuilds `dag.json` for all phases (or a single `--phase`) — programmatically from
+task `depends_on` metadata when available, AI-generated otherwise.
 
 ### Regenerate tasks
 

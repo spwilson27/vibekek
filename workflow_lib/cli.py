@@ -49,6 +49,9 @@ Available commands
 
 ``cascade``
     After manual task edits, rescan tasks, rebuild the DAG, and validate.
+
+``fixup``
+    Run validation and automatically fix failures (phase mappings + task coverage).
 """
 
 import os
@@ -60,7 +63,7 @@ import signal
 from .constants import TOOLS_DIR, ROOT_DIR
 from .orchestrator import Orchestrator
 from .context import ProjectContext
-from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade, cmd_fix_requirements
+from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade, cmd_fixup
 from .executor import execute_dag, Logger, signal_handler
 from .dashboard import make_dashboard, _DashboardStream
 from .config import get_serena_enabled, get_config_defaults
@@ -182,6 +185,7 @@ def cmd_plan(args: argparse.Namespace) -> None:
                     "5b-components": ["shared_components_completed"],
                     "5c-contracts": ["interface_contracts_completed"],
                     "6-tasks": ["tasks_completed"],
+                    "6a-fixup": ["fixup_validation_completed"],
                     "6b-review": ["tasks_reviewed"],
                     "6c-cross-review": ["cross_phase_reviewed_pass_1", "cross_phase_reviewed_pass_2"],
                     "6d-reorder": ["tasks_reordered_pass_1", "tasks_reordered_pass_2"],
@@ -298,8 +302,8 @@ def main() -> None:
     mg.add_argument("--edit", dest="edit_req", action="store_true", help="Open requirements.md in editor")
     p_mod_req.add_argument("--dry-run", action="store_true")
 
-    p_regen_dag = sub.add_parser("regen-dag", parents=[shared], help="Rebuild DAG for a phase")
-    p_regen_dag.add_argument("phase_id", help="Phase (e.g., phase_1)")
+    p_regen_dag = sub.add_parser("regen-dag", parents=[shared], help="Rebuild DAG for all phases (or a single --phase)")
+    p_regen_dag.add_argument("--phase", dest="phase_id", default=None, help="Limit to a single phase (e.g., phase_1)")
     p_regen_dag.add_argument("--dry-run", action="store_true")
 
     p_regen_tasks = sub.add_parser("regen-tasks", parents=[shared], help="Regenerate tasks for a phase/sub-epic")
@@ -315,8 +319,8 @@ def main() -> None:
     p_cascade.add_argument("phase_id", help="Phase (e.g., phase_1)")
     p_cascade.add_argument("--dry-run", action="store_true")
 
-    p_fix_reqs = sub.add_parser("fix-requirements", parents=[shared], help="Detect unmapped requirements and generate tasks to cover them")
-    p_fix_reqs.add_argument("--dry-run", action="store_true")
+    p_fixup = sub.add_parser("fixup", parents=[shared], help="Run validation and automatically fix failures (phase mappings + task coverage)")
+    p_fixup.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args()
 
@@ -349,7 +353,7 @@ def main() -> None:
         "regen-tasks": cmd_regen_tasks,
         "regen-components": cmd_regen_components,
         "cascade": cmd_cascade,
-        "fix-requirements": cmd_fix_requirements,
+        "fixup": cmd_fixup,
     }
 
     commands[args.command](args)

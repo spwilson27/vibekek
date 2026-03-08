@@ -965,6 +965,71 @@ class Phase6BreakDownTasks(BasePhase):
         ctx.save_state()
         print("Successfully generated atomic tasks.")
 
+class Phase6AFixupValidation(BasePhase):
+    """Run validation checks and automatically fix phase/task mapping gaps.
+
+    After task breakdown (Phase 6), runs ``_run_all_checks()`` to detect
+    requirements that are not assigned to any phase or not covered by any
+    task.  Fixes each category using AI, then re-validates.  Idempotent via
+    ``ctx.state["fixup_validation_completed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Run fixup validation and fix any failures.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: When fixes fail or validation still fails after fixing.
+        """
+        if ctx.state.get("fixup_validation_completed", False):
+            print("Fixup validation already completed.")
+            return
+
+        print("\n=> [Phase 6A-Fixup: Validation Fixup] Running validation and fixing gaps...")
+
+        from .replan import _run_all_checks, _fix_phase_mappings, _fix_task_mappings
+
+        results = _run_all_checks()
+
+        if results["all_pass"]:
+            print("All validation checks passed. No fixup needed.")
+            ctx.state["fixup_validation_completed"] = True
+            ctx.save_state()
+            return
+
+        fixed_anything = False
+
+        # Fix verify-phases failures first
+        phases_check = results["checks"].get("verify-phases", {})
+        if not phases_check.get("passed", True) and phases_check.get("missing_reqs"):
+            if _fix_phase_mappings(phases_check["missing_reqs"], ctx):
+                fixed_anything = True
+
+        # Fix verify-tasks failures
+        tasks_check = results["checks"].get("verify-tasks", {})
+        if not tasks_check.get("passed", True) and tasks_check.get("missing_reqs"):
+            if _fix_task_mappings(tasks_check["missing_reqs"], ctx):
+                fixed_anything = True
+
+        if not fixed_anything:
+            print("[!] Validation failures detected but no automatic fixes available.")
+            sys.exit(1)
+
+        # Re-verify
+        print("\n=> Re-running validation after fixup...")
+        final = _run_all_checks()
+
+        if not final["all_pass"]:
+            print("[!] Some checks still failing after fixup.")
+            sys.exit(1)
+
+        tasks_dir = os.path.join(ctx.plan_dir, "tasks")
+        ctx.stage_changes([tasks_dir, os.path.join(ctx.plan_dir, "phases")])
+        ctx.state["fixup_validation_completed"] = True
+        ctx.save_state()
+        print("Fixup validation complete — all checks passing.")
+
+
 class Phase6BReviewTasks(BasePhase):
     """Review tasks within each phase for duplicates and coverage gaps.
 
@@ -1415,7 +1480,8 @@ class Phase7ADAGGeneration(BasePhase):
                                 resolved_deps.append(candidate)
                                 break
 
-                dag[task_id] = resolved_deps
+                # Filter out self-references
+                dag[task_id] = [d for d in resolved_deps if d != task_id]
 
         if not all_have_metadata:
             return None

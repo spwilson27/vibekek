@@ -307,6 +307,7 @@ class Orchestrator:
             [os.path.join(self.ctx.plan_dir, "tasks")],
             "Phase6"
         )
+        self.run_phase_with_retry(Phase6AFixupValidation())
         self.run_phase_with_retry(Phase6BReviewTasks())
         self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=1))
         self.run_phase_with_retry(Phase6DReorderTasks(pass_num=1))

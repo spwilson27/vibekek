@@ -1427,9 +1427,12 @@ class TestReplanCmds:
 
     def test_cmd_validate_no_artifacts(self):
         from workflow_lib.replan import cmd_validate
+        import pytest
         with patch("os.path.exists", return_value=False), \
-             patch("os.path.isdir", return_value=False):
+             patch("os.path.isdir", return_value=False), \
+             pytest.raises(SystemExit) as exc:
             cmd_validate(self._make_args())
+        assert exc.value.code == 0
 
     def test_cmd_validate_all_pass(self):
         from workflow_lib.replan import cmd_validate
@@ -2087,11 +2090,18 @@ class TestReplanCmdsCoverage:
              patch("workflow_lib.replan.save_replan_state"):
             cmd_modify_req(self._make_args(edit_req=False, remove_req=None, add_req="New req", dry_run=False))
 
-    def test_cmd_regen_dag_dry_run(self):
+    def test_cmd_regen_dag_dry_run_single_phase(self):
         from workflow_lib.replan import cmd_regen_dag
         with patch("workflow_lib.replan.get_tasks_dir", return_value="/fake/tasks"), \
              patch("os.path.isdir", return_value=True):
             cmd_regen_dag(self._make_args(phase_id="phase_1", dry_run=True, backend="gemini"))
+
+    def test_cmd_regen_dag_dry_run_all_phases(self):
+        from workflow_lib.replan import cmd_regen_dag
+        with patch("workflow_lib.replan.get_tasks_dir", return_value="/fake/tasks"), \
+             patch("os.path.isdir", return_value=True), \
+             patch("os.listdir", return_value=["phase_1", "phase_2", "other_dir"]):
+            cmd_regen_dag(self._make_args(phase_id=None, dry_run=True, backend="gemini"))
 
     def test_cmd_regen_dag_not_found(self):
         from workflow_lib.replan import cmd_regen_dag
@@ -2100,7 +2110,25 @@ class TestReplanCmdsCoverage:
              pytest.raises(SystemExit):
             cmd_regen_dag(self._make_args(phase_id="phase_99", dry_run=False, backend="gemini"))
 
-    def test_cmd_regen_dag_success(self):
+    def test_cmd_regen_dag_all_phases_no_tasks_dir(self):
+        from workflow_lib.replan import cmd_regen_dag
+        with patch("workflow_lib.replan.get_tasks_dir", return_value="/fake/tasks"), \
+             patch("os.path.isdir", return_value=False), \
+             pytest.raises(SystemExit):
+            cmd_regen_dag(self._make_args(phase_id=None, dry_run=False, backend="gemini"))
+
+    def test_cmd_regen_dag_all_phases_empty(self):
+        from workflow_lib.replan import cmd_regen_dag
+
+        def isdir_side(p):
+            return "tasks" in p and "phase_" not in p
+
+        with patch("workflow_lib.replan.get_tasks_dir", return_value="/fake/tasks"), \
+             patch("os.path.isdir", side_effect=isdir_side), \
+             patch("os.listdir", return_value=["README.md"]):
+            cmd_regen_dag(self._make_args(phase_id=None, dry_run=False, backend="gemini"))
+
+    def test_cmd_regen_dag_success_single_phase(self):
         from workflow_lib.replan import cmd_regen_dag
         ctx = self._mock_ctx()
         with patch("workflow_lib.replan.get_tasks_dir", return_value="/fake/tasks"), \
@@ -2112,6 +2140,21 @@ class TestReplanCmdsCoverage:
                    return_value={"replan_history": []}), \
              patch("workflow_lib.replan.save_replan_state"):
             cmd_regen_dag(self._make_args(phase_id="phase_1", dry_run=False, backend="gemini"))
+
+    def test_cmd_regen_dag_success_all_phases(self):
+        from workflow_lib.replan import cmd_regen_dag
+        ctx = self._mock_ctx()
+        with patch("workflow_lib.replan.get_tasks_dir", return_value="/fake/tasks"), \
+             patch("os.path.isdir", return_value=True), \
+             patch("os.listdir", return_value=["phase_1", "phase_2"]), \
+             patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
+             patch("workflow_lib.replan.ProjectContext", return_value=ctx), \
+             patch("workflow_lib.replan._rebuild_phase_dag") as mock_rebuild, \
+             patch("workflow_lib.replan.load_replan_state",
+                   return_value={"replan_history": []}), \
+             patch("workflow_lib.replan.save_replan_state"):
+            cmd_regen_dag(self._make_args(phase_id=None, dry_run=False, backend="gemini"))
+        assert mock_rebuild.call_count == 2
 
     def test_cmd_regen_tasks_phase_not_found(self):
         from workflow_lib.replan import cmd_regen_tasks

@@ -42,7 +42,7 @@ from verify_requirements import parse_requirements, REQ_REGEX  # noqa: E402
 INPUT_DIR = os.path.join(ROOT_DIR, "input")
 GEN_STATE_FILE = os.path.join(ROOT_DIR, ".gen_state.json")
 WORKFLOW_STATE_FILE = os.path.join(TOOLS_DIR, ".workflow_state.json")
-REPLAN_STATE_FILE = os.path.join(TOOLS_DIR, ".replan_state.json")
+REPLAN_STATE_FILE = os.path.join(ROOT_DIR, ".replan_state.json")
 
 DOCS = [
     # Research

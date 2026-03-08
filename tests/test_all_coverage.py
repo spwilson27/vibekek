@@ -306,7 +306,7 @@ def test_all_phases_failure(
                 instance = phase_cls()
 
             instance.execute(ctx)
-        except Exception as e:
+        except BaseException:
             pass
 
 
@@ -592,7 +592,7 @@ def test_main_all_cmds(mock_subprocess, mock_open_file, super_mock):
         with (
             patch(
                 "sys.argv",
-                ["workflow.py", "regen-dag", "phase_1", "--dry-run" if dry_run else ""],
+                ["workflow.py", "regen-dag", "--phase", "phase_1"] + (["--dry-run"] if dry_run else []),
             ),
             patch("workflow_lib.cli.cmd_regen_dag"),
         ):
@@ -650,14 +650,14 @@ def test_main_all_cmds(mock_subprocess, mock_open_file, super_mock):
             except SystemExit:
                 pass
 
-    # Test fix-requirements command
+    # Test fixup command
     for dry_run in [False, True]:
         with (
             patch(
                 "sys.argv",
-                ["workflow.py", "fix-requirements", "--dry-run" if dry_run else ""],
+                ["workflow.py", "fixup"] + (["--dry-run"] if dry_run else []),
             ),
-            patch("workflow_lib.cli.cmd_fix_requirements"),
+            patch("workflow_lib.cli.cmd_fixup"),
         ):
             try:
                 workflow.main()

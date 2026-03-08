@@ -336,12 +336,18 @@ def _verify_phase_consistency(phase_path, phase_dag):
         return False
         
     # Check for orphans: markdown files on disk not mentioned in the DAG
+    # Exclude non-task files (review summaries, reorder reports, etc.)
+    _NON_TASK_PATTERNS = {"review_summary.md", "cross_phase_review_summary", "reorder_tasks_summary"}
     orphan_tasks = []
     for root, dirs, files in os.walk(phase_path):
         for file in files:
             if file.endswith(".md"):
                 full_p = os.path.join(root, file)
                 rel_p = os.path.relpath(full_p, phase_path)
+
+                # Skip known non-task markdown files
+                if any(pat in rel_p for pat in _NON_TASK_PATTERNS):
+                    continue
                 
                 # If the exact file is not a key, check if its parent directory is a key
                 # some tasks are represented as directories in the DAG
@@ -419,8 +425,9 @@ def verify_req_format(file_path):
         content = f.read()
 
     all_ids = set(REQ_REGEX.findall(content))
-    # Standard format: DOC_PREFIX-REQ-NNN where DOC_PREFIX is like 1_PRD, 2_TAS, etc.
-    standard_format = re.compile(r'^[A-Z0-9_]+-REQ-\d{3,}$')
+    # Standard format: DOC_PREFIX-REQ-NNN or DOC_PREFIX-REQ-CATEGORY-NNN
+    # e.g. 1_PRD-REQ-001, 5_SECURITY_DESIGN-REQ-BR-SEC-TM-001
+    standard_format = re.compile(r'^[A-Z0-9_]+-REQ-(?:[A-Z0-9]+-)*\d{3,}$')
 
     non_standard = []
     for req_id in sorted(all_ids):

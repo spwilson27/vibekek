@@ -37,6 +37,8 @@ Command summary
 +-------------------+----------------------------------------------------------+
 | cmd_cascade       | Rescan tasks, rebuild DAG, and validate after manual edits. |
 +-------------------+----------------------------------------------------------+
+| cmd_fixup         | Run validation and auto-fix phase/task mapping gaps.     |
++-------------------+----------------------------------------------------------+
 """
 
 import os
@@ -141,17 +143,14 @@ def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined
     print()
 
 
-def cmd_validate(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
-    """Run all applicable verification checks against the current plan artefacts.
+def _run_all_checks(quiet: bool = False) -> Dict[str, Any]:
+    """Run all applicable verification checks and return structured results.
 
-    Determines which checks are relevant based on what artefacts exist on disk
-    (``requirements.md``, ``docs/plan/phases/``, ``docs/plan/tasks/``), then
-    runs each via ``verify_requirements.py``.  Exits with code 1 if any check
-    fails.
-
-    :param args: Parsed :mod:`argparse` namespace (no relevant attributes).
-    :type args: argparse.Namespace
-    :raises SystemExit: Exits ``0`` on all-pass or ``1`` on any failure.
+    :param quiet: When ``True``, suppress printed output.
+    :returns: Dict with ``"all_pass"`` bool and per-check entries keyed by
+        check name, each containing ``"passed"`` bool, ``"output"`` str, and
+        ``"missing_reqs"`` list of requirement IDs that failed the check.
+    :rtype: Dict[str, Any]
     """
     verify_script = os.path.join(TOOLS_DIR, "verify_requirements.py")
     plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
@@ -174,23 +173,61 @@ def cmd_validate(args: "argparse.Namespace") -> None:  # type: ignore[name-defin
         checks.append(("verify-tasks", [sys.executable, verify_script, "--verify-tasks", "docs/plan/phases/", "docs/plan/tasks/"]))
         checks.append(("verify-dags", [sys.executable, verify_script, "--verify-dags", "docs/plan/tasks/"]))
 
-    if not checks:
-        print("No plan artifacts found to validate.")
-        return
+    results: Dict[str, Any] = {"all_pass": True, "checks": {}}
 
-    all_pass = True
+    if not checks:
+        if not quiet:
+            print("No plan artifacts found to validate.")
+        return results
+
     for name, cmd in checks:
         res = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT_DIR)
-        if res.returncode == 0:
-            print(f"  PASS  {name}")
-        else:
-            print(f"  FAIL  {name}")
-            if res.stdout.strip():
-                for line in res.stdout.strip().splitlines():
-                    print(f"        {line}")
-            all_pass = False
+        passed = res.returncode == 0
+        output = res.stdout.strip()
 
-    sys.exit(0 if all_pass else 1)
+        # Parse missing requirement IDs from output
+        missing_reqs = []
+        if not passed and output:
+            for line in output.splitlines():
+                m = re.match(r'\s*-\s*\[([^\]]+)\]', line)
+                if m:
+                    missing_reqs.append(m.group(1))
+
+        results["checks"][name] = {
+            "passed": passed,
+            "output": output,
+            "missing_reqs": missing_reqs,
+        }
+
+        if not quiet:
+            if passed:
+                print(f"  PASS  {name}")
+            else:
+                print(f"  FAIL  {name}")
+                if output:
+                    for line in output.splitlines():
+                        print(f"        {line}")
+
+        if not passed:
+            results["all_pass"] = False
+
+    return results
+
+
+def cmd_validate(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Run all applicable verification checks against the current plan artefacts.
+
+    Determines which checks are relevant based on what artefacts exist on disk
+    (``requirements.md``, ``docs/plan/phases/``, ``docs/plan/tasks/``), then
+    runs each via ``verify_requirements.py``.  Exits with code 1 if any check
+    fails.
+
+    :param args: Parsed :mod:`argparse` namespace (no relevant attributes).
+    :type args: argparse.Namespace
+    :raises SystemExit: Exits ``0`` on all-pass or ``1`` on any failure.
+    """
+    results = _run_all_checks()
+    sys.exit(0 if results["all_pass"] else 1)
 
 
 def cmd_block(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
@@ -546,7 +583,7 @@ def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-def
 
 
 def cmd_regen_dag(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
-    """Rebuild the dependency DAG for a specific phase.
+    """Rebuild the dependency DAG for all phases, or a single ``--phase``.
 
     Delegates to :func:`_rebuild_phase_dag` which first attempts a
     programmatic build from task metadata, then falls back to AI inference.
@@ -555,30 +592,46 @@ def cmd_regen_dag(args: "argparse.Namespace") -> None:  # type: ignore[name-defi
 
     :param args: Parsed :mod:`argparse` namespace with attributes:
 
-        - ``phase_id`` (str) — phase directory name.
+        - ``phase_id`` (str | None) — optional phase directory name.
         - ``dry_run`` (bool) — preview mode.
         - ``backend`` (str) — AI backend for fallback DAG generation.
     :type args: argparse.Namespace
-    :raises SystemExit: When the phase directory is not found.
+    :raises SystemExit: When a specified phase directory is not found.
     """
-    phase_id = args.phase_id
-    phase_dir = os.path.join(get_tasks_dir(), phase_id)
+    tasks_dir = get_tasks_dir()
+    phase_id = getattr(args, "phase_id", None)
 
-    if not os.path.isdir(phase_dir):
-        print(f"Error: Phase directory not found: {phase_dir}")
-        sys.exit(1)
+    if phase_id:
+        phase_ids = [phase_id]
+    else:
+        if not os.path.isdir(tasks_dir):
+            print(f"Error: Tasks directory not found: {tasks_dir}")
+            sys.exit(1)
+        phase_ids = sorted(
+            d for d in os.listdir(tasks_dir)
+            if os.path.isdir(os.path.join(tasks_dir, d)) and d.startswith("phase_")
+        )
+        if not phase_ids:
+            print("No phase directories found.")
+            return
 
-    if args.dry_run:
-        print(f"[dry-run] Would rebuild DAG for {phase_id}")
-        return
+    for pid in phase_ids:
+        phase_dir = os.path.join(tasks_dir, pid)
+        if not os.path.isdir(phase_dir):
+            print(f"Error: Phase directory not found: {phase_dir}")
+            sys.exit(1)
 
-    runner = _make_runner(args.backend, model=getattr(args, 'model', None))
-    ctx = ProjectContext(ROOT_DIR, runner=runner)
-    _rebuild_phase_dag(phase_dir, ctx)
+        if args.dry_run:
+            print(f"[dry-run] Would rebuild DAG for {pid}")
+            continue
 
-    rp_state = load_replan_state()
-    log_action(rp_state, "regen-dag", phase_id)
-    save_replan_state(rp_state)
+        runner = _make_runner(args.backend, model=getattr(args, 'model', None))
+        ctx = ProjectContext(ROOT_DIR, runner=runner)
+        _rebuild_phase_dag(phase_dir, ctx)
+
+        rp_state = load_replan_state()
+        log_action(rp_state, "regen-dag", pid)
+        save_replan_state(rp_state)
 
 
 def cmd_regen_tasks(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
@@ -811,38 +864,99 @@ def cmd_cascade(args: "argparse.Namespace") -> None:  # type: ignore[name-define
     save_replan_state(rp_state)
 
 
-def cmd_fix_requirements(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
-    """Detect unmapped requirements and generate tasks to cover them.
+def _fix_phase_mappings(unmapped_reqs: List[str], ctx: ProjectContext, dry_run: bool = False) -> bool:
+    """Fix verify-phases failures by assigning unmapped requirements to phases.
 
-    Compares requirements referenced in ``docs/plan/phases/`` against those
-    covered by ``docs/plan/tasks/``.  For each unmapped requirement, determines
-    which phase and sub-epic it belongs to, then invokes an AI agent with the
-    ``fix_requirements.md`` prompt to generate new task files.
-
-    After generation, rebuilds the DAG for each affected phase and re-runs
-    verification.
-
-    :param args: Parsed :mod:`argparse` namespace with attributes:
-
-        - ``backend`` (str) — AI backend to use.
-        - ``dry_run`` (bool) — preview mode.
-    :type args: argparse.Namespace
-    :raises SystemExit: When no unmapped requirements are found, directories
-        are missing, or the AI runner fails.
+    :param unmapped_reqs: List of requirement IDs missing from all phase files.
+    :param ctx: Project context with AI runner.
+    :param dry_run: Preview mode — don't actually run AI.
+    :returns: ``True`` if fix was attempted (or dry-run shown), ``False`` if nothing to do.
     """
+    if not unmapped_reqs:
+        return False
+
+    plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
+    phases_dir = os.path.join(plan_dir, "phases")
+    req_file = os.path.join(ROOT_DIR, "requirements.md")
+
+    print(f"\n=> Fixing {len(unmapped_reqs)} requirement(s) not mapped to any phase:")
+    for r in sorted(unmapped_reqs):
+        print(f"  - [{r}]")
+
+    if dry_run:
+        print("\n[dry-run] Would assign the above requirements to phases.")
+        return True
+
+    # Build phases content summary
+    phases_content = ""
+    for filename in sorted(os.listdir(phases_dir)):
+        if not filename.endswith(".md"):
+            continue
+        filepath = os.path.join(phases_dir, filename)
+        with open(filepath, "r", encoding="utf-8") as f:
+            # Include just the first ~30 lines (objective + some reqs)
+            lines = f.readlines()
+            phases_content += f"### {filename}\n"
+            phases_content += "".join(lines[:30]) + "\n...\n\n"
+
+    # Build requirements context for the unmapped IDs
+    requirements_context = ""
+    if os.path.exists(req_file):
+        with open(req_file, "r", encoding="utf-8") as f:
+            req_content = f.read()
+        for req_id in unmapped_reqs:
+            # Find the line(s) for this requirement
+            for line in req_content.splitlines():
+                if f"[{req_id}]" in line:
+                    requirements_context += f"- {line.strip()}\n"
+                    break
+
+    unmapped_reqs_list = "\n".join(f"- [{r}]" for r in sorted(unmapped_reqs))
+
+    prompt_tmpl = ctx.load_prompt("fix_phase_mappings.md")
+    prompt = ctx.format_prompt(prompt_tmpl,
+        description_ctx=ctx.description_ctx,
+        phases_content=phases_content,
+        unmapped_reqs_list=unmapped_reqs_list,
+        requirements_context=requirements_context or "(no context found)",
+    )
+
+    allowed_files = [phases_dir + os.sep]
+    result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+
+    if result.returncode != 0:
+        print(f"\n[!] Error fixing phase mappings.")
+        print(result.stdout)
+        print(result.stderr)
+        return False
+
+    print("  Phase mappings updated.")
+    return True
+
+
+def _fix_task_mappings(unmapped_reqs: List[str], ctx: ProjectContext, dry_run: bool = False) -> bool:
+    """Fix verify-tasks failures by generating tasks for unmapped requirements.
+
+    This is the logic formerly in ``cmd_fix_requirements``.
+
+    :param unmapped_reqs: List of requirement IDs in phases but not in tasks.
+    :param ctx: Project context with AI runner.
+    :param dry_run: Preview mode.
+    :returns: ``True`` if fix was attempted, ``False`` if nothing to do.
+    """
+    if not unmapped_reqs:
+        return False
+
     plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
     phases_dir = os.path.join(plan_dir, "phases")
     tasks_dir = get_tasks_dir()
 
-    if not os.path.isdir(phases_dir):
-        print("Error: phases directory not found.")
-        sys.exit(1)
-    if not os.path.isdir(tasks_dir):
-        print("Error: tasks directory not found.")
-        sys.exit(1)
+    if not os.path.isdir(phases_dir) or not os.path.isdir(tasks_dir):
+        print("Error: phases or tasks directory not found.")
+        return False
 
-    # Collect all requirements from phases
-    phases_reqs: Dict[str, set] = {}  # req_id -> set of phase_ids
+    # Build req_id -> phase_ids mapping
+    phases_reqs: Dict[str, set] = {}
     for filename in os.listdir(phases_dir):
         if not filename.endswith(".md"):
             continue
@@ -852,35 +966,21 @@ def cmd_fix_requirements(args: "argparse.Namespace") -> None:  # type: ignore[na
         for r in reqs:
             phases_reqs.setdefault(r, set()).add(phase_id)
 
-    # Collect all requirements from tasks
-    tasks_reqs = set()
-    for root, _, files in os.walk(tasks_dir):
-        for filename in files:
-            if filename.endswith(".md"):
-                file_path = os.path.join(root, filename)
-                tasks_reqs.update(parse_requirements(file_path))
-
-    # Find unmapped
-    all_phase_reqs = set(phases_reqs.keys())
-    unmapped = all_phase_reqs - tasks_reqs
-
+    # Filter to only the unmapped ones
+    unmapped = set(unmapped_reqs) & set(phases_reqs.keys())
     if not unmapped:
-        print("All requirements are mapped to tasks. Nothing to fix.")
-        return
+        return False
 
-    print(f"Found {len(unmapped)} unmapped requirement(s):")
+    print(f"\n=> Fixing {len(unmapped)} requirement(s) not mapped to any task:")
     for r in sorted(unmapped):
-        phase_list = ", ".join(sorted(phases_reqs[r]))
+        phase_list = ", ".join(sorted(phases_reqs.get(r, set())))
         print(f"  - [{r}] (in {phase_list})")
 
-    if args.dry_run:
+    if dry_run:
         print("\n[dry-run] Would generate tasks to cover the above requirements.")
-        return
+        return True
 
-    runner = _make_runner(args.backend, model=getattr(args, 'model', None))
-    ctx = ProjectContext(ROOT_DIR, runner=runner)
-
-    # Group unmapped requirements by phase
+    # Group by phase
     by_phase: Dict[str, List[str]] = {}
     for req_id in unmapped:
         for phase_id in phases_reqs[req_id]:
@@ -895,16 +995,13 @@ def cmd_fix_requirements(args: "argparse.Namespace") -> None:  # type: ignore[na
         if not os.path.isdir(phase_task_dir):
             os.makedirs(phase_task_dir, exist_ok=True)
 
-        # Find the best sub-epic for these requirements from the grouping JSON
         grouping_file = os.path.join(tasks_dir, f"{phase_id}_grouping.json")
 
-        # Determine target sub-epic: check grouping JSON first, fall back to a catch-all
         target_sub_epic = None
         sub_epic_name = None
         if os.path.exists(grouping_file):
             with open(grouping_file, "r", encoding="utf-8") as f:
                 sub_epics = json.load(f)
-            # Find which sub-epic originally contained these requirements
             for key, reqs in sub_epics.items():
                 if isinstance(reqs, list):
                     overlap = set(req_ids) & set(reqs)
@@ -915,7 +1012,6 @@ def cmd_fix_requirements(args: "argparse.Namespace") -> None:  # type: ignore[na
                         break
 
         if not target_sub_epic:
-            # Fall back: use the first existing sub-epic directory, or create one
             existing_sub_epics = [
                 d for d in os.listdir(phase_task_dir)
                 if os.path.isdir(os.path.join(phase_task_dir, d))
@@ -932,7 +1028,6 @@ def cmd_fix_requirements(args: "argparse.Namespace") -> None:  # type: ignore[na
         se_dir = os.path.join(tasks_dir, target_dir)
         os.makedirs(se_dir, exist_ok=True)
 
-        # Gather existing tasks
         existing = sorted([f for f in os.listdir(se_dir) if f.endswith(".md")]) if os.path.isdir(se_dir) else []
         next_num = len(existing) + 1
 
@@ -981,22 +1076,75 @@ def cmd_fix_requirements(args: "argparse.Namespace") -> None:  # type: ignore[na
         print(f"\nRebuilding DAG for {phase_id}...")
         _rebuild_phase_dag(phase_dir, ctx)
 
+    return True
+
+
+def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Run validation and automatically fix any failures.
+
+    Runs all verification checks, then for each failure category:
+
+    - **verify-phases**: Assigns unmapped requirements to the best-fit phase
+      using AI.
+    - **verify-tasks**: Generates new task files to cover unmapped requirements
+      (formerly ``fix-requirements``).
+
+    After fixes, re-runs validation to confirm resolution. Rebuilds DAGs for
+    any phases whose tasks were modified.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``backend`` (str) — AI backend to use.
+        - ``dry_run`` (bool) — preview mode.
+    :type args: argparse.Namespace
+    :raises SystemExit: On unrecoverable errors.
+    """
+    print("Running validation checks...")
+    results = _run_all_checks()
+
+    if results["all_pass"]:
+        print("\nAll checks passed. Nothing to fix.")
+        return
+
+    dry_run = getattr(args, 'dry_run', False)
+    runner = _make_runner(args.backend, model=getattr(args, 'model', None))
+    ctx = ProjectContext(ROOT_DIR, runner=runner)
+
+    fixed_anything = False
+
+    # Fix verify-phases failures first (must happen before verify-tasks)
+    phases_check = results["checks"].get("verify-phases", {})
+    if not phases_check.get("passed", True) and phases_check.get("missing_reqs"):
+        if _fix_phase_mappings(phases_check["missing_reqs"], ctx, dry_run=dry_run):
+            fixed_anything = True
+
+    # Fix verify-tasks failures
+    tasks_check = results["checks"].get("verify-tasks", {})
+    if not tasks_check.get("passed", True) and tasks_check.get("missing_reqs"):
+        if _fix_task_mappings(tasks_check["missing_reqs"], ctx, dry_run=dry_run):
+            fixed_anything = True
+
+    if not fixed_anything:
+        print("\nNo automatic fixes available for the remaining failures.")
+        sys.exit(1)
+
+    if dry_run:
+        return
+
     # Re-verify
-    print("\nRe-verifying requirement coverage...")
-    verify_script = os.path.join(TOOLS_DIR, "verify_requirements.py")
-    res = subprocess.run(
-        [sys.executable, verify_script, "--verify-tasks", "docs/plan/phases/", "docs/plan/tasks/"],
-        capture_output=True, text=True, cwd=ROOT_DIR
-    )
-    if res.returncode == 0:
-        print("  PASS  All requirements now mapped to tasks.")
-    else:
-        print("  FAIL  Some requirements still unmapped:")
-        print(res.stdout)
+    print("\n=> Re-running validation...")
+    final = _run_all_checks()
 
     rp_state = load_replan_state()
-    log_action(rp_state, "fix-requirements", f"fixed {len(unmapped)} unmapped requirements")
+    total_fixed = len(phases_check.get("missing_reqs", [])) + len(tasks_check.get("missing_reqs", []))
+    log_action(rp_state, "fixup", f"fixed {total_fixed} validation error(s)")
     save_replan_state(rp_state)
+
+    if not final["all_pass"]:
+        print("\nSome checks still failing after fixup.")
+        sys.exit(1)
+    else:
+        print("\nAll checks passing.")
 
 
 # ---------------------------------------------------------------------------
