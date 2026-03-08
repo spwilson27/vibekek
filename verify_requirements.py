@@ -425,9 +425,10 @@ def verify_req_format(file_path):
         content = f.read()
 
     all_ids = set(REQ_REGEX.findall(content))
-    # Standard format: DOC_PREFIX-REQ-NNN or DOC_PREFIX-REQ-CATEGORY-NNN
-    # e.g. 1_PRD-REQ-001, 5_SECURITY_DESIGN-REQ-BR-SEC-TM-001
-    standard_format = re.compile(r'^[A-Z0-9_]+-REQ-(?:[A-Z0-9]+-)*\d{3,}$')
+    # Standard format: alphanumeric segments separated by hyphens, with optional
+    # numeric prefix (e.g. 1_PRD-REQ-001), letter suffixes (MCP-001A),
+    # and non-numeric terminal segments (ROAD-POST-MVP, ROAD-P3)
+    standard_format = re.compile(r'^[A-Z0-9][A-Z0-9_]*(?:-[A-Z0-9][A-Z0-9_]*)*$')
 
     non_standard = []
     for req_id in sorted(all_ids):
