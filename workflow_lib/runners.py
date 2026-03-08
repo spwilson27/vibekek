@@ -169,6 +169,7 @@ class AIRunner:
             bufsize=1,
             cwd=cwd,
             env=self._env(),
+            start_new_session=True,
         )
         stdout_lines: List[str] = []
 
@@ -239,6 +240,7 @@ class AIRunner:
             bufsize=1,
             cwd=cwd,
             env=self._env(),
+            start_new_session=True,
         )
         result_text: List[str] = []
 

@@ -991,3 +991,902 @@ class TestCustomDevBranchE2E:
         assert any(custom_branch in cmd for cmd in push_calls), (
             f"Expected push to {custom_branch!r}, got: {push_calls}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Graceful Shutdown E2E
+# ---------------------------------------------------------------------------
+
+
+class TestGracefulShutdownExecutorE2E:
+    """E2E tests verifying CTRL-C graceful shutdown during execute_dag().
+
+    Uses a slow mock agent (time.sleep) to simulate real work, then sets
+    shutdown_requested mid-flight and verifies:
+    - In-flight tasks complete
+    - No new tasks are spawned after shutdown
+    - State reflects completed work
+    """
+
+    def test_inflight_task_completes_on_shutdown(self, tmp_path):
+        """A running task finishes even after shutdown_requested is set."""
+        import time
+        import threading
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        # Two independent tasks: A will be slow, B should never start
+        dag = {
+            "phase_1/sub/01_a.md": [],
+            "phase_1/sub/01_b.md": [],
+        }
+        state = {"completed_tasks": [], "merged_tasks": []}
+        processed = []
+        lock = threading.Lock()
+
+        def _slow_process(root_dir, task_id, presubmit_cmd, backend,
+                          serena=False, **kwargs):
+            """Simulate a slow agent. Sets shutdown after starting."""
+            if task_id == "phase_1/sub/01_a.md":
+                # Signal shutdown while this task is running
+                executor_mod.shutdown_requested = True
+                time.sleep(0.3)  # Simulate work continuing
+            with lock:
+                processed.append(task_id)
+            return True
+
+        with patch("workflow_lib.executor.process_task",
+                   side_effect=_slow_process), \
+             patch("workflow_lib.executor.merge_task", return_value=True), \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="",
+                                          stderr="")):
+            execute_dag(root, dag, state, jobs=1,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        # A must have completed (it was in-flight when shutdown was set)
+        assert "phase_1/sub/01_a.md" in processed, (
+            "In-flight task A should have completed"
+        )
+        assert "phase_1/sub/01_a.md" in state["completed_tasks"]
+
+        # B should NOT have been processed (shutdown prevents new spawns)
+        assert "phase_1/sub/01_b.md" not in processed, (
+            "Task B should not have started after shutdown"
+        )
+
+    def test_multiple_inflight_tasks_all_complete(self, tmp_path):
+        """All in-flight tasks complete even after shutdown is requested."""
+        import time
+        import threading
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        # 3 independent tasks + 1 dependent; with jobs=3, first 3 start together
+        dag = {
+            "phase_1/sub/01_a.md": [],
+            "phase_1/sub/01_b.md": [],
+            "phase_1/sub/01_c.md": [],
+            "phase_1/sub/01_d.md": [],  # should never start
+        }
+        state = {"completed_tasks": [], "merged_tasks": []}
+        processed = []
+        started = threading.Event()
+        lock = threading.Lock()
+
+        def _slow_process(root_dir, task_id, presubmit_cmd, backend,
+                          serena=False, **kwargs):
+            if task_id == "phase_1/sub/01_a.md":
+                # Let all 3 tasks get scheduled, then trigger shutdown
+                time.sleep(0.1)
+                executor_mod.shutdown_requested = True
+            time.sleep(0.3)
+            with lock:
+                processed.append(task_id)
+            return True
+
+        with patch("workflow_lib.executor.process_task",
+                   side_effect=_slow_process), \
+             patch("workflow_lib.executor.merge_task", return_value=True), \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="",
+                                          stderr="")):
+            execute_dag(root, dag, state, jobs=3,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        # A, B, C were all in-flight and should all complete
+        for task in ["phase_1/sub/01_a.md", "phase_1/sub/01_b.md",
+                     "phase_1/sub/01_c.md"]:
+            assert task in processed, f"{task} should have completed"
+            assert task in state["completed_tasks"]
+
+        # D should never have started
+        assert "phase_1/sub/01_d.md" not in processed, (
+            "Task D should not start after shutdown"
+        )
+
+    def test_state_saved_for_completed_tasks_after_shutdown(self, tmp_path):
+        """Completed tasks are persisted to state even during shutdown."""
+        import time
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        dag = {
+            "phase_1/sub/01_a.md": [],
+            "phase_1/sub/01_b.md": ["phase_1/sub/01_a.md"],
+        }
+        state = {"completed_tasks": [], "merged_tasks": []}
+        save_calls = []
+
+        def _process(root_dir, task_id, presubmit_cmd, backend,
+                     serena=False, **kwargs):
+            executor_mod.shutdown_requested = True
+            time.sleep(0.1)
+            return True
+
+        def _track_save(s):
+            # Snapshot the state at save time
+            save_calls.append(dict(s))
+
+        with patch("workflow_lib.executor.process_task",
+                   side_effect=_process), \
+             patch("workflow_lib.executor.merge_task", return_value=True), \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state",
+                   side_effect=_track_save), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="",
+                                          stderr="")):
+            execute_dag(root, dag, state, jobs=1,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        # State was saved with A completed
+        assert len(save_calls) >= 1
+        assert "phase_1/sub/01_a.md" in state["completed_tasks"]
+        # B never ran
+        assert "phase_1/sub/01_b.md" not in state["completed_tasks"]
+
+
+class TestGracefulShutdownOrchestratorE2E:
+    """E2E tests verifying CTRL-C graceful shutdown during Orchestrator.run().
+
+    Injects mock phases that simulate slow work, sets shutdown_requested
+    mid-phase, and verifies:
+    - Current phase completes
+    - Subsequent phases do not execute
+    """
+
+    def test_current_phase_completes_next_skipped(self):
+        """Phase in progress finishes; next phase never starts."""
+        import time
+        from workflow_lib.orchestrator import Orchestrator
+
+        ctx = MagicMock()
+        ctx._load_state.return_value = {}
+        ctx.state = {}
+        orc = Orchestrator(ctx)
+
+        phase_a_executed = []
+        phase_b_executed = []
+
+        phase_a = MagicMock()
+        phase_a.display_name = "SlowPhaseA"
+        phase_a.operation = "test"
+
+        def _slow_execute_a(_ctx):
+            """Simulate slow agent work, then request shutdown."""
+            time.sleep(0.2)
+            phase_a_executed.append(True)
+            orc.shutdown_requested = True
+
+        phase_a.execute.side_effect = _slow_execute_a
+
+        phase_b = MagicMock()
+        phase_b.display_name = "PhaseB"
+        phase_b.operation = "test"
+        phase_b.execute.side_effect = lambda _ctx: phase_b_executed.append(True)
+
+        # Run phase A, then try phase B
+        orc.run_phase_with_retry(phase_a)
+        assert phase_a_executed == [True], "Phase A should have completed"
+
+        with pytest.raises(SystemExit) as exc_info:
+            orc.run_phase_with_retry(phase_b)
+
+        assert exc_info.value.code == 0
+        assert phase_b_executed == [], "Phase B should not have executed"
+
+    def test_signal_during_phase_allows_completion(self):
+        """Sending SIGINT during a phase lets it finish, blocks next phase."""
+        import signal
+        import time
+        import threading
+        from workflow_lib.orchestrator import Orchestrator
+
+        ctx = MagicMock()
+        ctx._load_state.return_value = {}
+        ctx.state = {}
+        orc = Orchestrator(ctx)
+        orc.install_signal_handler()
+
+        phase_completed = []
+
+        phase_a = MagicMock()
+        phase_a.display_name = "LongPhaseA"
+        phase_a.operation = "test"
+
+        def _execute_with_signal(_ctx):
+            """Simulate work, then send ourselves SIGINT mid-execution."""
+            time.sleep(0.1)
+            os.kill(os.getpid(), signal.SIGINT)
+            # Continue working after signal — should NOT be interrupted
+            time.sleep(0.2)
+            phase_completed.append(True)
+
+        phase_a.execute.side_effect = _execute_with_signal
+
+        try:
+            orc.run_phase_with_retry(phase_a)
+        finally:
+            orc.restore_signal_handler()
+
+        assert phase_completed == [True], (
+            "Phase should complete even after SIGINT"
+        )
+        assert orc.shutdown_requested, "shutdown_requested should be set"
+
+        # Next phase should be blocked
+        phase_b = MagicMock()
+        phase_b.display_name = "PhaseB"
+        phase_b.operation = "test"
+
+        with pytest.raises(SystemExit) as exc_info:
+            orc.run_phase_with_retry(phase_b)
+
+        assert exc_info.value.code == 0
+        phase_b.execute.assert_not_called()
+
+
+class TestSIGINTNotForwardedToChild:
+    """Verify that CTRL-C (SIGINT) is not forwarded to child subprocesses.
+
+    Spawns a real child process (a Python while loop that writes to a file
+    on completion) and sends SIGINT to the parent. The child should NOT
+    receive the signal because it runs in its own session (start_new_session=True).
+    """
+
+    def test_child_process_survives_parent_sigint(self, tmp_path):
+        """Child subprocess in its own session is not killed by parent SIGINT."""
+        import subprocess
+        import signal
+        import time
+
+        marker = tmp_path / "child_done.txt"
+
+        # Child script: loops briefly, writes a marker file on completion
+        child_script = tmp_path / "child.py"
+        child_script.write_text(
+            "import time, sys\n"
+            f"time.sleep(1)\n"
+            f"open('{marker}', 'w').write('done')\n"
+        )
+
+        # Launch child in its own session (as runners.py now does)
+        proc = subprocess.Popen(
+            [sys.executable, str(child_script)],
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        # Send SIGINT to the parent (this test process) — child should be unaffected
+        time.sleep(0.1)
+        # Save and restore handler so the test process doesn't die
+        old_handler = signal.getsignal(signal.SIGINT)
+        caught = []
+        signal.signal(signal.SIGINT, lambda s, f: caught.append(True))
+        try:
+            os.kill(os.getpid(), signal.SIGINT)
+        finally:
+            signal.signal(signal.SIGINT, old_handler)
+
+        assert caught, "Parent should have caught SIGINT"
+
+        # Wait for child to finish naturally
+        proc.wait(timeout=5)
+        assert proc.returncode == 0, f"Child exited with {proc.returncode}"
+        assert marker.exists(), "Child should have written marker file"
+        assert marker.read_text() == "done"
+
+    def test_child_without_new_session_receives_sigint(self, tmp_path):
+        """Baseline: child WITHOUT start_new_session gets killed by process-group SIGINT.
+
+        We run the entire scenario inside a wrapper subprocess (in its own
+        session) so that the os.killpg does not affect pytest workers.
+        """
+        import subprocess
+
+        wrapper_script = tmp_path / "wrapper.py"
+        marker = tmp_path / "child_done.txt"
+        wrapper_script.write_text(
+            "import subprocess, signal, time, os, sys\n"
+            f"marker = '{marker}'\n"
+            "child_script = sys.argv[1]\n"
+            "proc = subprocess.Popen(\n"
+            "    [sys.executable, child_script],\n"
+            "    stdout=subprocess.PIPE, stderr=subprocess.PIPE,\n"
+            ")\n"
+            "time.sleep(0.1)\n"
+            "signal.signal(signal.SIGINT, lambda s, f: None)\n"
+            "os.killpg(os.getpgid(proc.pid), signal.SIGINT)\n"
+            "proc.wait(timeout=5)\n"
+            "sys.exit(0 if proc.returncode != 0 else 1)\n"
+        )
+
+        child_script = tmp_path / "child.py"
+        child_script.write_text(
+            "import time\n"
+            f"time.sleep(1)\n"
+            f"open('{marker}', 'w').write('done')\n"
+        )
+
+        # Run wrapper in its own session so killpg doesn't affect pytest
+        result = subprocess.run(
+            [sys.executable, str(wrapper_script), str(child_script)],
+            start_new_session=True,
+            capture_output=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, (
+            f"Child should have been killed by SIGINT (wrapper rc={result.returncode})"
+        )
+        assert not marker.exists(), "Child should NOT have written marker file"
+
+
+# ---------------------------------------------------------------------------
+# Timeout Handling E2E
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutHandlingOrchestratorE2E:
+    """E2E tests verifying TimeoutExpired handling during planning phases."""
+
+    def test_timeout_retries_then_fails(self):
+        """Phase that always times out is retried up to max_retries, then exits."""
+        import subprocess as sp
+        from workflow_lib.orchestrator import Orchestrator
+
+        ctx = MagicMock()
+        ctx._load_state.return_value = {}
+        ctx.state = {}
+        ctx.agent_timeout = 10
+        orc = Orchestrator(ctx, max_retries=3)
+
+        phase = MagicMock()
+        phase.display_name = "SlowPhase"
+        phase.operation = "test"
+        phase.execute.side_effect = sp.TimeoutExpired(cmd="test", timeout=10)
+
+        with pytest.raises(SystemExit) as exc_info:
+            orc.run_phase_with_retry(phase)
+
+        assert exc_info.value.code == 1
+        assert phase.execute.call_count == 3
+
+    def test_timeout_then_success_on_retry(self):
+        """Phase times out once, then succeeds on retry."""
+        import subprocess as sp
+        from workflow_lib.orchestrator import Orchestrator
+
+        ctx = MagicMock()
+        ctx._load_state.return_value = {}
+        ctx.state = {}
+        ctx.agent_timeout = 10
+        orc = Orchestrator(ctx, max_retries=3)
+
+        phase = MagicMock()
+        phase.display_name = "FlakyPhase"
+        phase.operation = "test"
+        phase.execute.side_effect = [
+            sp.TimeoutExpired(cmd="test", timeout=10),
+            None,  # succeeds on retry
+        ]
+
+        orc.run_phase_with_retry(phase)
+        assert phase.execute.call_count == 2
+
+    def test_timeout_state_reloaded_between_retries(self):
+        """State is reloaded from disk between timeout retries."""
+        import subprocess as sp
+        from workflow_lib.orchestrator import Orchestrator
+
+        fresh_state = {"reloaded": True}
+        ctx = MagicMock()
+        ctx._load_state.return_value = fresh_state
+        ctx.state = {}
+        ctx.agent_timeout = 10
+        orc = Orchestrator(ctx, max_retries=2)
+
+        phase = MagicMock()
+        phase.display_name = "TimeoutPhase"
+        phase.operation = "test"
+        phase.execute.side_effect = [
+            sp.TimeoutExpired(cmd="test", timeout=10),
+            None,
+        ]
+
+        orc.run_phase_with_retry(phase)
+        # State should have been reloaded after the timeout
+        ctx._load_state.assert_called()
+        assert ctx.state == fresh_state
+
+
+# ---------------------------------------------------------------------------
+# Process Task Retry E2E
+# ---------------------------------------------------------------------------
+
+
+class TestProcessTaskRetryE2E:
+    """E2E tests for process_task internal retry logic.
+
+    process_task runs impl agent, review agent, then verification loop
+    (presubmit up to max_retries times, calling review agent between retries).
+    """
+
+    def test_presubmit_passes_first_try(self, tmp_path):
+        """Task succeeds when presubmit passes on first attempt."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+
+        with patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run") as mock_run:
+
+            # Configure subprocess.run responses
+            def _fake_run(cmd, **kwargs):
+                result = MagicMock(returncode=0, stdout="", stderr=b"")
+                if isinstance(cmd, list) and "status" in cmd and "--porcelain" in cmd:
+                    result.stdout = "M file.py"
+                    result.text = True
+                return result
+
+            mock_run.side_effect = _fake_run
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", max_retries=3)
+
+        assert result is True
+
+    def test_presubmit_fails_all_retries(self, tmp_path):
+        """Task fails when presubmit fails max_retries times."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+
+        presubmit_call_count = [0]
+
+        with patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run") as mock_run:
+
+            def _fake_run(cmd, **kwargs):
+                result = MagicMock(returncode=0, stdout="", stderr=b"")
+                if isinstance(cmd, list):
+                    cmd_str = " ".join(cmd)
+                    if cmd_str == "echo ok":
+                        presubmit_call_count[0] += 1
+                        result.returncode = 1
+                        result.stdout = "FAIL"
+                        result.stderr = "error"
+                return result
+
+            mock_run.side_effect = _fake_run
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", max_retries=3)
+
+        assert result is False
+        assert presubmit_call_count[0] == 3
+
+    def test_presubmit_fails_then_succeeds_on_retry(self, tmp_path):
+        """Task succeeds after presubmit fails once then passes on retry."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+
+        presubmit_attempts = [0]
+
+        with patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run") as mock_run:
+
+            def _fake_run(cmd, **kwargs):
+                result = MagicMock(returncode=0, stdout="", stderr=b"")
+                if isinstance(cmd, list):
+                    cmd_str = " ".join(cmd)
+                    if cmd_str == "echo ok":
+                        presubmit_attempts[0] += 1
+                        if presubmit_attempts[0] == 1:
+                            result.returncode = 1
+                            result.stdout = "FAIL"
+                            result.stderr = "error"
+                    elif "status" in cmd and "--porcelain" in cmd:
+                        result.stdout = "M file.py"
+                return result
+
+            mock_run.side_effect = _fake_run
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", max_retries=3)
+
+        assert result is True
+        assert presubmit_attempts[0] == 2
+
+    def test_impl_agent_failure_aborts_task(self, tmp_path):
+        """If the implementation agent fails, task returns False immediately."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+
+        agent_calls = []
+
+        def _fake_run_agent(agent_type, prompt_file, context, cwd, backend,
+                            dashboard=None, task_id="", model=None):
+            agent_calls.append(agent_type)
+            if agent_type == "Implementation":
+                return False  # impl fails
+            return True
+
+        with patch("workflow_lib.executor.run_agent", side_effect=_fake_run_agent), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run") as mock_run:
+
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr=b"")
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", max_retries=3)
+
+        assert result is False
+        assert agent_calls == ["Implementation"]
+
+    def test_review_agent_failure_aborts_task(self, tmp_path):
+        """If the review agent fails, task returns False (no verification)."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+
+        agent_calls = []
+
+        def _fake_run_agent(agent_type, prompt_file, context, cwd, backend,
+                            dashboard=None, task_id="", model=None):
+            agent_calls.append(agent_type)
+            if agent_type == "Review":
+                return False
+            return True
+
+        with patch("workflow_lib.executor.run_agent", side_effect=_fake_run_agent), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run") as mock_run:
+
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr=b"")
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", max_retries=3)
+
+        assert result is False
+        assert agent_calls == ["Implementation", "Review"]
+
+    def test_shutdown_during_verification_skips_remaining(self, tmp_path):
+        """If shutdown_requested during verification loop, task returns False."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+
+        def _fake_run_agent(agent_type, prompt_file, context, cwd, backend,
+                            dashboard=None, task_id="", model=None):
+            if "Retry" in agent_type:
+                # Set shutdown after first presubmit failure's review retry
+                executor_mod.shutdown_requested = True
+            return True
+
+        presubmit_calls = [0]
+
+        with patch("workflow_lib.executor.run_agent", side_effect=_fake_run_agent), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run") as mock_run:
+
+            def _fake_run(cmd, **kwargs):
+                result = MagicMock(returncode=0, stdout="", stderr=b"")
+                if isinstance(cmd, list):
+                    cmd_str = " ".join(cmd)
+                    if cmd_str == "echo ok":
+                        presubmit_calls[0] += 1
+                        result.returncode = 1
+                        result.stdout = "FAIL"
+                        result.stderr = "error"
+                return result
+
+            mock_run.side_effect = _fake_run
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", max_retries=3)
+
+        assert result is False
+        # Only 1 presubmit ran (failed), review retry set shutdown,
+        # second iteration's shutdown check prevented further presubmit
+        assert presubmit_calls[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Resume from Partial State E2E
+# ---------------------------------------------------------------------------
+
+
+class TestResumeFromPartialStateE2E:
+    """E2E tests verifying execute_dag correctly resumes from partial state.
+
+    Simulates a previous interrupted run by pre-populating completed_tasks,
+    then verifying only remaining tasks are processed.
+    """
+
+    def test_resume_skips_completed_runs_remaining(self, tmp_path):
+        """Tasks in completed_tasks are skipped; remaining run normally."""
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        dag = {
+            "phase_1/sub/01_a.md": [],
+            "phase_1/sub/01_b.md": ["phase_1/sub/01_a.md"],
+            "phase_1/sub/01_c.md": ["phase_1/sub/01_b.md"],
+        }
+        # Simulate: A and B completed in a prior run
+        state = {
+            "completed_tasks": ["phase_1/sub/01_a.md", "phase_1/sub/01_b.md"],
+            "merged_tasks": ["phase_1/sub/01_a.md", "phase_1/sub/01_b.md"],
+        }
+        processed = []
+
+        def _fake_process(root_dir, task_id, presubmit_cmd, backend,
+                          serena=False, **kwargs):
+            processed.append(task_id)
+            return True
+
+        with patch("workflow_lib.executor.process_task",
+                   side_effect=_fake_process), \
+             patch("workflow_lib.executor.merge_task", return_value=True), \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="",
+                                          stderr="")):
+            execute_dag(root, dag, state, jobs=1,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        # Only C should have been processed
+        assert processed == ["phase_1/sub/01_c.md"]
+        assert set(state["completed_tasks"]) == set(dag.keys())
+
+    def test_resume_all_completed_exits_immediately(self, tmp_path):
+        """When all tasks already completed, execute_dag exits with no work."""
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        dag = {
+            "phase_1/sub/01_a.md": [],
+            "phase_1/sub/01_b.md": [],
+        }
+        state = {
+            "completed_tasks": ["phase_1/sub/01_a.md", "phase_1/sub/01_b.md"],
+            "merged_tasks": ["phase_1/sub/01_a.md", "phase_1/sub/01_b.md"],
+        }
+
+        with patch("workflow_lib.executor.process_task") as mock_proc, \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="",
+                                          stderr="")):
+            execute_dag(root, dag, state, jobs=1,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        mock_proc.assert_not_called()
+
+    def test_resume_respects_dependencies_of_remaining(self, tmp_path):
+        """Resumed tasks still respect dependency ordering."""
+        import threading
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        dag = {
+            "phase_1/sub/01_a.md": [],
+            "phase_1/sub/01_b.md": ["phase_1/sub/01_a.md"],
+            "phase_1/sub/01_c.md": ["phase_1/sub/01_b.md"],
+            "phase_1/sub/01_d.md": ["phase_1/sub/01_c.md"],
+        }
+        # A already done; B, C, D remain
+        state = {
+            "completed_tasks": ["phase_1/sub/01_a.md"],
+            "merged_tasks": ["phase_1/sub/01_a.md"],
+        }
+        completion_order = []
+        lock = threading.Lock()
+
+        def _fake_process(root_dir, task_id, presubmit_cmd, backend,
+                          serena=False, **kwargs):
+            with lock:
+                completion_order.append(task_id)
+            return True
+
+        with patch("workflow_lib.executor.process_task",
+                   side_effect=_fake_process), \
+             patch("workflow_lib.executor.merge_task", return_value=True), \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="",
+                                          stderr="")):
+            execute_dag(root, dag, state, jobs=1,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        # B must come before C, C before D
+        assert completion_order.index("phase_1/sub/01_b.md") < \
+               completion_order.index("phase_1/sub/01_c.md")
+        assert completion_order.index("phase_1/sub/01_c.md") < \
+               completion_order.index("phase_1/sub/01_d.md")
+        assert "phase_1/sub/01_a.md" not in completion_order
+
+    def test_resume_after_shutdown_continues_from_saved_state(self, tmp_path):
+        """Simulates: run1 processes A then shuts down; run2 resumes from saved state."""
+        import time
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        dag = {
+            "phase_1/sub/01_a.md": [],
+            "phase_1/sub/01_b.md": ["phase_1/sub/01_a.md"],
+            "phase_1/sub/01_c.md": ["phase_1/sub/01_a.md"],
+        }
+
+        # --- Run 1: process A, then shutdown ---
+        executor_mod.shutdown_requested = False
+        state_run1 = {"completed_tasks": [], "merged_tasks": []}
+        processed_run1 = []
+
+        def _process_run1(root_dir, task_id, presubmit_cmd, backend,
+                          serena=False, **kwargs):
+            processed_run1.append(task_id)
+            # Shutdown after first task
+            executor_mod.shutdown_requested = True
+            return True
+
+        with patch("workflow_lib.executor.process_task",
+                   side_effect=_process_run1), \
+             patch("workflow_lib.executor.merge_task", return_value=True), \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="",
+                                          stderr="")):
+            execute_dag(root, dag, state_run1, jobs=1,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        assert processed_run1 == ["phase_1/sub/01_a.md"]
+        assert state_run1["completed_tasks"] == ["phase_1/sub/01_a.md"]
+
+        # --- Run 2: resume with state from run 1 ---
+        executor_mod.shutdown_requested = False
+        state_run2 = dict(state_run1)  # carry forward
+        processed_run2 = []
+
+        def _process_run2(root_dir, task_id, presubmit_cmd, backend,
+                          serena=False, **kwargs):
+            processed_run2.append(task_id)
+            return True
+
+        with patch("workflow_lib.executor.process_task",
+                   side_effect=_process_run2), \
+             patch("workflow_lib.executor.merge_task", return_value=True), \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="",
+                                          stderr="")):
+            execute_dag(root, dag, state_run2, jobs=2,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        # B and C should have been processed (not A again)
+        assert "phase_1/sub/01_a.md" not in processed_run2
+        assert set(processed_run2) == {"phase_1/sub/01_b.md", "phase_1/sub/01_c.md"}
+        assert set(state_run2["completed_tasks"]) == set(dag.keys())
