@@ -48,6 +48,34 @@ from .dashboard import make_dashboard
 shutdown_requested = False
 
 
+def _compact_task_id(phase_id: str, task_name: str) -> str:
+    """Build a compact but unique task identifier for log prefixes.
+
+    Given phase_id="phase_1" and task_name="02_dod_guidelines/03_enforce_rustdoc.md",
+    produces "p1/02/03_enforce_ru" — short enough to avoid truncation while
+    remaining distinguishable across concurrent tasks.
+    """
+    # Extract phase number: "phase_1" -> "p1"
+    m = re.match(r"phase_(\d+)", phase_id)
+    short_phase = f"p{m.group(1)}" if m else phase_id
+
+    parts = task_name.replace(".md", "").split("/")
+    if len(parts) >= 2:
+        # Extract numeric prefix from sub-epic: "02_dod_guidelines" -> "02"
+        sub_match = re.match(r"(\d+)", parts[-2])
+        sub_prefix = sub_match.group(1) if sub_match else parts[-2][:4]
+        # Leaf task: keep number prefix + truncated name slug
+        leaf = parts[-1]
+        if len(leaf) > 15:
+            leaf = leaf[:15]
+        return f"{short_phase}/{sub_prefix}/{leaf}"
+    else:
+        leaf = parts[0]
+        if len(leaf) > 20:
+            leaf = leaf[:20]
+        return f"{short_phase}/{leaf}"
+
+
 def signal_handler(sig: int, frame: Any) -> None:  # type: ignore[type-arg]
     """Handle ``SIGINT`` (Ctrl-C) with a two-stage shutdown policy.
 
@@ -381,8 +409,8 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
 
     phase_id = task_context.get("phase_filename", "phase")
     task_name = task_context.get("task_name", "task")
-    short_task = task_name[:15] + ".." if len(task_name) > 15 else task_name
-    prefix = f"[{phase_id}/{short_task}] "
+    short_task = _compact_task_id(phase_id, task_name)
+    prefix = f"[{short_task}] "
 
     on_line: Optional[Callable[[str], None]] = None
     if dashboard and task_id:
