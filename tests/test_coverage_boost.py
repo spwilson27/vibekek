@@ -2281,6 +2281,78 @@ class TestReplanCmdsCoverage:
 # Inner function coverage — run real ThreadPoolExecutor with mocked FS
 # ---------------------------------------------------------------------------
 
+class TestValidateDag:
+    """Tests for Phase7ADAGGeneration._validate_dag."""
+
+    def test_valid_dag_no_errors(self, tmp_path):
+        phase_dir = tmp_path / "phase_1"
+        sub = phase_dir / "sub_epic"
+        sub.mkdir(parents=True)
+        (sub / "01_task.md").write_text("content")
+        (sub / "02_task.md").write_text("content")
+        dag = {"sub_epic/01_task.md": [], "sub_epic/02_task.md": ["sub_epic/01_task.md"]}
+        errors = Phase7ADAGGeneration._validate_dag(str(phase_dir), dag)
+        assert errors == []
+
+    def test_phantom_dag_entry(self, tmp_path):
+        phase_dir = tmp_path / "phase_1"
+        sub = phase_dir / "sub_epic"
+        sub.mkdir(parents=True)
+        (sub / "01_task.md").write_text("content")
+        dag = {"sub_epic/01_task.md": [], "sub_epic/02_missing.md": []}
+        errors = Phase7ADAGGeneration._validate_dag(str(phase_dir), dag)
+        assert len(errors) == 1
+        assert "non-existent" in errors[0]
+        assert "02_missing.md" in errors[0]
+
+    def test_orphan_file_on_disk(self, tmp_path):
+        phase_dir = tmp_path / "phase_1"
+        sub = phase_dir / "sub_epic"
+        sub.mkdir(parents=True)
+        (sub / "01_task.md").write_text("content")
+        (sub / "02_task.md").write_text("content")
+        dag = {"sub_epic/01_task.md": []}
+        errors = Phase7ADAGGeneration._validate_dag(str(phase_dir), dag)
+        assert len(errors) == 1
+        assert "not in DAG" in errors[0]
+        assert "02_task.md" in errors[0]
+
+    def test_empty_phase_dir(self, tmp_path):
+        phase_dir = tmp_path / "phase_1"
+        phase_dir.mkdir(parents=True)
+        errors = Phase7ADAGGeneration._validate_dag(str(phase_dir), {})
+        assert errors == []
+
+
+class TestParseDependsOnBare:
+    """Tests for _parse_depends_on handling bare (non-bracketed) values."""
+
+    def test_bare_none(self):
+        content = "- depends_on: none\n- shared_components: []"
+        result = Phase7ADAGGeneration._parse_depends_on(content)
+        assert result == []
+
+    def test_bare_none_caps(self):
+        content = "- depends_on: None\n"
+        result = Phase7ADAGGeneration._parse_depends_on(content)
+        assert result == []
+
+    def test_bare_filename(self):
+        content = "- depends_on: 01_setup.md\n"
+        result = Phase7ADAGGeneration._parse_depends_on(content)
+        assert result == ["01_setup.md"]
+
+    def test_bracketed_still_works(self):
+        content = "- depends_on: [01_a.md, 02_b.md]\n"
+        result = Phase7ADAGGeneration._parse_depends_on(content)
+        assert result == ["01_a.md", "02_b.md"]
+
+    def test_missing_field(self):
+        content = "# Task\nNo depends on here\n"
+        result = Phase7ADAGGeneration._parse_depends_on(content)
+        assert result is None
+
+
 class TestPhase7AInner:
     """Tests that actually exercise the process_phase_dag closure."""
 
@@ -2309,7 +2381,69 @@ class TestPhase7AInner:
              patch("os.listdir", side_effect=lambda p: ["phase_1"] if "tasks" in p else []), \
              patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
              patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=dag), \
+             patch.object(Phase7ADAGGeneration, "_validate_dag", return_value=[]), \
              patch("builtins.open", mock_open()):
+            Phase7ADAGGeneration().execute(ctx)
+        assert ctx.state.get("dag_completed") is True
+
+    def test_programmatic_dag_validation_failure_triggers_ai_fallback(self):
+        ctx = _mock_ctx_for_phases()
+        ctx.load_prompt.return_value = "dag tmpl"
+        ctx.run_gemini.return_value = MagicMock(returncode=0)
+        dag = {"sub/01_a.md": []}
+
+        dag_exists_calls = [0]
+
+        def exists_side(p):
+            if "dag.json" in p and "reviewed" not in p:
+                dag_exists_calls[0] += 1
+                # First call (programmatic check): False
+                # After AI runs, dag.json "exists"
+                return dag_exists_calls[0] > 1
+            return True
+
+        with patch("os.path.exists", side_effect=exists_side), \
+             patch("os.listdir", side_effect=lambda p: (
+                 ["phase_1"] if "tasks" in p and "phase_1" not in p else
+                 ["sub"] if "phase_1" in p and "sub" not in p else
+                 ["01_a.md"] if "sub" in p else []
+             )), \
+             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or "sub" in p), \
+             patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=dag), \
+             patch.object(Phase7ADAGGeneration, "_validate_dag", side_effect=[
+                 ["File on disk not in DAG: sub/02_extra.md"],  # programmatic fails
+                 [],  # AI fallback succeeds
+             ]), \
+             patch("builtins.open", mock_open(read_data='{"sub/01_a.md": []}')):
+            Phase7ADAGGeneration().execute(ctx)
+        assert ctx.state.get("dag_completed") is True
+        assert ctx.run_gemini.called  # fell back to AI
+
+    def test_ai_dag_validation_failure_retries(self):
+        ctx = _mock_ctx_for_phases()
+        ctx.load_prompt.return_value = "dag tmpl"
+        ctx.run_gemini.return_value = MagicMock(returncode=0)
+
+        call_count = [0]
+
+        def exists_side(p):
+            if "dag.json" in p and "reviewed" not in p:
+                call_count[0] += 1
+                # dag.json "exists" after AI writes it
+                return call_count[0] > 1
+            return True
+
+        with patch("os.path.exists", side_effect=exists_side), \
+             patch("os.listdir", side_effect=lambda p: (
+                 ["phase_1"] if "tasks" in p and "phase_1" not in p else
+                 ["sub"] if "phase_1" in p and "sub" not in p else
+                 ["01_a.md"] if "sub" in p else []
+             )), \
+             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or "sub" in p), \
+             patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=None), \
+             patch("builtins.open", mock_open(read_data='{"sub/01_a.md": []}')), \
+             patch.object(Phase7ADAGGeneration, "_validate_dag", return_value=[]), \
+             patch("os.remove"):
             Phase7ADAGGeneration().execute(ctx)
         assert ctx.state.get("dag_completed") is True
 

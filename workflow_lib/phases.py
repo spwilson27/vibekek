@@ -1319,15 +1319,23 @@ class Phase7ADAGGeneration(BasePhase):
             entirely (indicating AI fallback is required).
         :rtype: Optional[List[str]]
         """
+        # Match both bracketed `- depends_on: [...]` and bare `- depends_on: none`
         match = re.search(r'- depends_on:\s*\[([^\]]*)\]', content, re.IGNORECASE)
-        if not match:
-            return None
-        raw = match.group(1).strip()
-        if not raw or raw.lower() == '"none"' or raw.lower() == 'none':
-            return []
-        # Parse comma-separated values, stripping quotes and whitespace
-        deps = [d.strip().strip('"').strip("'") for d in raw.split(',')]
-        return [d for d in deps if d and d.lower() != 'none']
+        if match:
+            raw = match.group(1).strip()
+            if not raw or raw.lower() == '"none"' or raw.lower() == 'none':
+                return []
+            # Parse comma-separated values, stripping quotes and whitespace
+            deps = [d.strip().strip('"').strip("'") for d in raw.split(',')]
+            return [d for d in deps if d and d.lower() != 'none']
+        # Handle bare value without brackets (e.g. `- depends_on: none`)
+        bare_match = re.search(r'- depends_on:\s*(\S+)', content, re.IGNORECASE)
+        if bare_match:
+            raw = bare_match.group(1).strip().strip('"').strip("'")
+            if raw.lower() == 'none':
+                return []
+            return [raw]
+        return None
 
     @staticmethod
     def _parse_shared_components(content: str) -> List[str]:
@@ -1443,6 +1451,44 @@ class Phase7ADAGGeneration(BasePhase):
 
         return dag
 
+    @staticmethod
+    def _validate_dag(phase_dir_path: str, dag: Dict[str, List[str]]) -> List[str]:
+        """Validate that a DAG matches the files on disk.
+
+        Returns a list of error messages (empty if valid).  Checks that:
+
+        1. Every DAG key corresponds to a ``.md`` file on disk.
+        2. Every ``.md`` task file on disk is a key in the DAG.
+
+        :param phase_dir_path: Absolute path to the phase task directory.
+        :param dag: The DAG mapping ``{task_id: [deps]}``.
+        :returns: List of error strings (empty means valid).
+        """
+        errors = []
+        # Collect all .md files on disk (excluding review/summary files)
+        on_disk = set()
+        for sub_epic in sorted(os.listdir(phase_dir_path)):
+            se_path = os.path.join(phase_dir_path, sub_epic)
+            if not os.path.isdir(se_path):
+                continue
+            for md in sorted(os.listdir(se_path)):
+                if md.endswith(".md"):
+                    on_disk.add(f"{sub_epic}/{md}")
+
+        dag_keys = set(dag.keys())
+
+        # DAG references files that don't exist
+        phantom = dag_keys - on_disk
+        for p in sorted(phantom):
+            errors.append(f"DAG references non-existent file: {p}")
+
+        # Files on disk not in DAG
+        orphans = on_disk - dag_keys
+        for o in sorted(orphans):
+            errors.append(f"File on disk not in DAG: {o}")
+
+        return errors
+
     def execute(self, ctx: ProjectContext) -> None:
         """Generate per-phase DAGs, using programmatic build with AI fallback.
 
@@ -1482,10 +1528,17 @@ class Phase7ADAGGeneration(BasePhase):
             # Try programmatic DAG first
             programmatic_dag = self._build_programmatic_dag(phase_dir_path)
             if programmatic_dag is not None:
-                print(f"   -> Built DAG programmatically for {phase_id} from task metadata ({len(programmatic_dag)} tasks).")
-                with open(dag_file_path, "w", encoding="utf-8") as f:
-                    json.dump(programmatic_dag, f, indent=2)
-                return True
+                errors = self._validate_dag(phase_dir_path, programmatic_dag)
+                if errors:
+                    print(f"\n[!] WARNING: Programmatic DAG for {phase_id} has {len(errors)} consistency issues:")
+                    for e in errors:
+                        print(f"      - {e}")
+                    print(f"   -> Falling back to AI DAG inference for {phase_id}...")
+                else:
+                    print(f"   -> Built DAG programmatically for {phase_id} from task metadata ({len(programmatic_dag)} tasks).")
+                    with open(dag_file_path, "w", encoding="utf-8") as f:
+                        json.dump(programmatic_dag, f, indent=2)
+                    return True
 
             # Fall back to AI inference
             print(f"   -> Some tasks in {phase_id} lack depends_on metadata. Falling back to AI DAG inference...")
@@ -1520,6 +1573,23 @@ class Phase7ADAGGeneration(BasePhase):
                 result = ctx.run_gemini(prompt, allowed_files=allowed_files, sandbox=False)
 
                 if result.returncode == 0 and os.path.exists(dag_file_path):
+                    # Validate AI-generated DAG against disk
+                    try:
+                        with open(dag_file_path, "r", encoding="utf-8") as f:
+                            ai_dag = json.load(f)
+                        errors = self._validate_dag(phase_dir_path, ai_dag)
+                        if errors:
+                            print(f"\n[!] WARNING: AI-generated DAG for {phase_id} has {len(errors)} consistency issues (attempt {attempt}/3):")
+                            for e in errors[:10]:
+                                print(f"      - {e}")
+                            if len(errors) > 10:
+                                print(f"      ... and {len(errors) - 10} more")
+                            os.remove(dag_file_path)
+                            continue
+                    except (json.JSONDecodeError, OSError) as exc:
+                        print(f"\n[!] Invalid DAG JSON for {phase_id} (attempt {attempt}/3): {exc}")
+                        os.remove(dag_file_path)
+                        continue
                     return True
 
                 print(f"\n[!] Error generating DAG for {phase_id} (Attempt {attempt}/3).")
