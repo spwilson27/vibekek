@@ -66,8 +66,8 @@ from .context import ProjectContext
 from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade, cmd_fixup
 from .executor import execute_dag, Logger, signal_handler
 from .dashboard import make_dashboard, _DashboardStream
-from .config import get_serena_enabled, get_config_defaults
-from .state import load_workflow_state, load_dags, get_tasks_dir
+from .config import get_serena_enabled, get_config_defaults, get_dev_branch
+from .state import load_workflow_state, load_dags, get_tasks_dir, restore_state_from_branch
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner, QwenRunner
 
 
@@ -231,6 +231,8 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     log_stream = open(log_path, "a", encoding="utf-8")
 
+    dev_branch = get_dev_branch()
+    restore_state_from_branch(ROOT_DIR, dev_branch)
     master_dag = load_dags(tasks_dir)
     state = load_workflow_state()
 

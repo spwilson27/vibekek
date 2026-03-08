@@ -41,7 +41,7 @@ _PST = ZoneInfo("America/Los_Angeles")
 from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR
 from .context import ProjectContext
 from .runners import IMAGE_EXTENSIONS, make_runner
-from .state import save_workflow_state
+from .state import save_workflow_state, commit_state_to_branch
 from .config import get_serena_enabled, get_dev_branch
 from .dashboard import make_dashboard
 
@@ -1068,6 +1068,8 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                                 state["merged_tasks"].append(task_id)
                                 save_workflow_state(state)
                             dashboard.log(f"   -> [Success] Task {task_id} fully integrated into {dev_branch}.")
+                            if not commit_state_to_branch(root_dir, dev_branch):
+                                dashboard.log(f"      [!] Warning: Failed to commit workflow state to {dev_branch}.")
                             dashboard.log(f"      Pushing {dev_branch} to remote origin...")
                             push_res = subprocess.run(["git", "push", "origin", dev_branch], cwd=root_dir, capture_output=True, text=True)
                             if push_res.returncode != 0:

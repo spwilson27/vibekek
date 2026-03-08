@@ -14,6 +14,8 @@ Two independent state files are managed:
 
 import os
 import json
+import subprocess
+import tempfile
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 
@@ -187,6 +189,111 @@ def is_completed(task_ref: str, wf_state: Dict[str, Any]) -> bool:
     completed = set(wf_state.get("completed_tasks", []))
     merged = set(wf_state.get("merged_tasks", []))
     return task_ref in completed or task_ref in merged
+
+
+def restore_state_from_branch(root_dir: str, dev_branch: str) -> None:
+    """Seed local state files from the dev branch if they don't exist locally.
+
+    For each state file (workflow and replan), if the local file is missing
+    but the file exists in the dev branch, extract it via ``git show``.
+
+    :param root_dir: Absolute path to the project root git repository.
+    :param dev_branch: Name of the dev branch to read state from.
+    """
+    for filepath in [WORKFLOW_STATE_FILE, REPLAN_STATE_FILE]:
+        if os.path.exists(filepath):
+            continue
+        rel_path = os.path.relpath(filepath, root_dir)
+        res = subprocess.run(
+            ["git", "show", f"{dev_branch}:{rel_path}"],
+            cwd=root_dir, capture_output=True, text=True,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(res.stdout)
+
+
+def commit_state_to_branch(root_dir: str, dev_branch: str) -> bool:
+    """Commit workflow and replan state files to the dev branch.
+
+    Uses git plumbing commands to update the branch ref without requiring
+    a checkout, so the developer's working tree is never disturbed.
+
+    :param root_dir: Absolute path to the project root git repository.
+    :param dev_branch: Name of the dev branch to commit state into.
+    :returns: ``True`` on success, ``False`` on any git error.
+    """
+    state_files = [WORKFLOW_STATE_FILE, REPLAN_STATE_FILE]
+    existing = [f for f in state_files if os.path.exists(f)]
+    if not existing:
+        return True
+
+    tmp_index = None
+    try:
+        # Verify the branch exists
+        res = subprocess.run(
+            ["git", "rev-parse", "--verify", dev_branch],
+            cwd=root_dir, capture_output=True, text=True,
+        )
+        if res.returncode != 0:
+            return False
+
+        # Create a temporary index file
+        fd, tmp_index = tempfile.mkstemp(suffix=".idx")
+        os.close(fd)
+        env = os.environ.copy()
+        env["GIT_INDEX_FILE"] = tmp_index
+
+        # Seed the temp index with the current dev branch tree
+        subprocess.run(
+            ["git", "read-tree", dev_branch],
+            cwd=root_dir, env=env, check=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+        # Add each state file to the temp index
+        for filepath in existing:
+            rel_path = os.path.relpath(filepath, root_dir)
+            hash_res = subprocess.run(
+                ["git", "hash-object", "-w", filepath],
+                cwd=root_dir, capture_output=True, text=True, check=True,
+            )
+            blob_hash = hash_res.stdout.strip()
+            subprocess.run(
+                ["git", "update-index", "--add", "--cacheinfo",
+                 f"100644,{blob_hash},{rel_path}"],
+                cwd=root_dir, env=env, check=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+
+        # Write the tree and create a commit
+        tree_res = subprocess.run(
+            ["git", "write-tree"],
+            cwd=root_dir, env=env, capture_output=True, text=True, check=True,
+        )
+        tree_hash = tree_res.stdout.strip()
+
+        commit_res = subprocess.run(
+            ["git", "commit-tree", tree_hash, "-p", dev_branch,
+             "-m", "Update workflow state"],
+            cwd=root_dir, capture_output=True, text=True, check=True,
+        )
+        commit_hash = commit_res.stdout.strip()
+
+        # Fast-forward the branch ref
+        subprocess.run(
+            ["git", "update-ref", f"refs/heads/{dev_branch}", commit_hash],
+            cwd=root_dir, check=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return True
+
+    except subprocess.CalledProcessError:
+        return False
+    finally:
+        if tmp_index and os.path.exists(tmp_index):
+            os.unlink(tmp_index)
 
 
 # ---------------------------------------------------------------------------
