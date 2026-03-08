@@ -765,7 +765,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                     
                     if presubmit_res.returncode == 0:
                         _log(f"      [Merge] Presubmit passed! Pushing to local origin.")
-                        res = subprocess.run(["git", "push", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
+                        res = subprocess.run(["git", "push", "--force-with-lease", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
                         if res.returncode != 0:
                             _log(f"      [!] Failed to push merge to local origin:\n{res.stderr}")
                             return False
@@ -801,7 +801,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                             presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True)
                             if presubmit_res.returncode == 0:
                                 _log(f"      [Merge] Presubmit passed after rebase + squash! Pushing to local origin.")
-                                res = subprocess.run(["git", "push", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
+                                res = subprocess.run(["git", "push", "--force-with-lease", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
                                 if res.returncode != 0:
                                     _log(f"      [!] Failed to push merge to local origin:\n{res.stderr}")
                                     return False
@@ -842,7 +842,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                 
                 if presubmit_res.returncode == 0:
                      _log(f"      [Merge] Presubmit passed! Pushing to local origin.")
-                     res = subprocess.run(["git", "push", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
+                     res = subprocess.run(["git", "push", "--force-with-lease", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
                      if res.returncode != 0:
                          _log(f"      [!] Failed to push merge to local origin:\n{res.stderr}")
                          return False
