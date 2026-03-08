@@ -517,6 +517,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
             dashboard.set_agent(full_task_id, "Impl", "cloning", "")
         try:
             subprocess.run(["git", "clone", root_dir, tmpdir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             subprocess.run(["git", "checkout", "-B", branch_name, f"origin/{dev_branch}"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as e:
             _log(f"      [!] Failed to create clone:\n{e.stderr.decode('utf-8')}")
@@ -688,7 +689,8 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
     
     # Clone the repo locally
     subprocess.run(["git", "clone", root_dir, tmpdir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    
+    subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     # Ensure gitlab remote exists in the clone for CI
     gitlab_url = get_gitlab_remote_url(root_dir)
     subprocess.run(["git", "remote", "add", "gitlab", gitlab_url], cwd=tmpdir, check=False)
@@ -985,6 +987,8 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
             try:
                 subprocess.run(["git", "clone", root_dir, init_clone],
                                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                subprocess.run(["git", "submodule", "update", "--init", "--recursive"],
+                               cwd=init_clone, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 subprocess.run(["git", "checkout", dev_branch],
                                cwd=init_clone, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 rebuild_serena_cache(init_clone, root_dir, cache_lock, dashboard=dashboard)

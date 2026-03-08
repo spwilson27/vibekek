@@ -286,6 +286,25 @@ class TestProcessTask:
             result = process_task("/root", "phase_1/task.md", "./do presubmit")
         assert result is True
 
+    def test_submodule_init_after_clone(self):
+        """Verify git submodule update --init --recursive is called after cloning."""
+        mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="M file.py", stderr=""))
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("subprocess.run", mock_run), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: My Task"), \
+             patch("workflow_lib.executor.get_project_context", return_value="desc"), \
+             patch("workflow_lib.executor.get_memory_context", return_value="mem"), \
+             patch("os.path.isdir", return_value=False), \
+             patch("os.path.exists", return_value=False), \
+             patch("shutil.rmtree"):
+            process_task("/root", "phase_1/task.md", "./do presubmit")
+        # Find the clone call and verify submodule init follows it
+        calls = [c[0][0] for c in mock_run.call_args_list if isinstance(c[0][0], list)]
+        clone_idx = next(i for i, c in enumerate(calls) if "clone" in c)
+        submod = calls[clone_idx + 1]
+        assert submod == ["git", "submodule", "update", "--init", "--recursive"]
+
     def test_implementation_agent_fails(self):
         mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
@@ -390,6 +409,21 @@ class TestMergeTask:
              patch("shutil.rmtree"):
             result = merge_task("/root", "phase_1/task.md", "./do presubmit", max_retries=2)
         assert result is False
+
+    def test_submodule_init_after_clone(self):
+        """Verify git submodule update --init --recursive is called after cloning."""
+        mock_run = MagicMock(return_value=self._ok_run())
+        with patch("subprocess.run", mock_run), \
+             patch("workflow_lib.executor.get_gitlab_remote_url", return_value="http://example.com/repo.git"), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: T"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("shutil.rmtree"):
+            merge_task("/root", "phase_1/task.md", "./do presubmit")
+        calls = [c[0][0] for c in mock_run.call_args_list if isinstance(c[0][0], list)]
+        clone_idx = next(i for i, c in enumerate(calls) if "clone" in c)
+        submod = calls[clone_idx + 1]
+        assert submod == ["git", "submodule", "update", "--init", "--recursive"]
 
     def test_serena_rebuild_on_success(self):
         """With serena=True and cache_lock, rebuild_serena_cache is called after push."""
