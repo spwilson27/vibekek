@@ -67,15 +67,17 @@ def temp_repo(tmp_path):
     # Create dev branch
     _run(["git", "branch", "dev"], cwd=repo)
 
-    # Create .tools dir
+    # Create .tools/.state dir
     tools = repo / ".tools"
     tools.mkdir()
+    state_dir = tools / ".state"
+    state_dir.mkdir()
 
     yield {
         "root_dir": str(repo),
         "tools_dir": str(tools),
-        "workflow_state_file": str(tools / ".workflow_state.json"),
-        "replan_state_file": str(repo / ".replan_state.json"),
+        "workflow_state_file": str(state_dir / "workflow_state.json"),
+        "replan_state_file": str(state_dir / "replan_state.json"),
     }
 
 
@@ -101,7 +103,7 @@ class TestCommitStateToBranch:
         result = commit_state_to_branch(temp_repo["root_dir"], "dev")
         assert result is True
 
-        content = _git_show(temp_repo["root_dir"], "dev", ".tools/.workflow_state.json")
+        content = _git_show(temp_repo["root_dir"], "dev", ".tools/.state/workflow_state.json")
         assert content is not None
         assert json.loads(content) == state_data
 
@@ -122,7 +124,7 @@ class TestCommitStateToBranch:
         result = commit_state_to_branch(temp_repo["root_dir"], "dev")
         assert result is True
 
-        content = _git_show(temp_repo["root_dir"], "dev", ".replan_state.json")
+        content = _git_show(temp_repo["root_dir"], "dev", ".tools/.state/replan_state.json")
         assert content is not None
         assert json.loads(content) == replan_data
 

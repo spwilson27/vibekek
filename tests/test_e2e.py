@@ -1890,3 +1890,319 @@ class TestResumeFromPartialStateE2E:
         assert "phase_1/sub/01_a.md" not in processed_run2
         assert set(processed_run2) == {"phase_1/sub/01_b.md", "phase_1/sub/01_c.md"}
         assert set(state_run2["completed_tasks"]) == set(dag.keys())
+
+
+class TestMergeDuringShutdownE2E:
+    """E2E tests verifying that merges still proceed during graceful shutdown.
+
+    When Ctrl-C triggers shutdown_requested, in-flight tasks should still be
+    merged to dev after completion — only new implementation tasks are blocked.
+    """
+
+    def test_merge_proceeds_after_shutdown(self, tmp_path):
+        """A task that completes after shutdown is still merged successfully."""
+        import time
+        import threading
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        dag = {
+            "phase_1/sub/01_a.md": [],
+            "phase_1/sub/01_b.md": [],
+        }
+        state = {"completed_tasks": [], "merged_tasks": []}
+        processed = []
+        merged = []
+        lock = threading.Lock()
+
+        def _slow_process(root_dir, task_id, presubmit_cmd, backend,
+                          serena=False, **kwargs):
+            if task_id == "phase_1/sub/01_a.md":
+                executor_mod.shutdown_requested = True
+                time.sleep(0.2)
+            with lock:
+                processed.append(task_id)
+            return True
+
+        def _track_merge(root_dir, task_id, presubmit_cmd, backend,
+                         max_retries=3, cache_lock=None, serena=False,
+                         dashboard=None, model=None, dev_branch="dev"):
+            with lock:
+                merged.append(task_id)
+            return True
+
+        with patch("workflow_lib.executor.process_task",
+                   side_effect=_slow_process), \
+             patch("workflow_lib.executor.merge_task",
+                   side_effect=_track_merge), \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="",
+                                          stderr="")):
+            execute_dag(root, dag, state, jobs=1,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        # A was processed and merged despite shutdown being set
+        assert "phase_1/sub/01_a.md" in processed
+        assert "phase_1/sub/01_a.md" in merged, (
+            "Task A should still be merged even after shutdown was requested"
+        )
+        assert "phase_1/sub/01_a.md" in state["completed_tasks"]
+        assert "phase_1/sub/01_a.md" in state["merged_tasks"]
+
+        # B should not have been processed at all
+        assert "phase_1/sub/01_b.md" not in processed
+        assert "phase_1/sub/01_b.md" not in merged
+
+    def test_multiple_inflight_tasks_all_merge_on_shutdown(self, tmp_path):
+        """All in-flight tasks that complete are merged, even during shutdown."""
+        import time
+        import threading
+        from workflow_lib.executor import execute_dag
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        dag = {
+            "phase_1/sub/01_a.md": [],
+            "phase_1/sub/01_b.md": [],
+            "phase_1/sub/01_c.md": [],
+            "phase_1/sub/01_d.md": [],  # should never start
+        }
+        state = {"completed_tasks": [], "merged_tasks": []}
+        processed = []
+        merged = []
+        lock = threading.Lock()
+
+        def _slow_process(root_dir, task_id, presubmit_cmd, backend,
+                          serena=False, **kwargs):
+            if task_id == "phase_1/sub/01_a.md":
+                time.sleep(0.1)
+                executor_mod.shutdown_requested = True
+            time.sleep(0.3)
+            with lock:
+                processed.append(task_id)
+            return True
+
+        def _track_merge(root_dir, task_id, presubmit_cmd, backend,
+                         max_retries=3, cache_lock=None, serena=False,
+                         dashboard=None, model=None, dev_branch="dev"):
+            with lock:
+                merged.append(task_id)
+            return True
+
+        with patch("workflow_lib.executor.process_task",
+                   side_effect=_slow_process), \
+             patch("workflow_lib.executor.merge_task",
+                   side_effect=_track_merge), \
+             patch("workflow_lib.executor.get_serena_enabled",
+                   return_value=False), \
+             patch("workflow_lib.executor.load_blocked_tasks",
+                   return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="",
+                                          stderr="")):
+            execute_dag(root, dag, state, jobs=3,
+                        presubmit_cmd="echo ok", backend="gemini")
+
+        # A, B, C were all in-flight and should all be merged
+        for task in ["phase_1/sub/01_a.md", "phase_1/sub/01_b.md",
+                     "phase_1/sub/01_c.md"]:
+            assert task in processed, f"{task} should have completed"
+            assert task in merged, f"{task} should have been merged"
+            assert task in state["completed_tasks"]
+            assert task in state["merged_tasks"]
+
+        # D should never have started or merged
+        assert "phase_1/sub/01_d.md" not in processed
+        assert "phase_1/sub/01_d.md" not in merged
+
+    def test_run_agent_skips_non_merge_during_shutdown(self, tmp_path):
+        """run_agent skips Implementation/Review agents during shutdown but
+        allows Merge agents with allow_during_shutdown=True."""
+        import workflow_lib.executor as executor_mod
+        from workflow_lib.executor import run_agent
+
+        executor_mod.shutdown_requested = True
+        root = str(tmp_path)
+
+        # Create a minimal prompt file
+        prompts_dir = os.path.join(root, ".tools", "prompts")
+        os.makedirs(prompts_dir, exist_ok=True)
+        with open(os.path.join(prompts_dir, "implement_task.md"), "w") as f:
+            f.write("Implement {task_name}")
+
+        try:
+            with patch("workflow_lib.executor.TOOLS_DIR", root + "/.tools"):
+                # Normal agent should be skipped
+                result = run_agent("Implementation", "implement_task.md",
+                                   {"task_name": "test"}, root, "gemini")
+                assert result is False, (
+                    "Implementation agent should be skipped during shutdown"
+                )
+
+                # Merge agent with allow_during_shutdown should proceed
+                # (will fail because no real AI, but should not be skipped)
+                with patch("workflow_lib.executor.run_ai_command",
+                           return_value=0):
+                    result = run_agent("Merge", "implement_task.md",
+                                       {"task_name": "test"}, root, "gemini",
+                                       allow_during_shutdown=True)
+                    assert result is True, (
+                        "Merge agent should proceed during shutdown "
+                        "when allow_during_shutdown=True"
+                    )
+        finally:
+            executor_mod.shutdown_requested = False
+
+    def test_merge_verification_loop_not_skipped_during_shutdown(self, tmp_path):
+        """The merge verification loop inside merge_task does not bail out
+        when shutdown_requested is True."""
+        import threading
+        from workflow_lib.executor import merge_task
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = True
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        # Create task file so get_task_details can read it
+        task_dir = os.path.join(root, "docs", "plan", "tasks", "phase_1",
+                                "sub")
+        os.makedirs(task_dir, exist_ok=True)
+        with open(os.path.join(task_dir, "01_a.md"), "w") as f:
+            f.write("# Task: Test Task\nDo something.\n")
+
+        # Create the feature branch with a commit
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "t@t.com",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "t@t.com",
+        }
+        subprocess.run(["git", "checkout", "-b", "ai-phase-sub_01_a"],
+                       cwd=root, check=True, capture_output=True, env=env)
+        with open(os.path.join(root, "feature.txt"), "w") as f:
+            f.write("feature work\n")
+        subprocess.run(["git", "add", "."], cwd=root, check=True,
+                       capture_output=True, env=env)
+        subprocess.run(["git", "commit", "-m", "feature work"],
+                       cwd=root, check=True, capture_output=True, env=env)
+        subprocess.run(["git", "checkout", "main"], cwd=root, check=True,
+                       capture_output=True, env=env)
+
+        try:
+            with patch("workflow_lib.executor.TOOLS_DIR",
+                       os.path.join(root, ".tools")), \
+                 patch("workflow_lib.executor.get_project_context",
+                       return_value="test context"), \
+                 patch("workflow_lib.executor.get_serena_enabled",
+                       return_value=False), \
+                 patch("workflow_lib.executor.get_gitlab_remote_url",
+                       return_value="https://example.com/repo.git"), \
+                 patch("subprocess.run") as mock_run:
+
+                # subprocess.run: succeed for git commands, succeed for
+                # presubmit
+                mock_run.return_value = MagicMock(
+                    returncode=0, stdout="", stderr=""
+                )
+
+                result = merge_task(
+                    root, "phase_1/sub/01_a.md", "echo ok", "gemini",
+                    max_retries=1, dev_branch="dev"
+                )
+
+            # merge_task should have proceeded (not skipped due to shutdown)
+            assert result is True, (
+                "merge_task should not skip during shutdown"
+            )
+        finally:
+            executor_mod.shutdown_requested = False
+
+
+class TestDashboardShutdownNotice:
+    """Tests verifying the dashboard displays a shutdown notice."""
+
+    def test_dashboard_set_shutting_down_flag(self):
+        """Dashboard.set_shutting_down() sets the internal flag."""
+        from workflow_lib.dashboard import Dashboard
+        dash = Dashboard()
+        assert dash._shutting_down is False
+        dash.set_shutting_down()
+        assert dash._shutting_down is True
+
+    def test_dashboard_render_includes_shutdown_banner(self):
+        """When shutting down, the rendered output includes a shutdown notice."""
+        from workflow_lib.dashboard import Dashboard
+        from rich.text import Text
+        from rich.rule import Rule
+
+        dash = Dashboard()
+        dash.set_shutting_down()
+        group = dash._render()
+
+        # Flatten the group renderables and look for shutdown text
+        renderables = list(group.renderables)
+        found_shutdown_rule = False
+        found_shutdown_text = False
+        for r in renderables:
+            if isinstance(r, Rule) and "SHUTTING DOWN" in str(r.title):
+                found_shutdown_rule = True
+            if isinstance(r, Text) and "shutdown in progress" in r.plain.lower():
+                found_shutdown_text = True
+
+        assert found_shutdown_rule, "Shutdown rule/banner not found in render"
+        assert found_shutdown_text, "Shutdown message text not found in render"
+
+    def test_dashboard_render_no_banner_when_not_shutting_down(self):
+        """No shutdown banner when not shutting down."""
+        from workflow_lib.dashboard import Dashboard
+        from rich.rule import Rule
+
+        dash = Dashboard()
+        group = dash._render()
+        renderables = list(group.renderables)
+        for r in renderables:
+            if isinstance(r, Rule) and r.title and "SHUTTING DOWN" in str(r.title):
+                pytest.fail("Shutdown banner should not appear when not shutting down")
+
+    def test_null_dashboard_set_shutting_down_logs(self):
+        """NullDashboard.set_shutting_down() logs a message."""
+        import io
+        from workflow_lib.dashboard import NullDashboard
+
+        stream = io.StringIO()
+        dash = NullDashboard(stream=stream)
+        dash.set_shutting_down()
+        output = stream.getvalue()
+        assert "shutdown" in output.lower()
+
+    def test_signal_handler_notifies_dashboard(self):
+        """The executor signal handler calls dashboard.set_shutting_down()."""
+        import workflow_lib.executor as executor_mod
+        from workflow_lib.executor import signal_handler
+
+        executor_mod.shutdown_requested = False
+        mock_dash = MagicMock()
+        executor_mod._active_dashboard = mock_dash
+
+        try:
+            signal_handler(2, None)  # SIGINT = 2
+            assert executor_mod.shutdown_requested is True
+            mock_dash.set_shutting_down.assert_called_once()
+        finally:
+            executor_mod.shutdown_requested = False
+            executor_mod._active_dashboard = None

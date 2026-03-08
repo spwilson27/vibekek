@@ -1,5 +1,6 @@
 # Generated files
 repo_index/
+.state/
 .venv/
 .mypy_cache/
 .pytest_cache/

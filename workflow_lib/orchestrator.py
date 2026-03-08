@@ -68,9 +68,12 @@ class Orchestrator:
 
     def _handle_sigint(self, sig: int, frame: Any) -> None:
         if not self.shutdown_requested:
-            self._log("\n[!] Ctrl-C detected. Current agent will finish. No new phases will start.")
-            self._log("    Press Ctrl-C again to force exit immediately.")
             self.shutdown_requested = True
+            if self.dashboard:
+                self.dashboard.set_shutting_down()
+            else:
+                self._log("\n[!] Ctrl-C detected. Current agent will finish. No new phases will start.")
+                self._log("    Press Ctrl-C again to force exit immediately.")
         else:
             self._log("\n[!] Ctrl-C detected again. Forcing immediate exit...")
             os._exit(1)

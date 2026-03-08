@@ -57,7 +57,6 @@ def save_replan_state(state: Dict[str, Any]) -> None:
     :param state: Replan state mapping to serialise.
     :type state: dict
     """
-    os.makedirs(os.path.dirname(REPLAN_STATE_FILE), exist_ok=True)
     with open(REPLAN_STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=4)
 

@@ -85,6 +85,7 @@ class Dashboard:
         self._spinner_idx = 0
         self._last_spinner_time = 0.0
         self._start_time = datetime.now(tz=_PST)
+        self._shutting_down = False
 
     # ------------------------------------------------------------------
     # Context manager
@@ -182,6 +183,11 @@ class Dashboard:
                 lines.append((_now_short(), short))
         self._refresh()
 
+    def set_shutting_down(self) -> None:
+        """Mark the dashboard as shutting down so a notice banner is shown."""
+        self._shutting_down = True
+        self._refresh()
+
     def remove_agent(self, task_id: str) -> None:
         """Remove a task row from the agents table.
 
@@ -231,8 +237,9 @@ class Dashboard:
           redistributed evenly among the other agents.
         """
         term_h = self._console.size.height
-        # Reserve 2 lines for Live overhead
-        usable = max(term_h - 2, 10)
+        # Reserve 2 lines for Live overhead (+ 2 for shutdown banner if active)
+        overhead = 2 + (2 if self._shutting_down else 0)
+        usable = max(term_h - overhead, 10)
         half = usable // 2
 
         now = datetime.now(tz=_PST)
@@ -388,7 +395,16 @@ class Dashboard:
             text.append("\n")
         log_parts.append(text)
 
-        return Group(*log_parts, *parts)
+        # Shutdown banner
+        shutdown_parts: list = []
+        if self._shutting_down:
+            shutdown_parts.append(Rule("[bold red]SHUTTING DOWN[/bold red]", style="red"))
+            shutdown_parts.append(
+                Text("  Graceful shutdown in progress — active agents and merges will finish, no new tasks will be started.",
+                     style="bold red")
+            )
+
+        return Group(*log_parts, *parts, *shutdown_parts)
 
     def _refresh(self) -> None:
         if self._live is None:
@@ -488,6 +504,9 @@ class NullDashboard:
 
     def update_last_line(self, task_id: str, last_line: str) -> None:
         pass
+
+    def set_shutting_down(self) -> None:
+        self.log("[!] Graceful shutdown in progress — active agents and merges will finish, no new tasks will be started.")
 
     def remove_agent(self, task_id: str) -> None:
         pass

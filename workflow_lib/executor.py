@@ -38,7 +38,7 @@ from zoneinfo import ZoneInfo
 
 _PST = ZoneInfo("America/Los_Angeles")
 
-from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR
+from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR, REPLAN_STATE_FILE
 from .context import ProjectContext
 from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state, commit_state_to_branch
@@ -46,6 +46,7 @@ from .config import get_serena_enabled, get_dev_branch
 from .dashboard import make_dashboard
 
 shutdown_requested = False
+_active_dashboard: Any = None
 
 
 def _compact_task_id(phase_id: str, task_name: str) -> str:
@@ -89,9 +90,12 @@ def signal_handler(sig: int, frame: Any) -> None:  # type: ignore[type-arg]
     """
     global shutdown_requested
     if not shutdown_requested:
-        print("\n[!] Ctrl-C detected. Initiating graceful shutdown...")
-        print("    Active agents will finish. No new agents will be spawned.")
         shutdown_requested = True
+        if _active_dashboard:
+            _active_dashboard.set_shutting_down()
+        else:
+            print("\n[!] Ctrl-C detected. Initiating graceful shutdown...")
+            print("    Active agents will finish. No new agents will be spawned.")
     else:
         print("\n[!] Ctrl-C detected again. Forcing immediate exit...")
         os._exit(1)
@@ -355,7 +359,7 @@ def get_project_images() -> List[str]:
     )
 
 
-def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "", model: Optional[str] = None) -> bool:
+def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "", model: Optional[str] = None, allow_during_shutdown: bool = False) -> bool:
     """Format a prompt template and execute an AI agent subprocess.
 
     Reads the named prompt template from ``.tools/prompts/``, performs simple
@@ -384,7 +388,7 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
         Returns ``False`` immediately when shutdown has been requested.
     :rtype: bool
     """
-    if shutdown_requested:
+    if shutdown_requested and not allow_during_shutdown:
         _log_msg = f"[{agent_type}] Skipped — shutdown requested."
         if dashboard:
             dashboard.log(_log_msg)
@@ -736,9 +740,6 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
         
         # 1. Verification Loop for Merge
         for attempt in range(1, max_retries + 1):
-            if shutdown_requested:
-                _log(f"      [Merge] Skipped — shutdown requested.")
-                return False
             failure_output = ""
             if attempt == 1:
                 # First attempt: Try a squash merge via git CLI
@@ -830,7 +831,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                 failure_ctx["description_ctx"] += f"\n\n### PREVIOUS ATTEMPT FAILURE\nThe previous squash merge or presubmit failed with:\n```\n{failure_output}\n```\n"
                 failure_ctx["description_ctx"] += f"\nPlease resolve the conflicts and ensure the final state is a single commit on the {dev_branch} branch with the message: {commit_msg}"
                 
-                if not run_agent("Merge", "merge_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=task_id, model=model):
+                if not run_agent("Merge", "merge_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=task_id, model=model, allow_during_shutdown=True):
                     _log(f"      [!] Merge agent failed to cleanly exit.")
                     continue
                     
@@ -865,14 +866,12 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
 def load_blocked_tasks() -> set:  # type: ignore[type-arg]
     """Load the set of blocked task IDs from the replan state file.
 
-    Reads ``.replan_state.json`` relative to a ``scripts/`` directory.
     Returns an empty set when the file is absent or cannot be parsed.
 
     :returns: Set of blocked task reference strings.
     :rtype: set
     """
-    tools_dir = os.path.dirname(os.path.abspath(__file__))
-    replan_state_file = os.path.join("scripts", ".replan_state.json")
+    replan_state_file = REPLAN_STATE_FILE
     if os.path.exists(replan_state_file):
         with open(replan_state_file, "r", encoding="utf-8") as f:
             try:
@@ -992,8 +991,13 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
 
     cache_lock = threading.Lock()
 
+    global _active_dashboard
     with make_dashboard(log_file=log_file) as dashboard:
-        _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, serena_enabled, cache_lock, dashboard, model=model, dev_branch=dev_branch)
+        _active_dashboard = dashboard
+        try:
+            _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, serena_enabled, cache_lock, dashboard, model=model, dev_branch=dev_branch)
+        finally:
+            _active_dashboard = None
 
 
 def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str, serena_enabled: bool, cache_lock: threading.Lock, dashboard: Any, model: Optional[str] = None, dev_branch: str = "dev") -> None:
