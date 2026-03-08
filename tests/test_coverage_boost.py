@@ -1118,12 +1118,40 @@ class TestPhase3B:
             Phase3BAdversarialReview().execute(ctx)
         assert ctx.state.get("adversarial_review_completed")
 
+    def test_allowed_files_include_specs_and_research(self):
+        ctx = _mock_ctx()
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data="all good")):
+            Phase3BAdversarialReview().execute(ctx)
+        call_kwargs = ctx.run_gemini.call_args
+        allowed = call_kwargs.kwargs.get("allowed_files", []) if call_kwargs.kwargs else call_kwargs[1].get("allowed_files", [])
+        assert any("specs" in f for f in allowed), "specs dir should be in allowed_files"
+        assert any("research" in f for f in allowed), "research dir should be in allowed_files"
+
+    def test_sandbox_disabled(self):
+        ctx = _mock_ctx()
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data="all good")):
+            Phase3BAdversarialReview().execute(ctx)
+        call_kwargs = ctx.run_gemini.call_args
+        kw = call_kwargs.kwargs if call_kwargs.kwargs else call_kwargs[1]
+        assert kw.get("sandbox") is False, "sandbox should be disabled for adversarial review"
+
     def test_scope_creep_found_continue(self):
         ctx = _mock_ctx()
         ctx.prompt_input.return_value = "c"
         with patch("os.path.exists", return_value=True), \
              patch("builtins.open", mock_open(read_data="scope creep found")):
             Phase3BAdversarialReview().execute(ctx)
+
+    def test_scope_creep_prompt_mentions_auto_removed(self):
+        ctx = _mock_ctx()
+        ctx.prompt_input.return_value = "c"
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data="scope creep found")):
+            Phase3BAdversarialReview().execute(ctx)
+        prompt_text = ctx.prompt_input.call_args[0][0]
+        assert "auto-removed" in prompt_text, "prompt should indicate scope creep was auto-removed"
 
     def test_scope_creep_quit(self):
         ctx = _mock_ctx()
@@ -2453,6 +2481,35 @@ class TestPhase6DCoverage:
              patch("builtins.open", mock_open(read_data="task content")):
             Phase6DReorderTasks(pass_num=1).execute(ctx)
         assert ctx.state.get("tasks_reordered_pass_1") is True
+
+    def test_sandbox_disabled(self):
+        ctx = _mock_ctx_for_phases()
+        ctx.load_prompt.return_value = "reorder tmpl"
+        ctx.format_prompt.return_value = "formatted"
+        summary_exists = [False]
+
+        def run_gemini_side(*a, **kw):
+            summary_exists[0] = True
+            return MagicMock(returncode=0)
+
+        ctx.run_gemini.side_effect = run_gemini_side
+
+        def exists_side(p):
+            if "reorder_tasks_summary" in p:
+                return summary_exists[0]
+            return True
+
+        with patch("os.path.exists", side_effect=exists_side), \
+             patch("os.listdir", side_effect=lambda p: (
+                 ["phase_1"] if ("tasks" in p and "phase_1" not in p) else
+                 ["sub"] if "phase_1" in p and "sub" not in p else
+                 ["t.md"]
+             )), \
+             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or ("sub" in p and ".md" not in p)), \
+             patch("builtins.open", mock_open(read_data="task content")):
+            Phase6DReorderTasks(pass_num=1).execute(ctx)
+        kw = ctx.run_gemini.call_args.kwargs if ctx.run_gemini.call_args.kwargs else ctx.run_gemini.call_args[1]
+        assert kw.get("sandbox") is False, "sandbox should be disabled so agent can move files"
 
 
 class TestCLICoverage:

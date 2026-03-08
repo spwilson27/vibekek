@@ -386,10 +386,10 @@ class Phase3FinalReview(BasePhase):
 class Phase3BAdversarialReview(BasePhase):
     """Devil's advocate review comparing specs against the original description.
 
-    Produces ``docs/plan/adversarial_review.md`` listing scope-creep findings
-    and clarification needs.  Prompts the user to review the report before
-    continuing when issues are found.  Idempotent via
-    ``ctx.state["adversarial_review_completed"]``.
+    Automatically removes scope creep from spec/research documents and
+    produces ``docs/plan/adversarial_review.md`` logging all changes.
+    Prompts the user to review NEEDS CLARIFICATION items before continuing.
+    Idempotent via ``ctx.state["adversarial_review_completed"]``.
     """
 
     def execute(self, ctx: ProjectContext) -> None:
@@ -414,8 +414,10 @@ class Phase3BAdversarialReview(BasePhase):
             target_path=target_path
         )
 
-        allowed_files = [expected_file]
-        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
+        specs_dir = os.path.join(ctx.plan_dir, "specs") + os.sep
+        research_dir = os.path.join(ctx.plan_dir, "research") + os.sep
+        allowed_files = [expected_file, specs_dir, research_dir]
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files, sandbox=False)
 
         if result.returncode != 0 or not os.path.exists(expected_file):
             print("\n[!] Error during adversarial review.")
@@ -440,15 +442,13 @@ class Phase3BAdversarialReview(BasePhase):
 
         if scope_creep_count > 0 or needs_clarification_count > 0:
             action = ctx.prompt_input(
-                f"Adversarial review found {scope_creep_count} SCOPE CREEP and "
+                f"Adversarial review found {scope_creep_count} SCOPE CREEP (auto-removed) and "
                 f"{needs_clarification_count} NEEDS CLARIFICATION issues.\n"
                 f"  Review: {target_path}\n\n"
-                f"  To resolve issues before continuing:\n"
-                f"    - SCOPE CREEP: edit the source specs (docs/plan/specs/*.md)\n"
-                f"      to remove or trim features not in your project description.\n"
-                f"    - NEEDS CLARIFICATION: either update input/project-description.md\n"
-                f"      to clarify intent, or edit the specs to resolve ambiguity.\n"
-                f"    - Summaries do not need to be updated; specs drive downstream steps.\n\n"
+                f"  SCOPE CREEP items have been automatically removed from spec documents.\n"
+                f"  NEEDS CLARIFICATION items require your attention:\n"
+                f"    - Update input/project-description.md to clarify intent, or\n"
+                f"    - Edit the specs (docs/plan/specs/*.md) to resolve ambiguity.\n\n"
                 f"  [c]ontinue / [e]dit review / [q]uit"
             ).strip().lower()
             if action == 'q':
@@ -1191,10 +1191,11 @@ class Phase6CCrossPhaseReview(BasePhase):
 
 
 class Phase6DReorderTasks(BasePhase):
-    """Validate task ordering across all phases (validation-only, no file moves).
+    """Validate and fix task ordering across all phases by moving misplaced files.
 
-    Gathers all tasks and prompts the AI to validate logical ordering.
-    Produces ``task_order_validation.md``.
+    Gathers all tasks and prompts the AI to validate logical ordering,
+    then move misplaced tasks to their correct phase directories.
+    Produces ``reorder_tasks_summary_pass_<N>.md``.
     Idempotent via ``ctx.state["tasks_reordered_pass_<N>"]``.
 
     :param pass_num: Pass number (1 or 2).  Defaults to ``1``.
