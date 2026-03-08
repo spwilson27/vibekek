@@ -570,7 +570,60 @@ class ProjectContext:
                     count += 1
         return count
 
-    def parse_markdown_headers(self, filepath: str) -> List[str]:
+    def get_headers_path(self, doc: Dict[str, Any]) -> str:
+        """Return the path to the headers JSON sidecar for a document.
+
+        :param doc: Document descriptor.
+        :type doc: dict
+        :returns: Absolute path to the ``_headers.json`` file.
+        :rtype: str
+        """
+        out_folder = "specs" if doc["type"] == "spec" else "research"
+        return os.path.join(self.plan_dir, out_folder, f"{doc['id']}_headers.json")
+
+    def save_headers(self, doc: Dict[str, Any], filepath: str) -> List[str]:
+        """Extract H1/H2 headers from a markdown file and save to a JSON sidecar.
+
+        Called after Phase 1 generates a spec so that the canonical list of
+        headers is captured before any flesh-out passes modify the document.
+
+        :param doc: Document descriptor.
+        :param filepath: Path to the markdown file to extract headers from.
+        :returns: The list of extracted headers.
+        :rtype: list[str]
+        """
+        headers = self._extract_markdown_headers(filepath)
+        headers_path = self.get_headers_path(doc)
+        with open(headers_path, 'w', encoding='utf-8') as f:
+            json.dump(headers, f, indent=2)
+        return headers
+
+    def parse_markdown_headers(self, filepath: str, doc: Optional[Dict[str, Any]] = None) -> List[str]:
+        """Return the list of section headers for a document.
+
+        Prefers the ``_headers.json`` sidecar (written by :meth:`save_headers`)
+        so that headers embedded in spec content don't pollute the list.
+        Falls back to extracting from the markdown if no sidecar exists.
+
+        :param filepath: Path to the markdown file (used as fallback).
+        :param doc: Document descriptor; when provided, the sidecar is checked.
+        :returns: List of header strings (e.g. ``["# Title", "## Section"]``).
+        :rtype: list[str]
+        """
+        if doc is not None:
+            headers_path = self.get_headers_path(doc)
+            if os.path.exists(headers_path):
+                with open(headers_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        return self._extract_markdown_headers(filepath)
+
+    def _extract_markdown_headers(self, filepath: str) -> List[str]:
+        """Extract H1 and H2 headers from a markdown file.
+
+        :param filepath: Path to the markdown file.
+        :returns: List of header strings.
+        :rtype: list[str]
+        """
         headers = []
         if os.path.exists(filepath):
             with open(filepath, 'r', encoding='utf-8') as f:

@@ -228,6 +228,133 @@ def test_parse_markdown_headers(mock_ctx):
         headers = mock_ctx.parse_markdown_headers("test.md")
         assert headers == ["# Header 1", "## Header 2"]
 
+def test_parse_markdown_headers_prefers_sidecar(tmp_path):
+    """When a _headers.json sidecar exists, parse_markdown_headers uses it
+    instead of parsing the markdown file."""
+    from workflow_lib.context import ProjectContext
+    doc = {"id": "test_spec", "type": "spec"}
+    headers_data = ["# Title", "## Overview", "## Architecture"]
+
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+    (specs_dir / "test_spec_headers.json").write_text(json.dumps(headers_data))
+
+    # Also write a markdown file with an extra header that should be ignored
+    md_file = tmp_path / "test_spec.md"
+    md_file.write_text("# Title\n## Overview\n## Architecture\n## Fake Header\n")
+
+    ctx = ProjectContext.__new__(ProjectContext)
+    ctx.plan_dir = str(tmp_path)
+    headers = ctx.parse_markdown_headers(str(md_file), doc=doc)
+
+    assert headers == headers_data
+
+def test_parse_markdown_headers_falls_back_without_sidecar(tmp_path):
+    """Without a sidecar, parse_markdown_headers falls back to markdown parsing."""
+    from workflow_lib.context import ProjectContext
+    doc = {"id": "no_sidecar", "type": "spec"}
+    (tmp_path / "specs").mkdir()
+
+    md_file = tmp_path / "file.md"
+    md_file.write_text("# Real\n## Also Real\n")
+
+    ctx = ProjectContext.__new__(ProjectContext)
+    ctx.plan_dir = str(tmp_path)
+    headers = ctx.parse_markdown_headers(str(md_file), doc=doc)
+
+    assert headers == ["# Real", "## Also Real"]
+
+def test_save_headers_creates_sidecar(tmp_path):
+    """save_headers extracts headers and writes a JSON sidecar file."""
+    from workflow_lib.context import ProjectContext
+    doc = {"id": "my_spec", "type": "spec"}
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+
+    md_file = tmp_path / "my_spec.md"
+    md_file.write_text("# Title\n## Section A\nSome text\n## Section B\n### Ignored\n")
+
+    ctx = ProjectContext.__new__(ProjectContext)
+    ctx.plan_dir = str(tmp_path)
+    result = ctx.save_headers(doc, str(md_file))
+
+    assert result == ["# Title", "## Section A", "## Section B"]
+    sidecar = specs_dir / "my_spec_headers.json"
+    assert sidecar.exists()
+    assert json.loads(sidecar.read_text()) == result
+
+def test_get_headers_path_research(tmp_path):
+    """get_headers_path uses 'research' folder for research docs."""
+    from workflow_lib.context import ProjectContext
+    ctx = ProjectContext.__new__(ProjectContext)
+    ctx.plan_dir = str(tmp_path)
+    doc = {"id": "market", "type": "research"}
+    path = ctx.get_headers_path(doc)
+    assert "research" in path
+    assert path.endswith("market_headers.json")
+
+def test_parse_markdown_headers_no_doc(tmp_path):
+    """Without doc param, parse_markdown_headers always parses markdown."""
+    from workflow_lib.context import ProjectContext
+    ctx = ProjectContext.__new__(ProjectContext)
+    md_file = tmp_path / "test.md"
+    md_file.write_text("# H1\n## H2\n### H3\n")
+    headers = ctx.parse_markdown_headers(str(md_file))
+    assert headers == ["# H1", "## H2"]
+
+def test_phase1_saves_headers_for_specs(mock_ctx, tmp_path):
+    """Phase1GenerateDoc saves a headers sidecar after generating a spec."""
+    doc = [d for d in workflow.DOCS if d["type"] == "spec"][0]
+    phase = Phase1GenerateDoc(doc)
+
+    with patch.object(mock_ctx, 'run_gemini') as mock_run, \
+         patch.object(mock_ctx, 'stage_changes') as mock_stage, \
+         patch.object(mock_ctx, 'save_headers') as mock_save_headers, \
+         patch.object(mock_ctx, 'get_headers_path', return_value="/fake/headers.json"), \
+         patch('os.path.exists', return_value=True):
+        mock_run.return_value = MagicMock(returncode=0)
+        phase.execute(mock_ctx)
+
+    mock_save_headers.assert_called_once()
+    # Verify headers file was included in staged files
+    staged_files = mock_stage.call_args[0][0]
+    assert "/fake/headers.json" in staged_files
+
+def test_phase2_skips_empty_and_already_fleshed_headers(mock_ctx):
+    """Phase2 skips empty headers and already-fleshed-out headers."""
+    doc = [d for d in workflow.DOCS if d["type"] == "spec"][0]
+    phase = Phase2FleshOutDoc(doc)
+    # Include an empty header and a pre-fleshed header
+    mock_ctx.state["fleshed_out_headers"] = {doc["id"]: ["## Already Done"]}
+    with patch.object(mock_ctx, 'parse_markdown_headers', return_value=["", "## Already Done", "## New"]), \
+         patch.object(mock_ctx, 'run_gemini') as mock_run, \
+         patch.object(mock_ctx, 'stage_changes'):
+        mock_run.return_value = MagicMock(returncode=0)
+        phase.execute(mock_ctx)
+    # Only "## New" should have triggered a run_gemini call
+    assert mock_run.call_count == 1
+
+def test_base_phase_execute_raises(mock_ctx):
+    """BasePhase.execute raises NotImplementedError."""
+    phase = BasePhase()
+    with pytest.raises(NotImplementedError):
+        phase.execute(mock_ctx)
+
+def test_phase2_passes_doc_to_parse_headers(mock_ctx):
+    """Phase2FleshOutDoc passes doc to parse_markdown_headers for sidecar lookup."""
+    doc = [d for d in workflow.DOCS if d["type"] == "spec"][0]
+    phase = Phase2FleshOutDoc(doc)
+
+    with patch.object(mock_ctx, 'parse_markdown_headers', return_value=["# H1"]) as mock_parse, \
+         patch.object(mock_ctx, 'run_gemini') as mock_run, \
+         patch.object(mock_ctx, 'stage_changes'):
+        mock_run.return_value = MagicMock(returncode=0)
+        phase.execute(mock_ctx)
+
+    mock_parse.assert_called_once()
+    _, kwargs = mock_parse.call_args
+    assert kwargs.get("doc") == doc
+
 # --- 4. Orchestrator ---
 
 def test_orchestrator_run_phase_with_retry(mock_ctx):
@@ -399,6 +526,50 @@ def test_opencode_runner_get_cmd():
     assert runner.get_cmd() == ["opencode", "run"]
     assert runner.get_cmd(image_paths=["/x.png"]) == ["opencode", "run", "-f", "/x.png"]
 
+
+# --- parse_stream_json_line: stream_event coverage ---
+
+def test_parse_stream_json_line_text_delta():
+    """Cover stream_event with text_delta (lines 46-51)."""
+    from workflow_lib.runners import parse_stream_json_line
+    line = json.dumps({
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": "hello"}
+        }
+    })
+    assert parse_stream_json_line(line) == "hello"
+
+def test_parse_stream_json_line_input_json_delta():
+    """Cover stream_event with input_json_delta (lines 52-53)."""
+    from workflow_lib.runners import parse_stream_json_line
+    line = json.dumps({
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_delta",
+            "delta": {"type": "input_json_delta", "partial_json": '{"key":'}
+        }
+    })
+    assert parse_stream_json_line(line) == '{"key":'
+
+def test_parse_stream_json_line_stream_event_no_delta():
+    """Cover stream_event with non-delta event type (line 54)."""
+    from workflow_lib.runners import parse_stream_json_line
+    line = json.dumps({
+        "type": "stream_event",
+        "event": {"type": "content_block_start"}
+    })
+    assert parse_stream_json_line(line) is None
+
+def test_base_runner_kill_process():
+    """Cover AIRunner._kill_process (lines 133-134)."""
+    from workflow_lib.runners import AIRunner
+    runner = AIRunner.__new__(AIRunner)
+    proc = MagicMock()
+    runner._kill_process(proc)
+    proc.kill.assert_called_once()
+    proc.wait.assert_called_once()
 
 # --- _write_last_failed_command Tests ---
 

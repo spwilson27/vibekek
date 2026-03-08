@@ -182,6 +182,11 @@ class Phase1GenerateDoc(BasePhase):
             print(result.stderr)
             sys.exit(1)
             
+        # Save canonical headers before any flesh-out passes can modify the doc
+        if self.doc["type"] == "spec":
+            ctx.save_headers(self.doc, expected_file)
+            allowed_files.append(ctx.get_headers_path(self.doc))
+
         ctx.stage_changes(allowed_files)
         ctx.state.setdefault("generated", []).append(self.doc["id"])
         ctx.save_state()
@@ -233,7 +238,7 @@ class Phase2FleshOutDoc(BasePhase):
         out_folder = "specs"
         accumulated_context = ctx.get_accumulated_context(self.doc, include_research=False)
 
-        headers = ctx.parse_markdown_headers(expected_file)
+        headers = ctx.parse_markdown_headers(expected_file, doc=self.doc)
         flesh_prompt_tmpl = ctx.load_prompt("flesh_out.md")
         
         ctx.state.setdefault("fleshed_out_headers", {})
