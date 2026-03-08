@@ -811,6 +811,194 @@ def cmd_cascade(args: "argparse.Namespace") -> None:  # type: ignore[name-define
     save_replan_state(rp_state)
 
 
+def cmd_fix_requirements(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Detect unmapped requirements and generate tasks to cover them.
+
+    Compares requirements referenced in ``docs/plan/phases/`` against those
+    covered by ``docs/plan/tasks/``.  For each unmapped requirement, determines
+    which phase and sub-epic it belongs to, then invokes an AI agent with the
+    ``fix_requirements.md`` prompt to generate new task files.
+
+    After generation, rebuilds the DAG for each affected phase and re-runs
+    verification.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``backend`` (str) — AI backend to use.
+        - ``dry_run`` (bool) — preview mode.
+    :type args: argparse.Namespace
+    :raises SystemExit: When no unmapped requirements are found, directories
+        are missing, or the AI runner fails.
+    """
+    plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
+    phases_dir = os.path.join(plan_dir, "phases")
+    tasks_dir = get_tasks_dir()
+
+    if not os.path.isdir(phases_dir):
+        print("Error: phases directory not found.")
+        sys.exit(1)
+    if not os.path.isdir(tasks_dir):
+        print("Error: tasks directory not found.")
+        sys.exit(1)
+
+    # Collect all requirements from phases
+    phases_reqs: Dict[str, set] = {}  # req_id -> set of phase_ids
+    for filename in os.listdir(phases_dir):
+        if not filename.endswith(".md"):
+            continue
+        phase_id = filename.replace(".md", "")
+        file_path = os.path.join(phases_dir, filename)
+        reqs = parse_requirements(file_path)
+        for r in reqs:
+            phases_reqs.setdefault(r, set()).add(phase_id)
+
+    # Collect all requirements from tasks
+    tasks_reqs = set()
+    for root, _, files in os.walk(tasks_dir):
+        for filename in files:
+            if filename.endswith(".md"):
+                file_path = os.path.join(root, filename)
+                tasks_reqs.update(parse_requirements(file_path))
+
+    # Find unmapped
+    all_phase_reqs = set(phases_reqs.keys())
+    unmapped = all_phase_reqs - tasks_reqs
+
+    if not unmapped:
+        print("All requirements are mapped to tasks. Nothing to fix.")
+        return
+
+    print(f"Found {len(unmapped)} unmapped requirement(s):")
+    for r in sorted(unmapped):
+        phase_list = ", ".join(sorted(phases_reqs[r]))
+        print(f"  - [{r}] (in {phase_list})")
+
+    if args.dry_run:
+        print("\n[dry-run] Would generate tasks to cover the above requirements.")
+        return
+
+    runner = _make_runner(args.backend, model=getattr(args, 'model', None))
+    ctx = ProjectContext(ROOT_DIR, runner=runner)
+
+    # Group unmapped requirements by phase
+    by_phase: Dict[str, List[str]] = {}
+    for req_id in unmapped:
+        for phase_id in phases_reqs[req_id]:
+            by_phase.setdefault(phase_id, []).append(req_id)
+
+    affected_phase_dirs = set()
+
+    for phase_id, req_ids in sorted(by_phase.items()):
+        phase_filename = f"{phase_id}.md"
+        phase_task_dir = os.path.join(tasks_dir, phase_id)
+
+        if not os.path.isdir(phase_task_dir):
+            os.makedirs(phase_task_dir, exist_ok=True)
+
+        # Find the best sub-epic for these requirements from the grouping JSON
+        grouping_file = os.path.join(tasks_dir, f"{phase_id}_grouping.json")
+
+        # Determine target sub-epic: check grouping JSON first, fall back to a catch-all
+        target_sub_epic = None
+        sub_epic_name = None
+        if os.path.exists(grouping_file):
+            with open(grouping_file, "r", encoding="utf-8") as f:
+                sub_epics = json.load(f)
+            # Find which sub-epic originally contained these requirements
+            for key, reqs in sub_epics.items():
+                if isinstance(reqs, list):
+                    overlap = set(req_ids) & set(reqs)
+                    if overlap:
+                        safe_name = re.sub(r'[^a-zA-Z0-9_\-]+', '_', key.lower())
+                        target_sub_epic = safe_name
+                        sub_epic_name = key
+                        break
+
+        if not target_sub_epic:
+            # Fall back: use the first existing sub-epic directory, or create one
+            existing_sub_epics = [
+                d for d in os.listdir(phase_task_dir)
+                if os.path.isdir(os.path.join(phase_task_dir, d))
+            ] if os.path.isdir(phase_task_dir) else []
+
+            if existing_sub_epics:
+                target_sub_epic = sorted(existing_sub_epics)[0]
+                sub_epic_name = target_sub_epic
+            else:
+                target_sub_epic = "unmapped_requirements"
+                sub_epic_name = "Unmapped Requirements"
+
+        target_dir = f"{phase_id}/{target_sub_epic}"
+        se_dir = os.path.join(tasks_dir, target_dir)
+        os.makedirs(se_dir, exist_ok=True)
+
+        # Gather existing tasks
+        existing = sorted([f for f in os.listdir(se_dir) if f.endswith(".md")]) if os.path.isdir(se_dir) else []
+        next_num = len(existing) + 1
+
+        existing_content = ""
+        for md_file in existing:
+            with open(os.path.join(se_dir, md_file), "r", encoding="utf-8") as f:
+                existing_content += f"### {md_file}\n{f.read()}\n\n"
+
+        unmapped_reqs_list = "\n".join(f"- [{r}]" for r in sorted(req_ids))
+        shared_components_ctx = ctx.load_shared_components()
+
+        prompt_tmpl = ctx.load_prompt("fix_requirements.md")
+        prompt = ctx.format_prompt(prompt_tmpl,
+            description_ctx=ctx.description_ctx,
+            shared_components_ctx=shared_components_ctx,
+            existing_tasks_content=existing_content or "(none)",
+            phase_filename=phase_filename,
+            target_dir=target_dir,
+            sub_epic_name=sub_epic_name,
+            unmapped_reqs_list=unmapped_reqs_list,
+            next_task_num=f"{next_num:02d}",
+        )
+
+        print(f"\nGenerating tasks for {len(req_ids)} unmapped requirement(s) in {target_dir}...")
+        allowed_files = [se_dir + os.sep]
+        result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+
+        if result.returncode != 0:
+            print(f"\n[!] Error generating fix tasks for {target_dir}.")
+            print(result.stdout)
+            print(result.stderr)
+            sys.exit(1)
+
+        new_files = sorted(set(os.listdir(se_dir)) - set(existing))
+        if new_files:
+            for nf in new_files:
+                print(f"  Created: docs/plan/tasks/{target_dir}/{nf}")
+        else:
+            print(f"  Warning: No new task files were created for {target_dir}.")
+
+        affected_phase_dirs.add(os.path.join(tasks_dir, phase_id))
+
+    # Rebuild DAGs for affected phases
+    for phase_dir in sorted(affected_phase_dirs):
+        phase_id = os.path.basename(phase_dir)
+        print(f"\nRebuilding DAG for {phase_id}...")
+        _rebuild_phase_dag(phase_dir, ctx)
+
+    # Re-verify
+    print("\nRe-verifying requirement coverage...")
+    verify_script = os.path.join(TOOLS_DIR, "verify_requirements.py")
+    res = subprocess.run(
+        [sys.executable, verify_script, "--verify-tasks", "docs/plan/phases/", "docs/plan/tasks/"],
+        capture_output=True, text=True, cwd=ROOT_DIR
+    )
+    if res.returncode == 0:
+        print("  PASS  All requirements now mapped to tasks.")
+    else:
+        print("  FAIL  Some requirements still unmapped:")
+        print(res.stdout)
+
+    rp_state = load_replan_state()
+    log_action(rp_state, "fix-requirements", f"fixed {len(unmapped)} unmapped requirements")
+    save_replan_state(rp_state)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

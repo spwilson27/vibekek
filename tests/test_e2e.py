@@ -64,6 +64,7 @@ PROMPT_NAMES = [
     "implement_task.md",
     "review_task.md",
     "add_task.md",
+    "fix_requirements.md",
     "merge_task.md",
     "requirements.md",
 ]

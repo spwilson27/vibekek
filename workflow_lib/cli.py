@@ -60,7 +60,7 @@ import signal
 from .constants import TOOLS_DIR, ROOT_DIR
 from .orchestrator import Orchestrator
 from .context import ProjectContext
-from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade
+from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade, cmd_fix_requirements
 from .executor import execute_dag, Logger, signal_handler
 from .dashboard import make_dashboard, _DashboardStream
 from .config import get_serena_enabled, get_config_defaults
@@ -315,6 +315,9 @@ def main() -> None:
     p_cascade.add_argument("phase_id", help="Phase (e.g., phase_1)")
     p_cascade.add_argument("--dry-run", action="store_true")
 
+    p_fix_reqs = sub.add_parser("fix-requirements", parents=[shared], help="Detect unmapped requirements and generate tasks to cover them")
+    p_fix_reqs.add_argument("--dry-run", action="store_true")
+
     args = parser.parse_args()
 
     # Layer defaults: hardcoded -> .workflow.jsonc -> CLI args
@@ -346,6 +349,7 @@ def main() -> None:
         "regen-tasks": cmd_regen_tasks,
         "regen-components": cmd_regen_components,
         "cascade": cmd_cascade,
+        "fix-requirements": cmd_fix_requirements,
     }
 
     commands[args.command](args)

@@ -647,6 +647,20 @@ def test_main_all_cmds(mock_subprocess, mock_open_file, super_mock):
             except SystemExit:
                 pass
 
+    # Test fix-requirements command
+    for dry_run in [False, True]:
+        with (
+            patch(
+                "sys.argv",
+                ["workflow.py", "fix-requirements", "--dry-run" if dry_run else ""],
+            ),
+            patch("workflow_lib.cli.cmd_fix_requirements"),
+        ):
+            try:
+                workflow.main()
+            except SystemExit:
+                pass
+
 
 @patch("builtins.open")
 @patch("subprocess.run")
