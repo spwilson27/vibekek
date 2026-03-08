@@ -1152,10 +1152,12 @@ class Phase6CCrossPhaseReview(BasePhase):
 
         before_count = ctx.count_task_files(tasks_dir)
 
+        summary_filename = f"cross_phase_review_summary_pass_{self.pass_num}.md"
         prompt = ctx.format_prompt(
             review_prompt_tmpl,
             description_ctx=ctx.description_ctx,
-            tasks_content=tasks_content
+            tasks_content=tasks_content,
+            summary_filename=summary_filename
         )
 
         allowed_files = [tasks_dir + os.sep]
@@ -1261,7 +1263,8 @@ class Phase6DReorderTasks(BasePhase):
         prompt = ctx.format_prompt(
             reorder_prompt_tmpl,
             description_ctx=ctx.description_ctx,
-            tasks_content=tasks_content
+            tasks_content=tasks_content,
+            pass_num=self.pass_num
         )
 
         allowed_files = [tasks_dir + os.sep]

@@ -3457,6 +3457,64 @@ class TestParseStreamJsonLineCoverage:
         line = json.dumps({"type": "system", "message": "init"})
         assert parse_stream_json_line(line) is None
 
+    def test_stream_event_text_delta(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hello"}}})
+        assert parse_stream_json_line(line) == "hello"
+
+    def test_stream_event_input_json_delta(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": "{\"k\":"}}})
+        assert parse_stream_json_line(line) == "{\"k\":"
+
+    def test_stream_event_other_event_type(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "stream_event", "event": {"type": "content_block_start"}})
+        assert parse_stream_json_line(line) is None
+
+    def test_stream_event_no_event(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "stream_event"})
+        assert parse_stream_json_line(line) is None
+
+    def test_stream_event_unknown_delta_type(self):
+        from workflow_lib.runners import parse_stream_json_line
+        line = json.dumps({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "unknown"}}})
+        assert parse_stream_json_line(line) is None
+
+
+class TestRunnerGetCmdWithModel:
+    def test_opencode_get_cmd_with_model(self):
+        from workflow_lib.runners import OpencodeRunner
+        runner = OpencodeRunner(model="gpt-4")
+        cmd = runner.get_cmd()
+        assert "--model" in cmd
+        assert "gpt-4" in cmd
+
+    def test_copilot_get_cmd_with_model(self):
+        from workflow_lib.runners import CopilotRunner
+        runner = CopilotRunner(model="gpt-4")
+        cmd = runner.get_cmd()
+        assert "--model" in cmd
+        assert "gpt-4" in cmd
+
+    def test_base_phase_execute_raises(self):
+        from workflow_lib.phases import BasePhase
+        with pytest.raises(NotImplementedError):
+            BasePhase().execute(None)
+
+    def test_session_runner_get_cmd_raises(self):
+        from workflow_lib.runners import SessionResumableRunner
+        runner = SessionResumableRunner.__new__(SessionResumableRunner)
+        with pytest.raises(NotImplementedError):
+            runner.get_cmd()
+
+    def test_session_runner_build_resume_raises(self):
+        from workflow_lib.runners import SessionResumableRunner
+        runner = SessionResumableRunner.__new__(SessionResumableRunner)
+        with pytest.raises(NotImplementedError):
+            runner._build_resume_cmd_and_prompt("sid")
+
 
 # ---------------------------------------------------------------------------
 # AIRunner._run_streaming_json coverage

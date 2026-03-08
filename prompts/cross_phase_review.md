@@ -16,7 +16,7 @@ You are a Lead AI Architect and Project Manager. Your job is to review all the g
 6. **Identify Missing Work**: If any requirements are not adequately covered by the existing tasks across all phases, note these gaps in the review summary. **Do NOT create new task files** — only flag gaps for human review.
 7. **Refine and Reorganize**: Ensure the tasks are atomic, actionable, and collectively fulfill all requirements without duplicating architectural setup or core logic implementation across phases.
 8. **CONSTRAINT — Subtractive Only**: This review phase may ONLY merge, delete, consolidate, or simplify tasks. The total number of task files after review must be less than or equal to the number before review. If you find gaps, document them in the review summary but do not create new tasks to fill them.
-8. Write a summary of your review and any changes made to `docs/plan/tasks/cross_phase_review_summary.md`.
+8. Write a summary of your review and any changes made to `docs/plan/tasks/{summary_filename}`.
 
 # CHAIN OF THOUGHT
 1. Analyze the tasks across all phases.
@@ -27,5 +27,5 @@ You are a Lead AI Architect and Project Manager. Your job is to review all the g
 6. Write the global review summary.
 
 # OUTPUT
-- Create `docs/plan/tasks/cross_phase_review_summary.md` detailing the actions taken globally (duplicates removed, tasks merged/moved/added).
+- Create `docs/plan/tasks/{summary_filename}` detailing the actions taken globally (duplicates removed, tasks merged/moved/added).
 - You MUST end your turn immediately after writing the review summary and making the necessary file changes.

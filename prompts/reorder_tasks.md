@@ -22,7 +22,7 @@ You are a Lead AI Architect and Project Manager. Your job is to validate that al
 
 6. **DO NOT move any files.** This phase is validation-only. Report findings for human review.
 
-7. Write your validation report to `docs/plan/tasks/task_order_validation.md`.
+7. Write your validation report to `docs/plan/tasks/reorder_tasks_summary_pass_{pass_num}.md`.
 
 # VALIDATION CRITERIA
 
@@ -43,7 +43,7 @@ A task is **correctly placed** if:
 4. Write the validation report.
 
 # OUTPUT FORMAT
-Write the validation report to `docs/plan/tasks/task_order_validation.md` with the following structure:
+Write the validation report to `docs/plan/tasks/reorder_tasks_summary_pass_{pass_num}.md` with the following structure:
 
 ```markdown
 # Task Order Validation Report

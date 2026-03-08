@@ -49,7 +49,7 @@ PROMPT_PLACEHOLDERS = {
     "group_tasks.md": {"description_ctx", "phase_filename", "group_filename"},
     "tasks.md": {"description_ctx", "phase_filename", "sub_epic_name", "sub_epic_reqs", "target_dir", "shared_components_ctx"},
     "review_tasks_in_phase.md": {"description_ctx", "phase_filename", "phase_id", "tasks_content"},
-    "cross_phase_review.md": {"description_ctx", "tasks_content"},
+    "cross_phase_review.md": {"description_ctx", "tasks_content", "summary_filename"},
     "reorder_tasks.md": {"description_ctx", "tasks_content"},
     "integration_test_plan.md": {"description_ctx", "target_path"},
 

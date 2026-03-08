@@ -419,7 +419,10 @@ def test_main_all_cmds(mock_subprocess, mock_open_file, super_mock):
     for jobs in [1, 4]:
         with (
             patch("sys.argv", ["workflow.py", "run", "--jobs", str(jobs)]),
-            patch("builtins.open"),
+            patch("workflow_lib.cli.load_dags", return_value={}),
+            patch("workflow_lib.cli.load_workflow_state", return_value={"completed_tasks": [], "merged_tasks": []}),
+            patch("workflow_lib.cli.execute_dag"),
+            patch("workflow_lib.cli.get_serena_enabled", return_value=False),
         ):
             try:
                 workflow.main()
