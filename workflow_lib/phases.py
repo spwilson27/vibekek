@@ -437,8 +437,14 @@ class Phase3BAdversarialReview(BasePhase):
             action = ctx.prompt_input(
                 f"Adversarial review found {scope_creep_count} SCOPE CREEP and "
                 f"{needs_clarification_count} NEEDS CLARIFICATION issues.\n"
-                f"  Review: {target_path}\n"
-                f"  [c]ontinue / [e]dit specs / [q]uit"
+                f"  Review: {target_path}\n\n"
+                f"  To resolve issues before continuing:\n"
+                f"    - SCOPE CREEP: edit the source specs (docs/plan/specs/*.md)\n"
+                f"      to remove or trim features not in your project description.\n"
+                f"    - NEEDS CLARIFICATION: either update input/project-description.md\n"
+                f"      to clarify intent, or edit the specs to resolve ambiguity.\n"
+                f"    - Summaries do not need to be updated; specs drive downstream steps.\n\n"
+                f"  [c]ontinue / [e]dit review / [q]uit"
             ).strip().lower()
             if action == 'q':
                 sys.exit(0)
