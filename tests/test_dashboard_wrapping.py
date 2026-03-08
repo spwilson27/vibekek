@@ -11,6 +11,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from rich.console import Console
+from rich.text import Text
 
 from workflow_lib.dashboard import Dashboard
 
@@ -106,3 +107,156 @@ class TestHeaderColumnWrapping:
             assert len(clean) <= 40, (
                 f"Line {i} is {len(clean)} chars (max 40): {clean!r}"
             )
+
+
+class TestAgentOutputLineWrapping:
+    """Agent output lines must be pre-wrapped via textwrap before Rich renders them.
+
+    Rich's Text objects wrap correctly in Console.print() but NOT reliably
+    inside Live(screen=True).  The fix is to pre-wrap lines with textwrap.wrap
+    so the Text content never exceeds content_width.  These tests inspect the
+    raw Text objects from _render() to verify pre-wrapping.
+    """
+
+    LONG_OUTPUT = (
+        "I will read do.py to understand its current implementation "
+        "and identify where to add the presubmit command "
+        "so that we can run all the checks before submitting."
+    )  # 159 chars — exceeds old 120-char ingestion limit, tests wrapping not truncation
+
+    def _get_agent_text_objects(self, d):
+        """Extract Text renderables from the dashboard's _render() Group."""
+        from rich.console import Group
+        group = d._render()
+        # Group stores renderables in ._renderables
+        texts = []
+        for r in group._renderables:
+            if isinstance(r, Text):
+                texts.append(r)
+        return texts
+
+    def test_agent_output_text_is_pre_wrapped(self):
+        """Text objects for agent output must have no line exceeding content_width."""
+        width = 60
+        d = _make_dashboard(width=width, height=40)
+        d.set_agent("p1/01/task.md", "Impl", "running", self.LONG_OUTPUT)
+        now = datetime.now(tz=_PST)
+        with d._lock:
+            s, st, lines, _ = d._agents["p1/01/task.md"]
+            d._agents["p1/01/task.md"] = (s, st, lines, now)
+        texts = self._get_agent_text_objects(d)
+        # Find the Text containing our agent output
+        agent_texts = [t for t in texts if "read do.py" in t.plain]
+        assert agent_texts, f"Agent output Text not found among: {[t.plain[:40] for t in texts]}"
+        for t in agent_texts:
+            for line in t.plain.splitlines():
+                assert len(line) <= width, (
+                    f"Pre-wrap failed: Text line is {len(line)} chars (max {width}): {line!r}"
+                )
+
+    def test_agent_output_preserves_full_content(self):
+        """Pre-wrapped Text must preserve the full agent output, not truncate it."""
+        width = 60
+        d = _make_dashboard(width=width, height=40)
+        d.set_agent("p1/01/task.md", "Impl", "running", self.LONG_OUTPUT)
+        now = datetime.now(tz=_PST)
+        with d._lock:
+            s, st, lines, _ = d._agents["p1/01/task.md"]
+            d._agents["p1/01/task.md"] = (s, st, lines, now)
+        texts = self._get_agent_text_objects(d)
+        agent_texts = [t for t in texts if "read do.py" in t.plain]
+        assert agent_texts
+        joined = " ".join(agent_texts[0].plain.split())
+        assert "before submitting" in joined, (
+            f"Pre-wrapped text lost content: {joined}"
+        )
+
+    def test_agent_output_no_ellipsis(self):
+        """Pre-wrapped agent output must NOT contain truncation ellipsis."""
+        width = 60
+        d = _make_dashboard(width=width, height=40)
+        d.set_agent("p1/01/task.md", "Impl", "running", self.LONG_OUTPUT)
+        now = datetime.now(tz=_PST)
+        with d._lock:
+            s, st, lines, _ = d._agents["p1/01/task.md"]
+            d._agents["p1/01/task.md"] = (s, st, lines, now)
+        texts = self._get_agent_text_objects(d)
+        agent_texts = [t for t in texts if "read do.py" in t.plain]
+        assert agent_texts
+        assert "…" not in agent_texts[0].plain, (
+            f"Agent output was truncated with '…' instead of wrapped"
+        )
+
+    def test_rendered_output_fits_within_width(self):
+        """End-to-end: rendered output lines must not exceed terminal width."""
+        width = 70
+        d = _make_dashboard(width=width, height=50)
+        d.set_agent("p1/01/task.md", "Impl", "running", "first short line")
+        d.update_last_line("p1/01/task.md", self.LONG_OUTPUT)
+        d.update_last_line("p1/01/task.md", "Another very long line that should also be wrapped " * 3)
+        now = datetime.now(tz=_PST)
+        with d._lock:
+            s, st, lines, _ = d._agents["p1/01/task.md"]
+            d._agents["p1/01/task.md"] = (s, st, lines, now)
+        output = _render_to_str(d)
+        for i, line in enumerate(output.splitlines()):
+            clean = _strip_ansi(line)
+            assert len(clean) <= width, (
+                f"Line {i} is {len(clean)} chars (max {width}): {clean!r}"
+            )
+
+
+class TestLogLineWrapping:
+    """Log lines must be pre-wrapped via textwrap before Rich renders them."""
+
+    def _get_log_text(self, d):
+        """Extract the log Text object from _render() Group."""
+        from rich.console import Group
+        group = d._render()
+        # The log text is the large Text object with appended lines
+        for r in group._renderables:
+            if isinstance(r, Text) and len(r.plain) > 10:
+                return r
+        return None
+
+    def test_log_text_is_pre_wrapped(self):
+        """Log Text object must have no line exceeding content_width."""
+        width = 60
+        d = _make_dashboard(width=width, height=40)
+        long_msg = "Processing task " + "word " * 30 + "END_MARKER"
+        d.log(long_msg)
+        log_text = self._get_log_text(d)
+        assert log_text is not None, "Log Text object not found"
+        for line in log_text.plain.splitlines():
+            if not line.strip():
+                continue
+            assert len(line) <= width, (
+                f"Pre-wrap failed: log line is {len(line)} chars (max {width}): {line!r}"
+            )
+
+    def test_log_preserves_full_content(self):
+        """Pre-wrapped log Text must preserve the full message."""
+        width = 60
+        d = _make_dashboard(width=width, height=40)
+        long_msg = "Processing task alpha " + "delta " * 20 + "END_MARKER"
+        d.log(long_msg)
+        log_text = self._get_log_text(d)
+        assert log_text is not None
+        joined = " ".join(log_text.plain.split())
+        assert "END_MARKER" in joined, (
+            f"Pre-wrapped log lost content: {joined[-200:]}"
+        )
+
+    def test_log_no_ellipsis(self):
+        """Pre-wrapped log lines must NOT contain truncation ellipsis."""
+        width = 60
+        d = _make_dashboard(width=width, height=40)
+        long_msg = "Processing task " + "word " * 40
+        d.log(long_msg)
+        log_text = self._get_log_text(d)
+        assert log_text is not None
+        log_lines = [l for l in log_text.plain.splitlines() if "Processing" in l]
+        assert log_lines
+        assert not any("…" in l for l in log_lines), (
+            f"Log was truncated with '…' instead of wrapped"
+        )

@@ -3068,15 +3068,15 @@ class TestDashboard:
         with Dashboard(log_file=io.StringIO()) as d:
             d.remove_agent("nonexistent")  # must not raise
 
-    def test_set_agent_truncates_last_line(self):
+    def test_set_agent_stores_full_last_line(self):
         from workflow_lib.dashboard import Dashboard
         import io
         with Dashboard(log_file=io.StringIO()) as d:
             d.set_agent("t", "Impl", "running", "x" * 200)
-            # Agent lines are a deque of (timestamp, text) tuples; text truncated to 120 chars
+            # Agent lines are stored in full; wrapping happens at render time
             lines = list(d._agents["t"][2])
             assert len(lines) == 1
-            assert len(lines[0][1]) <= 120
+            assert len(lines[0][1]) == 200
 
     def test_all_status_styles_render(self):
         from workflow_lib.dashboard import Dashboard, _STATUS_STYLE

@@ -21,6 +21,7 @@ Typical usage::
 from __future__ import annotations
 
 import io
+import textwrap
 import time
 import threading
 import types
@@ -162,7 +163,7 @@ class Dashboard:
             else:
                 lines = deque()
                 started = datetime.now(tz=_PST)
-            short = last_line.strip()[:120] if last_line else ""
+            short = last_line.strip() if last_line else ""
             if short:
                 lines.append((_now_short(), short))
             self._agents[task_id] = (stage, status, lines, started)
@@ -289,8 +290,8 @@ class Dashboard:
                 rows_needed = max(1, -(-header_left_len // max(header_left_width, 1)))
                 if output_lines:
                     for _ts, line in output_lines:
-                        line_len = 14 + len(line)
-                        rows_needed += max(1, -(-line_len // content_width))
+                        line_len = 14 + len(line)  # "  [HH:MM:SS] " prefix
+                        rows_needed += max(1, -(-line_len // max(content_width, 1)))
                 else:
                     rows_needed += 1  # "waiting for output..."
                 elapsed = now - started
@@ -344,15 +345,20 @@ class Dashboard:
                     selected: list[Tuple[str, str]] = []
                     rows_used = 0
                     for ts, line in reversed(output_lines):
-                        line_len = 14 + len(line)
-                        line_rows = max(1, -(-line_len // content_width))
+                        display = f"  [{ts}] {line}"
+                        line_rows = max(1, -(-len(display) // max(content_width, 1)))
                         if rows_used + line_rows > rows_budget and selected:
                             break
                         selected.append((ts, line))
                         rows_used += line_rows
                     selected.reverse()
                     for ts, line in selected:
-                        parts.append(Text(f"  [{ts}] {line}", style="dim"))
+                        display = f"  [{ts}] {line}"
+                        wrapped = textwrap.wrap(
+                            display, width=content_width,
+                            subsequent_indent="              ",
+                        )
+                        parts.append(Text("\n".join(wrapped), style="dim"))
                 else:
                     parts.append(Text("  waiting for output...", style="dim"))
 
@@ -385,13 +391,19 @@ class Dashboard:
         log_selected: list[str] = []
         rows_used = 0
         for line in reversed(lines):
-            line_rows = max(1, -(-len(line) // content_width))
+            line_rows = max(1, -(-len(line) // max(content_width, 1)))
             if rows_used + line_rows > log_height and log_selected:
                 break
             log_selected.append(line)
             rows_used += line_rows
         log_selected.reverse()
         for line in log_selected:
+            if len(line) > content_width:
+                wrapped = textwrap.wrap(
+                    line, width=content_width,
+                    subsequent_indent="                              ",
+                )
+                line = "\n".join(wrapped)
             text.append(line + "\n", style="dim")
         for _ in range(log_height - rows_used):
             text.append("\n")
