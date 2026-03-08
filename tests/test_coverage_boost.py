@@ -4269,8 +4269,8 @@ class TestSoftInterrupt:
     # 6. merge_task() — merge loop skipped on shutdown
     # ----------------------------------------------------------------
 
-    def test_merge_task_skips_on_shutdown(self):
-        """merge_task returns False immediately when shutdown_requested."""
+    def test_merge_task_proceeds_during_shutdown(self):
+        """merge_task proceeds even when shutdown_requested (merges complete during shutdown)."""
         self._mod.shutdown_requested = True
         dash = MagicMock()
 
@@ -4282,21 +4282,17 @@ class TestSoftInterrupt:
             result = self._mod.merge_task(
                 "/root", "phase_1/task", "./presubmit", dashboard=dash,
             )
-        assert result is False
-        # Verify the skip message was logged
-        logged = " ".join(str(c) for c in dash.log.call_args_list)
-        assert "shutdown" in logged.lower()
+        assert result is True
 
     # ----------------------------------------------------------------
     # 7. merge_task() — Merge agent skipped on shutdown (attempt > 1)
     # ----------------------------------------------------------------
 
-    def test_merge_task_skips_merge_agent_on_shutdown(self):
-        """Shutdown during merge retries prevents Merge agent from spawning."""
+    def test_merge_task_retries_merge_agent_during_shutdown(self):
+        """Merge retries continue even during shutdown (merges complete during shutdown)."""
         self._mod.shutdown_requested = False
         dash = MagicMock()
 
-        merge_attempt = [0]
         def fake_subprocess_run(cmd, *args, **kwargs):
             if isinstance(cmd, list):
                 # Squash merge fails on attempt 1 to trigger agent path
@@ -4310,7 +4306,7 @@ class TestSoftInterrupt:
         agent_calls = []
         def fake_run_agent(agent_type, *args, **kwargs):
             agent_calls.append(agent_type)
-            # Set shutdown on first merge agent call to prevent retry
+            # Set shutdown on first merge agent call
             self._mod.shutdown_requested = True
             return False  # agent "fails"
 
@@ -4325,9 +4321,9 @@ class TestSoftInterrupt:
                 max_retries=3, dashboard=dash,
             )
         assert result is False
-        # Only one Merge agent call — shutdown prevented attempt 3
-        assert len(agent_calls) == 1
-        assert agent_calls[0] == "Merge"
+        # Both retry attempts call the Merge agent (shutdown doesn't prevent retries)
+        assert len(agent_calls) == 2
+        assert all(c == "Merge" for c in agent_calls)
 
     # ----------------------------------------------------------------
     # 8. _execute_dag_inner() — no new tasks scheduled on shutdown

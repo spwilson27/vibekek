@@ -284,7 +284,9 @@ class Dashboard:
             agent_data = []
             for task_id in sorted(visible):
                 stage, status, output_lines, started = visible[task_id]
-                rows_needed = 1  # header
+                header_left_len = len(task_id) + 2 + len(stage)
+                header_left_width = content_width * 5 // 6  # ratio=5 out of 5+1
+                rows_needed = max(1, -(-header_left_len // max(header_left_width, 1)))
                 if output_lines:
                     for _ts, line in output_lines:
                         line_len = 14 + len(line)
@@ -329,8 +331,8 @@ class Dashboard:
                 start_str = started.strftime("%H:%M:%S")
 
                 header = Table.grid(expand=True, padding=(0, 1))
-                header.add_column(ratio=5)
-                header.add_column(ratio=1, justify="right")
+                header.add_column(no_wrap=False, overflow="fold")
+                header.add_column(justify="right", no_wrap=True, min_width=28)
                 header.add_row(
                     f"[bold]{task_id}[/bold]  [dim]{stage}[/dim]",
                     f"[dim]{start_str}[/dim] [dim]({elapsed_str})[/dim]  [{style}]{symbol} {status}[/{style}]",
