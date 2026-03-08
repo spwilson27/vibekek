@@ -655,7 +655,7 @@ class QwenRunner(SessionResumableRunner):
             proc.kill()
             proc.wait()
 
-    COMPRESS_TIMEOUT = 60
+    COMPRESS_TIMEOUT = 300
 
     def _compress_session(
         self,
