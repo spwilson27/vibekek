@@ -8,6 +8,9 @@ from unittest.mock import patch
 
 BLOCKED_COMMANDS = {"gemini", "claude", "copilot"}
 
+# Save before any mocking so fixtures can call real git regardless of subprocess patches.
+_real_subprocess_run = subprocess.run
+
 # Paths that tests must not write to without explicit mocking
 _TESTS_DIR = os.path.abspath(os.path.dirname(__file__))
 _TOOLS_DIR = os.path.abspath(os.path.join(_TESTS_DIR, ".."))
@@ -51,3 +54,32 @@ def _host_protection():
          patch("subprocess.Popen", side_effect=_make_subprocess_guard(subprocess.Popen)), \
          patch("builtins.open", new=_guarded_open):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_root_branch_change():
+    """Assert that no test changes the git branch of the project root directory.
+
+    Uses the saved real subprocess.run reference so it bypasses any mocking
+    applied by _host_protection.  This catches regressions like `git rebase
+    <upstream> <branch>` or `git checkout <branch>` running against the host
+    repo instead of an isolated tmpdir clone.
+    """
+    res = _real_subprocess_run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=_PROJECT_DIR, capture_output=True, text=True,
+    )
+    branch_before = res.stdout.strip() if res.returncode == 0 else None
+    yield
+    if branch_before is None:
+        return
+    res_after = _real_subprocess_run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=_PROJECT_DIR, capture_output=True, text=True,
+    )
+    branch_after = res_after.stdout.strip() if res_after.returncode == 0 else None
+    assert branch_before == branch_after, (
+        f"A test changed the git branch of the project root from "
+        f"'{branch_before}' to '{branch_after}'. "
+        f"All git operations that touch checkout state must use an isolated tmpdir clone."
+    )

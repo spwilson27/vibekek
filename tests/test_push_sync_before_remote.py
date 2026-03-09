@@ -1,15 +1,18 @@
-"""Test that the remote push path in _execute_dag_inner fetches and rebases
-before pushing, preventing non-fast-forward failures when parallel tasks have
-already pushed to the remote dev branch.
+"""Test that the remote push path in _execute_dag_inner syncs the local branch
+ref from origin before pushing, preventing non-fast-forward failures when
+parallel tasks have already pushed to the remote dev branch.
 
 The failure mode this guards against:
     git push origin dev-gemini
     ! [rejected] dev-gemini (non-fast-forward)
 
-The fix: fetch + rebase onto origin/dev before pushing so local is always
-fast-forward relative to remote.
+The fix: use `git fetch origin branch:branch` (refspec form) to update the
+local ref directly without requiring a checkout, so local is always
+fast-forward relative to remote and the working tree is never disturbed.
 
-Tests will fail if the fetch+rebase sequence is removed from executor.py.
+Tests will fail if the fetch-refspec sync is removed from executor.py, or if
+a `git rebase <upstream> <branch>` (which implicitly checks out <branch>) is
+reintroduced with cwd=root_dir.
 """
 
 import ast
@@ -157,58 +160,91 @@ class TestFetchRebaseBeforeRemotePush(unittest.TestCase):
             "No `git push` calls found in _execute_dag_inner — test may be stale.",
         )
 
-    def test_rebase_precedes_push_in_execute_dag_inner(self):
-        """In _execute_dag_inner, every `git push origin` must also have a
-        `git rebase` nearby to integrate remote changes before pushing.
+    def test_fetch_uses_refspec_form_before_push_in_execute_dag_inner(self):
+        """In _execute_dag_inner, the `git fetch` before `git push` must use the
+        'branch:branch' refspec form so that the local ref is updated in place
+        without requiring a checkout.
 
-        This test fails on the old code that used a bare `git push origin`
-        without a prior rebase, and passes once the fetch+rebase is in place.
+        The old approach used `git fetch origin <branch>` (updates only the
+        remote-tracking ref) followed by `git rebase origin/<branch> <branch>`
+        (which implicitly checks out <branch>). The correct approach is:
+
+            git fetch origin <branch>:<branch>
+
+        which updates the local ref directly, never touching HEAD or the
+        working tree.
         """
         tree = self._get_ast()
         func = _find_function(tree, "_execute_dag_inner")
         self.assertIsNotNone(func, "Could not find _execute_dag_inner in executor.py")
 
-        # Collect all statement bodies reachable from _execute_dag_inner.
-        bodies: list[list[ast.stmt]] = []
+        # Find all subprocess.run(["git", "fetch", ...], cwd=root_dir) calls
+        # in _execute_dag_inner and verify at least one uses a branch:branch
+        # refspec (a token containing ":").
+        fetch_with_refspec_found = False
         for node in ast.walk(func):
-            for attr in ("body", "orelse"):
-                block = getattr(node, attr, None)
-                if isinstance(block, list) and block:
-                    bodies.append(block)
-            for h in getattr(node, "handlers", []):
-                if isinstance(getattr(h, "body", None), list):
-                    bodies.append(h.body)
-
-        # For each body containing a direct `git push`, check that somewhere
-        # before the push (including inside sibling if/else blocks) a `git
-        # rebase` appears.  We use the deep-walk checker here because the
-        # rebase lives inside an if/else that is a sibling of the push.
-        push_bodies_found = 0
-        for body in bodies:
-            push_indices = [
-                i for i, stmt in enumerate(body)
-                if _stmt_is_git_call(stmt, "push")
-            ]
-            if not push_indices:
+            if not isinstance(node, ast.Call):
                 continue
+            tokens = _git_subcommand(node)
+            if not (tokens and len(tokens) >= 2 and tokens[1] == "fetch"):
+                continue
+            # Check cwd=root_dir
+            cwd_is_root = any(
+                kw.arg == "cwd" and isinstance(kw.value, ast.Name) and kw.value.id == "root_dir"
+                for kw in node.keywords
+            )
+            if not cwd_is_root:
+                continue
+            # Check that one of the arguments is an f-string or constant containing ":"
+            # (the branch:branch refspec).  The 4th token onward is the refspec.
+            if len(node.args[0].elts) >= 4:  # type: ignore[union-attr]
+                refspec_elt = node.args[0].elts[3]  # type: ignore[union-attr]
+                # Accept JoinedStr (f-string like f"{branch}:{branch}") or
+                # a plain string constant containing ":".
+                if isinstance(refspec_elt, ast.JoinedStr):
+                    fetch_with_refspec_found = True
+                elif isinstance(refspec_elt, ast.Constant) and ":" in str(refspec_elt.value):
+                    fetch_with_refspec_found = True
 
-            for push_idx in push_indices:
-                push_bodies_found += 1
-                # Search the preceding statements (including their sub-trees)
-                # for any rebase call.
-                rebase_before = any(
-                    _stmt_contains_git_call(body[j], "rebase")
-                    for j in range(push_idx)
-                )
-                self.assertTrue(
-                    rebase_before,
-                    f"Found `git push` at line {body[push_idx].lineno} in "
-                    f"_execute_dag_inner without a preceding `git rebase` in the "
-                    f"same or enclosing block. Add `git rebase origin/<branch>` "
-                    f"before pushing to ensure local is fast-forward.",
-                )
+        self.assertTrue(
+            fetch_with_refspec_found,
+            "Could not find a `git fetch origin <branch>:<branch>` (refspec form) call "
+            "with cwd=root_dir in _execute_dag_inner. The refspec form is required to "
+            "update the local branch ref without triggering a checkout. "
+            "Do not use `git fetch origin <branch>` + `git rebase` — the rebase "
+            "implicitly checks out the branch and disturbs the working tree.",
+        )
 
-        self.assertGreater(push_bodies_found, 0, "No `git push` calls found — test may be stale.")
+    def test_no_rebase_with_root_dir_cwd_in_execute_dag_inner(self):
+        """_execute_dag_inner must not call `git rebase` with cwd=root_dir.
+
+        The two-argument form `git rebase <upstream> <branch>` implicitly does
+        `git checkout <branch>` before rebasing, which changes the working tree
+        branch.  All rebase/checkout operations must use an isolated tmpdir
+        clone, never the host repo working tree.
+        """
+        tree = self._get_ast()
+        func = _find_function(tree, "_execute_dag_inner")
+        self.assertIsNotNone(func, "Could not find _execute_dag_inner in executor.py")
+
+        for node in ast.walk(func):
+            if not isinstance(node, ast.Call):
+                continue
+            tokens = _git_subcommand(node)
+            if not (tokens and len(tokens) >= 2 and tokens[1] == "rebase"):
+                continue
+            cwd_is_root = any(
+                kw.arg == "cwd" and isinstance(kw.value, ast.Name) and kw.value.id == "root_dir"
+                for kw in node.keywords
+            )
+            self.assertFalse(
+                cwd_is_root,
+                f"Found `git rebase` with cwd=root_dir at line {node.lineno} in "
+                f"_execute_dag_inner. The two-argument rebase form implicitly checks "
+                f"out the branch, changing the working tree. Use "
+                f"`git fetch origin branch:branch` instead to update the local ref "
+                f"without a checkout.",
+            )
 
 
 # ---------------------------------------------------------------------------

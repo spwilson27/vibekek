@@ -669,9 +669,11 @@ def test_main_all_cmds(mock_subprocess, mock_open_file, mock_load_config, super_
                 pass
 
 
-@patch("builtins.open")
+@patch("workflow_lib.discord.load_config", return_value={})
+@patch("workflow_lib.config.load_config", return_value={})
+@patch("builtins.open", new_callable=lambda: custom_open)
 @patch("subprocess.run")
-def test_orchestrator(mock_subprocess, mock_open_file, super_mock):
+def test_orchestrator(mock_subprocess, mock_open_file, mock_load_config, mock_discord_cfg, super_mock):
     from workflow_lib.orchestrator import Orchestrator
 
     runner = MagicMock()
