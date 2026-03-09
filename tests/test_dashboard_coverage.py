@@ -249,6 +249,26 @@ class TestDashboard:
             d._live = MagicMock()
             d.__exit__(None, None, None)
             assert d._live is None
+            # Final state should be printed to normal buffer
+            mock_console.print.assert_called_once()
+
+    def test_exit_prints_final_state_to_normal_buffer(self):
+        """When exiting the alternate buffer, the final dashboard state is printed."""
+        d = Dashboard()
+        d._console = MagicMock()
+        d._console.size = MagicMock(height=40, width=80)
+        d.log("final log message")
+        d.set_agent("t1", "implement", "failed", "something broke")
+        d._live = MagicMock()
+        d.__exit__(None, None, None)
+        # Live.__exit__ should have been called to leave alternate buffer
+        d._live is None  # already set to None
+        # The final render should have been printed to the console
+        assert d._console.print.call_count == 1
+        rendered = d._console.print.call_args[0][0]
+        # It should be a Group (the return type of _render)
+        from rich.console import Group
+        assert isinstance(rendered, Group)
 
     def test_render_no_agents(self):
         d = Dashboard()

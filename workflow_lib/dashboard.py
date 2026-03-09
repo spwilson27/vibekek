@@ -114,8 +114,12 @@ class Dashboard:
         exc_tb: Optional[types.TracebackType],
     ) -> None:
         if self._live:
+            # Capture final state before leaving the alternate buffer
+            final_render = self._render()
             self._live.__exit__(exc_type, exc_val, exc_tb)
             self._live = None
+            # Print final state to the normal buffer so the user can see it
+            self._console.print(final_render)
 
     # ------------------------------------------------------------------
     # Public API
