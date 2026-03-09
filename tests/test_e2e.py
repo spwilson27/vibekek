@@ -2122,9 +2122,9 @@ class TestMergeDuringShutdownE2E:
         assert "phase_1/sub/01_d.md" not in processed
         assert "phase_1/sub/01_d.md" not in merged
 
-    def test_run_agent_skips_non_merge_during_shutdown(self, tmp_path):
-        """run_agent skips Implementation/Review agents during shutdown but
-        allows Merge agents with allow_during_shutdown=True."""
+    def test_run_agent_proceeds_for_all_types_during_shutdown(self, tmp_path):
+        """run_agent proceeds for all agent types during shutdown so that
+        in-flight tasks complete their full workflow."""
         import workflow_lib.executor as executor_mod
         from workflow_lib.executor import run_agent
 
@@ -2138,24 +2138,17 @@ class TestMergeDuringShutdownE2E:
             f.write("Implement {task_name}")
 
         try:
-            with patch("workflow_lib.executor.TOOLS_DIR", root + "/.tools"):
-                # Normal agent should be skipped
-                result = run_agent("Implementation", "implement_task.md",
-                                   {"task_name": "test"}, root, "gemini")
-                assert result is False, (
-                    "Implementation agent should be skipped during shutdown"
-                )
-
-                # Merge agent with allow_during_shutdown should proceed
-                # (will fail because no real AI, but should not be skipped)
-                with patch("workflow_lib.executor.run_ai_command",
-                           return_value=(0, "")):
-                    result = run_agent("Merge", "implement_task.md",
-                                       {"task_name": "test"}, root, "gemini",
-                                       allow_during_shutdown=True)
+            with patch("workflow_lib.executor.TOOLS_DIR", root + "/.tools"), \
+                 patch("workflow_lib.executor.run_ai_command",
+                       return_value=(0, "")), \
+                 patch("workflow_lib.executor.get_project_images",
+                       return_value=[]):
+                # All agent types should proceed during shutdown
+                for agent_type in ("Implementation", "Review", "Merge"):
+                    result = run_agent(agent_type, "implement_task.md",
+                                       {"task_name": "test"}, root, "gemini")
                     assert result is True, (
-                        "Merge agent should proceed during shutdown "
-                        "when allow_during_shutdown=True"
+                        f"{agent_type} agent should proceed during shutdown"
                     )
         finally:
             executor_mod.shutdown_requested = False

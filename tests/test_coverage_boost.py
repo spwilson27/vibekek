@@ -4065,14 +4065,17 @@ class TestCopilotRunnerCoverage:
 # ---------------------------------------------------------------------------
 
 class TestSoftInterrupt:
-    """Verify that shutdown_requested prevents new agents from spawning.
+    """Verify that shutdown_requested only prevents new tasks from being scheduled.
 
-    Tests cover every agent spawn point:
-      1. run_agent() — the central guard (Implementation, Review, Review Retry, Merge)
-      2. process_task() — Implementation agent, Review agent, Verification loop,
-         Review (Retry) agent
-      3. merge_task() — merge loop entry, Merge agent
-      4. _execute_dag_inner() — DAG scheduling loop
+    In-flight tasks must complete their full workflow (implementation, review,
+    verification, merge) so that work is not lost.  The shutdown guard lives
+    solely in the DAG scheduling loop (_execute_dag_inner), NOT in run_agent.
+
+    Tests cover:
+      1. run_agent() — proceeds even when shutdown_requested is set
+      2. process_task() — completes full workflow during shutdown
+      3. merge_task() — merge completes during shutdown
+      4. _execute_dag_inner() — DAG scheduling loop blocks new tasks
       5. signal_handler() — message content
     """
 
@@ -4099,49 +4102,50 @@ class TestSoftInterrupt:
         return stack
 
     # ----------------------------------------------------------------
-    # 1. run_agent() — the central shutdown guard
+    # 1. run_agent() — proceeds even during shutdown (no guard)
     # ----------------------------------------------------------------
 
-    def test_run_agent_skips_when_shutdown_requested(self):
-        """run_agent returns False immediately without opening prompt file."""
+    def test_run_agent_proceeds_when_shutdown_requested(self):
+        """run_agent must proceed during shutdown so in-flight tasks complete."""
         self._mod.shutdown_requested = True
-        result = self._mod.run_agent(
-            "Implementation", "implement_task.md", {}, "/tmp",
-        )
-        assert result is False
-
-    def test_run_agent_skips_for_review_agent(self):
-        """Applies to all agent_type values, not just Implementation."""
-        self._mod.shutdown_requested = True
-        assert self._mod.run_agent("Review", "review_task.md", {}, "/tmp") is False
-
-    def test_run_agent_skips_for_review_retry(self):
-        self._mod.shutdown_requested = True
-        assert self._mod.run_agent("Review (Retry)", "review_task.md", {}, "/tmp") is False
-
-    def test_run_agent_skips_for_merge_agent(self):
-        self._mod.shutdown_requested = True
-        assert self._mod.run_agent("Merge", "merge_task.md", {}, "/tmp") is False
-
-    def test_run_agent_logs_skip_with_dashboard(self):
-        self._mod.shutdown_requested = True
-        dash = MagicMock()
-        result = self._mod.run_agent(
-            "Review", "review_task.md", {}, "/tmp", dashboard=dash,
-        )
-        assert result is False
-        dash.log.assert_called_once()
-        assert "shutdown" in dash.log.call_args[0][0].lower()
-
-    def test_run_agent_logs_skip_without_dashboard(self):
-        self._mod.shutdown_requested = True
-        with patch('builtins.print') as mock_print:
+        with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
+             patch('workflow_lib.executor.get_project_images', return_value=[]), \
+             patch('builtins.open', mock_open(read_data="prompt")):
             result = self._mod.run_agent(
                 "Implementation", "implement_task.md", {}, "/tmp",
             )
-        assert result is False
-        printed = " ".join(str(c) for c in mock_print.call_args_list)
-        assert "shutdown" in printed.lower()
+        assert result is True
+        mock_ai.assert_called_once()
+
+    def test_run_agent_review_proceeds_when_shutdown_requested(self):
+        """Review agent must not be skipped during shutdown."""
+        self._mod.shutdown_requested = True
+        with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
+             patch('workflow_lib.executor.get_project_images', return_value=[]), \
+             patch('builtins.open', mock_open(read_data="prompt")):
+            result = self._mod.run_agent("Review", "review_task.md", {}, "/tmp")
+        assert result is True
+        mock_ai.assert_called_once()
+
+    def test_run_agent_review_retry_proceeds_when_shutdown_requested(self):
+        """Review (Retry) must not be skipped during shutdown."""
+        self._mod.shutdown_requested = True
+        with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
+             patch('workflow_lib.executor.get_project_images', return_value=[]), \
+             patch('builtins.open', mock_open(read_data="prompt")):
+            result = self._mod.run_agent("Review (Retry)", "review_task.md", {}, "/tmp")
+        assert result is True
+        mock_ai.assert_called_once()
+
+    def test_run_agent_merge_proceeds_when_shutdown_requested(self):
+        """Merge agent must not be skipped during shutdown."""
+        self._mod.shutdown_requested = True
+        with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
+             patch('workflow_lib.executor.get_project_images', return_value=[]), \
+             patch('builtins.open', mock_open(read_data="prompt")):
+            result = self._mod.run_agent("Merge", "merge_task.md", {}, "/tmp")
+        assert result is True
+        mock_ai.assert_called_once()
 
     def test_run_agent_proceeds_when_not_shutdown(self):
         self._mod.shutdown_requested = False
@@ -4156,18 +4160,12 @@ class TestSoftInterrupt:
         mock_ai.assert_called_once()
 
     # ----------------------------------------------------------------
-    # 2. process_task() — Implementation agent blocked by shutdown
+    # 2. process_task() — completes full workflow during shutdown
     # ----------------------------------------------------------------
 
-    def test_process_task_completes_if_agents_pass_during_shutdown(self):
-        """If run_agent is bypassed and presubmit passes, task succeeds even on shutdown.
-
-        The real guard lives inside run_agent (tested by
-        test_process_task_skips_implementation_via_run_agent_guard).  When
-        run_agent is mocked to return True and presubmit passes, process_task
-        should succeed — shutdown does not prevent the verification + commit
-        stage from completing.
-        """
+    def test_process_task_completes_full_workflow_during_shutdown(self):
+        """When shutdown is requested, in-flight tasks still run implementation,
+        review, verification, and commit — nothing is skipped."""
         self._mod.shutdown_requested = True
 
         agent_calls = []
@@ -4180,47 +4178,31 @@ class TestSoftInterrupt:
                 "/root", "phase_1/task", "./presubmit", dashboard=MagicMock(),
             )
         assert result is True
-
-    def test_process_task_skips_implementation_via_run_agent_guard(self):
-        """The real run_agent guard prevents Implementation from spawning."""
-        self._mod.shutdown_requested = True
-        # Don't mock run_agent — let the real guard fire
-        with patch('workflow_lib.executor.get_task_details', return_value="# Task: test"), \
-             patch('workflow_lib.executor.get_project_context', return_value="ctx"), \
-             patch('workflow_lib.executor.get_memory_context', return_value="mem"), \
-             patch('subprocess.run', return_value=MagicMock(returncode=0, stdout="", stderr="")), \
-             patch('tempfile.mkdtemp', return_value="/tmp/fake"), \
-             patch('shutil.rmtree'):
-            result = self._mod.process_task(
-                "/root", "phase_1/task", "./presubmit", dashboard=MagicMock(),
-            )
-        assert result is False
+        assert "Implementation" in agent_calls
+        assert "Review" in agent_calls
 
     # ----------------------------------------------------------------
-    # 3. process_task() — Review agent blocked by shutdown
+    # 3. process_task() — Review agent runs even after shutdown fires
     # ----------------------------------------------------------------
 
-    def test_process_task_skips_review_agent_on_shutdown(self):
-        """Shutdown after Implementation but before Review → task returns False."""
+    def test_process_task_review_runs_after_shutdown_during_implementation(self):
+        """Shutdown fires during Implementation → Review still runs and task completes."""
         self._mod.shutdown_requested = False
 
-        call_count = [0]
+        agent_calls = []
         def fake_run_agent(agent_type, *args, **kwargs):
-            call_count[0] += 1
+            agent_calls.append(agent_type)
             if agent_type == "Implementation":
-                # Implementation succeeds, then shutdown fires
+                # Shutdown fires mid-implementation
                 self._mod.shutdown_requested = True
-                return True
-            # Review should be skipped by run_agent guard, but since we mocked
-            # run_agent we simulate the guard
-            return not self._mod.shutdown_requested
+            return True
 
         with self._process_task_patches(fake_run_agent):
             result = self._mod.process_task(
                 "/root", "phase_1/task", "./presubmit", dashboard=MagicMock(),
             )
-        assert result is False
-        assert call_count[0] == 2  # Both were called, but Review returned False
+        assert result is True
+        assert agent_calls == ["Implementation", "Review"]
 
     # ----------------------------------------------------------------
     # 4. process_task() — Verification loop blocked by shutdown
@@ -4249,28 +4231,29 @@ class TestSoftInterrupt:
         assert call_count[0] == 2  # Implementation + Review only (no retry needed)
 
     # ----------------------------------------------------------------
-    # 5. process_task() — Review (Retry) blocked by shutdown
+    # 5. process_task() — Review (Retry) proceeds during shutdown
     # ----------------------------------------------------------------
 
-    def test_process_task_skips_review_retry_on_shutdown(self):
-        """Shutdown after presubmit failure → Review (Retry) is called but
-        the run_agent guard returns False, and the next loop iteration is
-        blocked by shutdown_requested check in the verification loop."""
+    def test_process_task_review_retry_proceeds_during_shutdown(self):
+        """Shutdown after presubmit failure → Review (Retry) still runs
+        so the task has a chance to fix and save the work."""
         self._mod.shutdown_requested = False
 
         agent_calls = []
+        presubmit_attempts = [0]
         def fake_run_agent(agent_type, *args, **kwargs):
             agent_calls.append(agent_type)
-            # Simulate the run_agent guard: return False when shutdown
-            if self._mod.shutdown_requested:
-                return False
             return True
 
         def fake_subprocess_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and cmd[0] == "./presubmit":
-                # Presubmit fails, triggering retry path
-                self._mod.shutdown_requested = True
-                return MagicMock(returncode=1, stdout="fail", stderr="err")
+                presubmit_attempts[0] += 1
+                if presubmit_attempts[0] == 1:
+                    # First presubmit fails, triggering retry path
+                    self._mod.shutdown_requested = True
+                    return MagicMock(returncode=1, stdout="fail", stderr="err")
+                # Second presubmit passes
+                return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch('workflow_lib.executor.run_agent', side_effect=fake_run_agent), \
@@ -4284,19 +4267,23 @@ class TestSoftInterrupt:
                 "/root", "phase_1/task", "./presubmit",
                 max_retries=3, dashboard=MagicMock(),
             )
-        assert result is False
-        # Implementation + Review + Review (Retry) — but retry returns False
+        assert result is True
+        # Implementation + Review + Review (Retry) — retry proceeds and fixes it
         assert agent_calls == ["Implementation", "Review", "Review (Retry)"]
 
-    def test_process_task_review_retry_blocked_by_real_guard(self):
-        """Using the real run_agent (not mocked), shutdown prevents the
-        Review (Retry) from actually spawning an AI process."""
+    def test_process_task_review_retry_spawns_ai_during_shutdown(self):
+        """Using the real run_agent (not mocked), shutdown does NOT prevent
+        the Review (Retry) from spawning an AI process."""
         self._mod.shutdown_requested = False
 
+        presubmit_attempts = [0]
         def fake_subprocess_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and cmd[0] == "./presubmit":
-                self._mod.shutdown_requested = True
-                return MagicMock(returncode=1, stdout="fail", stderr="err")
+                presubmit_attempts[0] += 1
+                if presubmit_attempts[0] == 1:
+                    self._mod.shutdown_requested = True
+                    return MagicMock(returncode=1, stdout="fail", stderr="err")
+                return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
@@ -4312,10 +4299,9 @@ class TestSoftInterrupt:
                 "/root", "phase_1/task", "./presubmit",
                 max_retries=3, dashboard=MagicMock(),
             )
-        assert result is False
-        # run_ai_command was called for Implementation and Review (2 times),
-        # but NOT for Review (Retry) — the run_agent guard blocked it
-        assert mock_ai.call_count == 2
+        assert result is True
+        # run_ai_command called for Implementation, Review, AND Review (Retry)
+        assert mock_ai.call_count == 3
 
     # ----------------------------------------------------------------
     # 6. merge_task() — merge loop skipped on shutdown

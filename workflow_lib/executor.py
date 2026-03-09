@@ -377,16 +377,12 @@ def get_project_images() -> List[str]:
     )
 
 
-def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "", model: Optional[str] = None, allow_during_shutdown: bool = False) -> bool:
+def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "", model: Optional[str] = None) -> bool:
     """Format a prompt template and execute an AI agent subprocess.
 
     Reads the named prompt template from ``.tools/prompts/``, performs simple
     ``{key}`` substitution using *task_context*, then delegates to
     :func:`run_ai_command`.
-
-    When :data:`shutdown_requested` is set (via Ctrl-C), this function returns
-    ``False`` immediately without spawning a new agent, allowing in-flight
-    agents to complete while preventing new work from starting.
 
     :param agent_type: Human-readable label for log output (e.g.
         ``"Implementation"``, ``"Review"``).
@@ -403,17 +399,8 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
         :func:`run_ai_command`.  Defaults to ``"gemini"``.
     :type backend: str
     :returns: ``True`` if the agent exited with code 0, ``False`` otherwise.
-        Returns ``False`` immediately when shutdown has been requested.
     :rtype: bool
     """
-    if shutdown_requested and not allow_during_shutdown:
-        _log_msg = f"[{agent_type}] Skipped — shutdown requested."
-        if dashboard:
-            dashboard.log(_log_msg)
-        else:
-            print(f"      {_log_msg}")
-        return False
-
     prompt_path = os.path.join(TOOLS_DIR, "prompts", prompt_file)
     with open(prompt_path, "r", encoding="utf-8") as f:
         prompt_tmpl = f.read()
@@ -884,7 +871,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                 failure_ctx["description_ctx"] += f"\n\n### PREVIOUS ATTEMPT FAILURE\nThe previous squash merge or presubmit failed with:\n```\n{failure_output}\n```\n"
                 failure_ctx["description_ctx"] += f"\nPlease resolve the conflicts and ensure the final state is a single commit on the {dev_branch} branch with the message: {commit_msg}"
                 
-                if not run_agent("Merge", "merge_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=task_id, model=model, allow_during_shutdown=True):
+                if not run_agent("Merge", "merge_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=task_id, model=model):
                     _log(f"      [!] Merge agent failed to cleanly exit.")
                     continue
                     
