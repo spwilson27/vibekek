@@ -191,7 +191,7 @@ class TestRunWithSoftTimeout:
                 ["qwen", "-y"], "", "/tmp", lambda l: None, "s1", timeout=60
             )
 
-        assert calls == [10, QwenRunner.COMPRESS_TIMEOUT, 60]
+        assert calls == [10, 60]
 
     def test_default_hard_timeout(self):
         """When caller doesn't provide timeout, RESUME_HARD_TIMEOUT is used."""
@@ -211,7 +211,7 @@ class TestRunWithSoftTimeout:
                 ["qwen", "-y"], "", "/tmp", lambda l: None, "s1"
             )
 
-        assert calls == [10, QwenRunner.COMPRESS_TIMEOUT, SessionResumableRunner.RESUME_HARD_TIMEOUT]
+        assert calls == [10, SessionResumableRunner.RESUME_HARD_TIMEOUT]
 
 
 # ---------------------------------------------------------------------------

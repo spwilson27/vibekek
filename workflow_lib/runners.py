@@ -428,7 +428,6 @@ class SessionResumableRunner(AIRunner):
             return self._run_session(cmd, prompt, cwd, on_line, timeout=self.soft_timeout)
         except subprocess.TimeoutExpired:
             on_line(f"[soft-timeout] Interrupting {backend_name} session to resume with finish-up prompt...")
-            self._compress_session(session_id, cwd, on_line)
             resume_cmd, resume_prompt = self._build_resume_cmd_and_prompt(session_id)
             hard_timeout = timeout or self.RESUME_HARD_TIMEOUT
             on_line(f"[soft-timeout] Resuming session {session_id} with {hard_timeout}s to finish...")
@@ -653,23 +652,6 @@ class QwenRunner(SessionResumableRunner):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-
-    COMPRESS_TIMEOUT = 300
-
-    def _compress_session(
-        self,
-        session_id: str,
-        cwd: str,
-        on_line: Callable[[str], None],
-    ) -> None:
-        """Run ``qwen --resume <session_id>`` with ``/compress`` to shrink context."""
-        on_line(f"[soft-timeout] Compressing session {session_id} context...")
-        cmd = self.get_cmd(session_id=session_id, resume=True)
-        try:
-            self._run_session(cmd, "/compress", cwd, on_line, timeout=self.COMPRESS_TIMEOUT)
-            on_line(f"[soft-timeout] Compression complete.")
-        except subprocess.TimeoutExpired:
-            on_line(f"[soft-timeout] Compression timed out after {self.COMPRESS_TIMEOUT}s, continuing anyway.")
 
     def _build_resume_cmd_and_prompt(self, session_id: str) -> tuple:
         """Build the resume command for qwen.
