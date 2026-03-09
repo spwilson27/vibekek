@@ -2856,6 +2856,62 @@ class TestConfigCoverage:
             result = get_dev_branch()
         assert result == "integration"
 
+    def test_get_pivot_remote_default(self):
+        """get_pivot_remote returns 'origin' when no config file exists."""
+        with patch("os.path.exists", return_value=False):
+            from workflow_lib.config import get_pivot_remote
+            result = get_pivot_remote()
+        assert result == "origin"
+
+    def test_get_pivot_remote_custom(self):
+        """get_pivot_remote returns the configured remote name."""
+        jsonc = '{"pivot_remote": "github"}'
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data=jsonc)):
+            from workflow_lib.config import get_pivot_remote
+            result = get_pivot_remote()
+        assert result == "github"
+
+    def test_pivot_remote_used_in_fetch(self):
+        """execute_dag uses the configured pivot_remote in the post-merge fetch."""
+        state = {"completed_tasks": [], "merged_tasks": []}
+        dag = {"phase_1/task.md": []}
+        fetch_calls = []
+
+        def _tracking_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "fetch" in cmd:
+                fetch_calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=_tracking_run), \
+             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
+             patch("workflow_lib.executor.get_dev_branch", return_value="dev"), \
+             patch("workflow_lib.executor.get_pivot_remote", return_value="upstream"), \
+             patch("workflow_lib.executor.process_task", return_value=True), \
+             patch("workflow_lib.executor.merge_task", return_value=True), \
+             patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
+             patch("workflow_lib.executor.save_workflow_state"):
+            execute_dag("/root", dag, state, 1, "./do presubmit")
+
+        assert any("upstream" in cmd for cmd in fetch_calls), (
+            f"Expected fetch using 'upstream' remote, got: {fetch_calls}"
+        )
+
+    def test_pivot_remote_used_in_url_lookup(self):
+        """get_gitlab_remote_url prefers the named pivot remote over others."""
+        from workflow_lib.executor import get_gitlab_remote_url
+        remote_v_output = (
+            "upstream\thttps://github.com/org/repo.git (fetch)\n"
+            "upstream\thttps://github.com/org/repo.git (push)\n"
+            "origin\thttps://old-origin.example.com/repo.git (fetch)\n"
+            "origin\thttps://old-origin.example.com/repo.git (push)\n"
+        )
+        with patch("subprocess.run", return_value=MagicMock(
+            returncode=0, stdout=remote_v_output, stderr=""
+        )):
+            url = get_gitlab_remote_url("/root", remote_name="upstream")
+        assert url == "https://github.com/org/repo.git"
+
     def test_dev_branch_created_custom(self):
         """When dev_branch is customized, execute_dag creates that branch."""
         run_results = [
@@ -2899,7 +2955,7 @@ class TestTemplateContainsAllConfigKeys:
         defaults_keys = [k.strip().strip('"').strip("'") for k in match.group(1).split(",")]
 
         # Keys with dedicated accessors
-        dedicated_keys = ["serena", "dev_branch"]
+        dedicated_keys = ["serena", "dev_branch", "pivot_remote"]
 
         all_keys = set(defaults_keys + dedicated_keys)
         missing = [k for k in sorted(all_keys) if f'"{k}"' not in template_text]

@@ -81,6 +81,20 @@ def get_dev_branch() -> str:
     return str(load_config().get("dev_branch", "dev"))
 
 
+def get_pivot_remote() -> str:
+    """Return the configured pivot remote name.
+
+    Reads the ``"pivot_remote"`` key from ``.workflow.jsonc``.  This is the
+    git remote used as the single source of truth for clones and pushes during
+    the workflow run — task branches are cloned from it and merged results are
+    pushed back to it.  Defaults to ``"origin"`` when absent.
+
+    :returns: Remote name, e.g. ``"origin"``, ``"github"``, or ``"upstream"``.
+    :rtype: str
+    """
+    return str(load_config().get("pivot_remote", "origin"))
+
+
 def get_config_defaults() -> Dict[str, Any]:
     """Return workflow defaults from ``.workflow.jsonc``.
 

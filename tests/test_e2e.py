@@ -955,13 +955,11 @@ class TestCustomDevBranchE2E:
 
         dag = {"phase_1/sub/01_a.md": []}
         state = {"completed_tasks": [], "merged_tasks": []}
-        push_calls = []
-
-        original_run = subprocess.run
+        fetch_calls = []
 
         def _tracking_run(cmd, *args, **kwargs):
-            if isinstance(cmd, list) and "push" in cmd:
-                push_calls.append(cmd)
+            if isinstance(cmd, list) and "fetch" in cmd:
+                fetch_calls.append(cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
@@ -987,9 +985,9 @@ class TestCustomDevBranchE2E:
             execute_dag(root, dag, state, jobs=1,
                         presubmit_cmd="echo ok", backend="gemini")
 
-        # Verify push used the custom branch name
-        assert any(custom_branch in cmd for cmd in push_calls), (
-            f"Expected push to {custom_branch!r}, got: {push_calls}"
+        # Verify fetch used the custom branch name (execute_dag syncs local ref after merge_task pushes)
+        assert any(custom_branch in " ".join(cmd) for cmd in fetch_calls), (
+            f"Expected fetch with {custom_branch!r}, got: {fetch_calls}"
         )
 
 
@@ -2024,7 +2022,7 @@ class TestMergeDuringShutdownE2E:
 
         def _track_merge(root_dir, task_id, presubmit_cmd, backend,
                          max_retries=3, cache_lock=None, serena=False,
-                         dashboard=None, model=None, dev_branch="dev"):
+                         dashboard=None, model=None, dev_branch="dev", **kwargs):
             with lock:
                 merged.append(task_id)
             return True
@@ -2090,7 +2088,7 @@ class TestMergeDuringShutdownE2E:
 
         def _track_merge(root_dir, task_id, presubmit_cmd, backend,
                          max_retries=3, cache_lock=None, serena=False,
-                         dashboard=None, model=None, dev_branch="dev"):
+                         dashboard=None, model=None, dev_branch="dev", **kwargs):
             with lock:
                 merged.append(task_id)
             return True

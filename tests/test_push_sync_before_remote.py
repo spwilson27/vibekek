@@ -103,61 +103,40 @@ class TestFetchRebaseBeforeRemotePush(unittest.TestCase):
             return ast.parse(f.read())
 
     def test_fetch_precedes_push_in_execute_dag_inner(self):
-        """In _execute_dag_inner, every `git push origin` must be preceded by a
-        `git fetch origin` in the same statement block.
+        """_execute_dag_inner must have a `git fetch` to sync the local ref after
+        merge_task pushes, and must NOT contain a `git push` (the push is now
+        delegated entirely to merge_task which clones from the remote).
 
-        This test fails on the old code that used a bare `git push origin`
-        without a prior fetch, and passes once the fetch+rebase is in place.
+        This invariant ensures the local dev-branch ref stays in sync without
+        the local repo ever pushing directly to the remote.
         """
         tree = self._get_ast()
 
         func = _find_function(tree, "_execute_dag_inner")
         self.assertIsNotNone(func, "Could not find _execute_dag_inner in executor.py")
 
-        # Collect every statement-list (body) reachable from _execute_dag_inner.
-        bodies: list[list[ast.stmt]] = []
-        for node in ast.walk(func):
-            body = getattr(node, "body", None)
-            if isinstance(body, list) and body:
-                bodies.append(body)
-            orelse = getattr(node, "orelse", None)
-            if isinstance(orelse, list) and orelse:
-                bodies.append(orelse)
-            handlers = getattr(node, "handlers", None)
-            if isinstance(handlers, list):
-                for h in handlers:
-                    if isinstance(getattr(h, "body", None), list):
-                        bodies.append(h.body)
+        fetch_found = any(
+            isinstance(node, ast.Call) and bool(_git_subcommand(node) and
+                len(_git_subcommand(node)) >= 2 and _git_subcommand(node)[1] == "fetch")
+            for node in ast.walk(func)
+        )
+        self.assertTrue(
+            fetch_found,
+            "_execute_dag_inner must contain a `git fetch` call to sync the local "
+            "dev-branch ref after merge_task has pushed to the remote.",
+        )
 
-        # For each body, find direct `git push` statements and verify a direct
-        # `git fetch` statement precedes them in the same block.
-        push_bodies_found = 0
-        for body in bodies:
-            push_indices = [
-                i for i, stmt in enumerate(body)
-                if _stmt_is_git_call(stmt, "push")
-            ]
-            if not push_indices:
-                continue
-
-            for push_idx in push_indices:
-                push_bodies_found += 1
-                # Is there a direct fetch anywhere before the push in this body?
-                fetch_before = any(
-                    _stmt_is_git_call(body[j], "fetch")
-                    for j in range(push_idx)
-                )
-                self.assertTrue(
-                    fetch_before,
-                    f"Found `git push` at line {body[push_idx].lineno} in "
-                    f"_execute_dag_inner without a preceding `git fetch` in the "
-                    f"same block. Add `git fetch origin <branch>` before pushing "
-                    f"to prevent non-fast-forward failures from concurrent merges.",
-                )
-
-        self.assertGreater(
-            push_bodies_found, 0,
-            "No `git push` calls found in _execute_dag_inner — test may be stale.",
+        # Verify no git push remains in _execute_dag_inner (push lives in merge_task now)
+        push_found = any(
+            isinstance(node, ast.Call) and bool(_git_subcommand(node) and
+                len(_git_subcommand(node)) >= 2 and _git_subcommand(node)[1] == "push")
+            for node in ast.walk(func)
+        )
+        self.assertFalse(
+            push_found,
+            "_execute_dag_inner must not contain a `git push` call. "
+            "The push is now performed inside merge_task (which clones from the "
+            "remote), so execute_dag only needs to fetch to sync the local ref.",
         )
 
     def test_fetch_uses_refspec_form_before_push_in_execute_dag_inner(self):

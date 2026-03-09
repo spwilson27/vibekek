@@ -32,6 +32,11 @@
   // Name of the integration/dev branch (default: "dev").
   // "dev_branch": "dev",
 
+  // Git remote used as the single source of truth for clones and pushes
+  // (default: "origin").  Change this if your pivot remote has a different
+  // name, e.g. "github" or "upstream".
+  // "pivot_remote": "origin",
+
   // Optional: GitHub repository (owner/repo) used by `./do ci` for remote checks.
   // "github_repo": "owner/repo"
 }
