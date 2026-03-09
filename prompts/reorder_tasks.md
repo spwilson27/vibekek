@@ -7,7 +7,7 @@ You are a Lead AI Architect and Project Manager. Your job is to validate that al
 # TASK
 1. You are validating AND fixing the logical ordering of all tasks generated across all phases of the project.
 2. The generated tasks are located in `docs/plan/tasks/` and its subdirectories (`phase_1`, `phase_2`, etc.).
-3. Review the provided content of all current tasks across all phases:
+3. Review the summaries of all current tasks across all phases (first 20 lines of each file are shown — use your file reading tools to inspect full content when needed):
 
 {tasks_content}
 

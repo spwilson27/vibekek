@@ -58,6 +58,91 @@ from .constants import TOOLS_DIR, DOCS, parse_requirements
 from .context import ProjectContext
 
 
+# ---------------------------------------------------------------------------
+# Helpers for gathering task file previews within a word budget
+# ---------------------------------------------------------------------------
+
+def _collect_task_files(tasks_dir: str, phase_dirs: List[str]) -> List[Dict[str, Any]]:
+    """Return a list of dicts with 'task_id' and 'lines' for every .md task file."""
+    tasks = []
+    for phase_id in sorted(phase_dirs):
+        phase_dir_path = os.path.join(tasks_dir, phase_id)
+        sub_epics = [d for d in os.listdir(phase_dir_path)
+                     if os.path.isdir(os.path.join(phase_dir_path, d))]
+        for sub_epic in sorted(sub_epics):
+            sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
+            if not os.path.isdir(sub_epic_dir):
+                continue
+            md_files = [f for f in os.listdir(sub_epic_dir) if f.endswith(".md")]
+            for md_file in sorted(md_files):
+                task_id = f"{phase_id}/{sub_epic}/{md_file}"
+                task_path = os.path.join(sub_epic_dir, md_file)
+                with open(task_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                tasks.append({"task_id": task_id, "lines": lines})
+    return tasks
+
+
+def _build_tasks_content(
+    tasks_dir: str,
+    phase_dirs: List[str],
+    max_words: int = 126_000,
+) -> str:
+    """Build a prompt-embeddable summary of all tasks, dynamically truncated
+    so the total word count stays under *max_words*.
+    """
+    tasks = _collect_task_files(tasks_dir, phase_dirs)
+    if not tasks:
+        return ""
+
+    # Per-task overhead (header + file path + trailing newlines) is small;
+    # estimate ~15 words per task for headers.
+    header_words = len(tasks) * 15
+    available_words = max_words - header_words
+
+    # Binary-search for the best lines-per-task that fits the budget.
+    # Start with "all lines" and shrink if needed.
+    max_lines_any = max(len(t["lines"]) for t in tasks)
+
+    def _word_count_at(limit: int) -> int:
+        total = 0
+        for t in tasks:
+            preview = t["lines"][:limit]
+            total += sum(len(line.split()) for line in preview)
+        return total
+
+    if _word_count_at(max_lines_any) <= available_words:
+        lines_per_task = max_lines_any
+    else:
+        lo, hi = 1, max_lines_any
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if _word_count_at(mid) <= available_words:
+                lo = mid
+            else:
+                hi = mid - 1
+        lines_per_task = lo
+
+    total_words = _word_count_at(lines_per_task) + header_words
+    print(f"   -> Task content: {len(tasks)} files, {lines_per_task} lines/task, ~{total_words} words")
+
+    # Build the content string
+    parts: List[str] = []
+    for t in tasks:
+        task_id = t["task_id"]
+        lines = t["lines"]
+        preview = lines[:lines_per_task]
+        part = f"### Task ID: {task_id}\n"
+        part += f"    File: docs/plan/tasks/{task_id}\n"
+        part += "\n".join([f"    {line.rstrip()}" for line in preview])
+        if len(lines) > lines_per_task:
+            part += (f"\n    ... ({len(lines) - lines_per_task} more lines "
+                     f"— use file tools to read full content)\n")
+        parts.append(part)
+
+    return "\n\n".join(parts) + "\n"
+
+
 class BasePhase:
     """Abstract base class for all planning phases.
 
@@ -1197,24 +1282,7 @@ class Phase6CCrossPhaseReview(BasePhase):
              ctx.save_state()
              return
 
-        # Gather ALL tasks
-        tasks_content = ""
-        for phase_id in sorted(phase_dirs):
-            phase_dir_path = os.path.join(tasks_dir, phase_id)
-            sub_epics = [d for d in os.listdir(phase_dir_path) if os.path.isdir(os.path.join(phase_dir_path, d))]
-            for sub_epic in sorted(sub_epics):
-                sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-                if not os.path.isdir(sub_epic_dir):
-                    continue
-                md_files = [f for f in os.listdir(sub_epic_dir) if f.endswith(".md")]
-                
-                for md_file in sorted(md_files):
-                     task_id = f"{phase_id}/{sub_epic}/{md_file}"
-                     tasks_content += f"### Task ID: {task_id}\n"
-                     with open(os.path.join(sub_epic_dir, md_file), "r", encoding="utf-8") as f:
-                          content = f.read()
-                          tasks_content += "\n".join([f"    {line}" for line in content.split("\n")]) + "\n\n"
-
+        tasks_content = _build_tasks_content(tasks_dir, phase_dirs)
         if not tasks_content:
             return
 
@@ -1308,24 +1376,7 @@ class Phase6DReorderTasks(BasePhase):
              ctx.save_state()
              return
 
-        # Gather ALL tasks
-        tasks_content = ""
-        for phase_id in sorted(phase_dirs):
-            phase_dir_path = os.path.join(tasks_dir, phase_id)
-            sub_epics = [d for d in os.listdir(phase_dir_path) if os.path.isdir(os.path.join(phase_dir_path, d))]
-            for sub_epic in sorted(sub_epics):
-                sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-                if not os.path.isdir(sub_epic_dir):
-                    continue
-                md_files = [f for f in os.listdir(sub_epic_dir) if f.endswith(".md")]
-                
-                for md_file in sorted(md_files):
-                     task_id = f"{phase_id}/{sub_epic}/{md_file}"
-                     tasks_content += f"### Task ID: {task_id}\n"
-                     with open(os.path.join(sub_epic_dir, md_file), "r", encoding="utf-8") as f:
-                          f_content = f.read()
-                          tasks_content += "\n".join([f"    {line}" for line in f_content.split("\n")]) + "\n\n"
-
+        tasks_content = _build_tasks_content(tasks_dir, phase_dirs)
         if not tasks_content:
             return
 

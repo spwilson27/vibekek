@@ -510,11 +510,10 @@ class ClaudeRunner(AIRunner):
         :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
         """
         cmd = self.get_cmd(image_paths)
-        cmd.append(full_prompt)
         if on_line is not None:
-            return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout)
+            return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=full_prompt)
         # Non-streaming fallback: parse JSONL after completion
-        result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
+        result = subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
         parsed_lines: List[str] = []
         for line in result.stdout.splitlines():
             parsed = parse_stream_json_line(line)

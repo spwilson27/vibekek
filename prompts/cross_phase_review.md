@@ -7,7 +7,7 @@ You are a Lead AI Architect and Project Manager. Your job is to review all the g
 # TASK
 1. You are reviewing all tasks generated across all phases of the project.
 2. The generated tasks for all phases are located in `docs/plan/tasks/` and its subdirectories.
-3. Review the provided content of all current tasks across all phases:
+3. Review the summaries of all current tasks across all phases (first 20 lines of each file are shown — use your file reading tools to inspect full content when needed for comparison):
 
 {tasks_content}
 

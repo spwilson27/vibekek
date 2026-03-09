@@ -468,7 +468,7 @@ class TestClaudeRunnerRun:
         mock_json.assert_called_once()
         mock_plain.assert_not_called()
 
-    def test_prompt_is_positional_arg(self):
+    def test_prompt_passed_via_stdin(self):
         r = ClaudeRunner()
         expected = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
@@ -476,7 +476,10 @@ class TestClaudeRunnerRun:
             r.run("/tmp", "my prompt", on_line=lambda l: None)
 
         cmd_arg = mock_json.call_args[0][0]
-        assert "my prompt" in cmd_arg
+        # Prompt should NOT be in the command args (passed via stdin instead)
+        assert "my prompt" not in cmd_arg
+        # Prompt should be passed as the 'prompt' kwarg
+        assert mock_json.call_args[1].get("prompt") == "my prompt"
 
     def test_no_on_line_parses_json(self):
         """Non-streaming mode still parses JSONL output."""
