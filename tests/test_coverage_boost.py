@@ -2641,7 +2641,8 @@ class TestPhase6CCoverage:
                  ["t.md"]
              )), \
              patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or ("sub" in p and ".md" not in p)), \
-             patch("builtins.open", mock_open(read_data="task content")):
+             patch("builtins.open", mock_open(read_data="task content")), \
+             patch("workflow_lib.config.load_config", return_value={}):
             Phase6CCrossPhaseReview(pass_num=1).execute(ctx)
         assert ctx.state.get("cross_phase_reviewed_pass_1") is True
 
@@ -2689,7 +2690,8 @@ class TestPhase6DCoverage:
                  ["t.md"]
              )), \
              patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or ("sub" in p and ".md" not in p)), \
-             patch("builtins.open", mock_open(read_data="task content")):
+             patch("builtins.open", mock_open(read_data="task content")), \
+             patch("workflow_lib.config.load_config", return_value={}):
             Phase6DReorderTasks(pass_num=1).execute(ctx)
         assert ctx.state.get("tasks_reordered_pass_1") is True
 
@@ -2717,7 +2719,8 @@ class TestPhase6DCoverage:
                  ["t.md"]
              )), \
              patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or ("sub" in p and ".md" not in p)), \
-             patch("builtins.open", mock_open(read_data="task content")):
+             patch("builtins.open", mock_open(read_data="task content")), \
+             patch("workflow_lib.config.load_config", return_value={}):
             Phase6DReorderTasks(pass_num=1).execute(ctx)
         kw = ctx.run_gemini.call_args.kwargs if ctx.run_gemini.call_args.kwargs else ctx.run_gemini.call_args[1]
         assert kw.get("sandbox") is False, "sandbox should be disabled so agent can move files"
@@ -2825,6 +2828,16 @@ class TestConfigCoverage:
             from workflow_lib.config import load_config
             result = load_config()
         assert result.get("serena") is True
+
+    def test_load_config_raises_on_invalid_json(self):
+        """load_config must raise JSONDecodeError on malformed config, not silently return {}."""
+        import json
+        bad_jsonc = '{\n  "soft_timeout": 1200\n  "context_limit": 50000\n}'  # missing comma
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data=bad_jsonc)):
+            from workflow_lib.config import load_config
+            with pytest.raises(json.JSONDecodeError):
+                load_config()
 
 
     def test_get_dev_branch_default(self):

@@ -1311,7 +1311,7 @@ def _make_runner(backend: str, model: Optional[str] = None) -> "AIRunner":  # ty
     return _make_runner_from_runners(backend, model=model, soft_timeout=soft_timeout)
 
 
-def _rebuild_phase_dag(phase_dir: str, ctx: ProjectContext) -> None:
+def _rebuild_phase_dag(phase_dir: str, ctx: Optional[ProjectContext]) -> None:
     """Rebuild the DAG for a phase: programmatic first, AI fallback.
 
     Removes any existing ``dag_reviewed.json`` (the new DAG is authoritative
@@ -1319,14 +1319,16 @@ def _rebuild_phase_dag(phase_dir: str, ctx: ProjectContext) -> None:
     :meth:`~workflow_lib.phases.Phase7ADAGGeneration._build_programmatic_dag`.
     If all tasks have ``depends_on`` metadata, writes the result to
     ``dag.json``.  Otherwise falls back to an AI-generated DAG using the
-    ``dag_tasks.md`` prompt.
+    ``dag_tasks.md`` prompt.  When *ctx* is ``None``, the AI fallback is
+    skipped.
 
     :param phase_dir: Absolute path to the phase task directory, e.g.
         ``docs/plan/tasks/phase_1/``.
     :type phase_dir: str
     :param ctx: Shared project context providing AI runner access and the
-        project description.
-    :type ctx: ProjectContext
+        project description.  May be ``None`` when called without a context,
+        in which case the AI fallback is skipped.
+    :type ctx: Optional[ProjectContext]
     """
     dag_file = os.path.join(phase_dir, "dag.json")
     dag_reviewed = os.path.join(phase_dir, "dag_reviewed.json")
@@ -1344,6 +1346,9 @@ def _rebuild_phase_dag(phase_dir: str, ctx: ProjectContext) -> None:
         return
 
     # Fallback to AI
+    if ctx is None:
+        print(f"Some tasks lack depends_on metadata but no ctx provided; skipping AI DAG generation.")
+        return
     phase_id = os.path.basename(phase_dir)
     print(f"Some tasks lack depends_on metadata. Using AI to generate DAG for {phase_id}...")
 

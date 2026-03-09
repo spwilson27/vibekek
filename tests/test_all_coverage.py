@@ -388,9 +388,10 @@ def test_workflow_run_methods_failure(
         pass
 
 
+@patch("workflow_lib.config.load_config", return_value={})
 @patch("builtins.open")
 @patch("subprocess.run")
-def test_main_all_cmds(mock_subprocess, mock_open_file, super_mock):
+def test_main_all_cmds(mock_subprocess, mock_open_file, mock_load_config, super_mock):
     import sys
 
     # Test setup command

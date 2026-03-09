@@ -36,25 +36,25 @@ def load_config() -> Dict[str, Any]:
     """Read and parse ``.workflow.jsonc``, returning its contents as a dict.
 
     Line comments (``// …``) are stripped before JSON parsing so that the
-    JSONC superset is handled without an external dependency.  Any I/O or
-    parse error causes an empty dict to be returned rather than crashing.
+    JSONC superset is handled without an external dependency.  Returns ``{}``
+    when the file does not exist.  Raises :exc:`json.JSONDecodeError` on
+    malformed JSON so that configuration errors are never silently ignored.
 
-    :returns: Parsed configuration mapping, or ``{}`` on any error or when
-        the file does not exist.
+    :returns: Parsed configuration mapping, or ``{}`` when the file does not
+        exist.
     :rtype: dict
+    :raises json.JSONDecodeError: If the file exists but contains invalid JSON
+        after comment/trailing-comma stripping.
     """
     cfg = _config_file()
     if not os.path.exists(cfg):
         return {}
-    try:
-        with open(cfg, "r", encoding="utf-8") as f:
-            raw = f.read()
-        # Strip // line comments and trailing commas before parsing
-        stripped = re.sub(r"//[^\n]*", "", raw)
-        stripped = re.sub(r",\s*([}\]])", r"\1", stripped)
-        return json.loads(stripped)
-    except Exception:
-        return {}
+    with open(cfg, "r", encoding="utf-8") as f:
+        raw = f.read()
+    # Strip // line comments and trailing commas before parsing
+    stripped = re.sub(r"//[^\n]*", "", raw)
+    stripped = re.sub(r",\s*([}\]])", r"\1", stripped)
+    return json.loads(stripped)
 
 
 def get_serena_enabled() -> bool:
