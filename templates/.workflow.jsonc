@@ -29,6 +29,9 @@
   // smaller context windows.  Default: 126000 (~128k token estimate).
   // "context_limit": 126000,
 
+  // Name of the integration/dev branch (default: "dev").
+  // "dev_branch": "dev",
+
   // Optional: GitHub repository (owner/repo) used by `./do ci` for remote checks.
   // "github_repo": "owner/repo"
 }

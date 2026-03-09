@@ -2863,6 +2863,39 @@ class TestConfigCoverage:
         assert mock_run.call_args_list[1][0][0] == ["git", "branch", "integration", "main"]
 
 
+class TestTemplateContainsAllConfigKeys:
+    """Ensure the .workflow.jsonc template mentions every config key used by the code."""
+
+    def test_all_config_keys_in_template(self):
+        """Every config key consumed by config.py must appear in the template."""
+        import os
+        template_path = os.path.join(
+            os.path.dirname(__file__), "..", "templates", ".workflow.jsonc"
+        )
+        with open(template_path, "r", encoding="utf-8") as f:
+            template_text = f.read()
+
+        # Keys consumed by get_config_defaults()
+        from workflow_lib.config import get_config_defaults
+        import inspect
+        source = inspect.getsource(get_config_defaults)
+        # Extract the tuple of keys from the for-loop in get_config_defaults
+        import re
+        match = re.search(r'for key in \(([^)]+)\)', source)
+        assert match, "Could not find key tuple in get_config_defaults source"
+        defaults_keys = [k.strip().strip('"').strip("'") for k in match.group(1).split(",")]
+
+        # Keys with dedicated accessors
+        dedicated_keys = ["serena", "dev_branch"]
+
+        all_keys = set(defaults_keys + dedicated_keys)
+        missing = [k for k in sorted(all_keys) if f'"{k}"' not in template_text]
+        assert not missing, (
+            f"Config keys missing from .workflow.jsonc template: {missing}. "
+            f"Add commented-out entries for these keys to .tools/templates/.workflow.jsonc"
+        )
+
+
 class TestGetProjectDescriptionAndImages:
     """Tests for get_project_context and get_project_images."""
 
