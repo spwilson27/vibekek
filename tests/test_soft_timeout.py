@@ -391,6 +391,47 @@ class TestRunAiCommand:
         run_call = mock_runner.run.call_args
         assert run_call.kwargs.get("on_line") is not None
 
+    def test_stderr_logged_on_failure(self):
+        """When the agent process fails, stderr lines are forwarded via on_line."""
+        from workflow_lib.executor import run_ai_command
+        result = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="",
+            stderr="TerminalQuotaError: quota exhausted\nDetails: reset in 17h",
+        )
+        collected: list = []
+
+        with patch('workflow_lib.executor.make_runner') as mock_make, \
+             patch('workflow_lib.config.get_config_defaults', return_value={}):
+            mock_runner = MagicMock()
+            mock_runner.run.return_value = result
+            mock_make.return_value = mock_runner
+
+            rc = run_ai_command("prompt", "/tmp", on_line=collected.append)
+
+        assert rc == 1
+        assert any("TerminalQuotaError" in line for line in collected)
+        assert any("Details:" in line for line in collected)
+
+    def test_stderr_not_logged_on_success(self):
+        """When the agent succeeds, stderr is not forwarded even if present."""
+        from workflow_lib.executor import run_ai_command
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="ok",
+            stderr="some warning",
+        )
+        collected: list = []
+
+        with patch('workflow_lib.executor.make_runner') as mock_make, \
+             patch('workflow_lib.config.get_config_defaults', return_value={}):
+            mock_runner = MagicMock()
+            mock_runner.run.return_value = result
+            mock_make.return_value = mock_runner
+
+            rc = run_ai_command("prompt", "/tmp", on_line=collected.append)
+
+        assert rc == 0
+        assert not collected
+
 
 # ---------------------------------------------------------------------------
 # Module-level parse_stream_json_line

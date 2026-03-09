@@ -22,6 +22,7 @@ Signal handling:
 * Second ``SIGINT`` calls ``os._exit(1)`` for immediate termination.
 """
 
+import atexit
 import os
 import shutil
 import subprocess
@@ -47,6 +48,16 @@ from .dashboard import make_dashboard
 
 shutdown_requested = False
 _active_dashboard: Any = None
+
+
+def _restore_terminal() -> None:
+    """Best-effort restore terminal state (cursor visibility, alternate screen)."""
+    try:
+        sys.stdout.write("\x1b[?25h")  # show cursor
+        sys.stdout.write("\x1b[?1049l")  # leave alternate screen
+        sys.stdout.flush()
+    except Exception:
+        pass
 
 
 def _compact_task_id(phase_id: str, task_name: str) -> str:
@@ -97,6 +108,7 @@ def signal_handler(sig: int, frame: Any) -> None:  # type: ignore[type-arg]
             print("\n[!] Ctrl-C detected. Initiating graceful shutdown...")
             print("    Active agents will finish. No new agents will be spawned.")
     else:
+        _restore_terminal()
         print("\n[!] Ctrl-C detected again. Forcing immediate exit...")
         os._exit(1)
 def get_gitlab_remote_url(root_dir: str) -> str:
@@ -228,6 +240,9 @@ def run_ai_command(
 
     try:
         result = runner.run(cwd, prompt, image_paths=image_paths, on_line=output_line)
+        if result.returncode != 0 and result.stderr:
+            for line in result.stderr.strip().splitlines():
+                output_line(f"[stderr] {line}")
         return result.returncode
     except subprocess.TimeoutExpired:
         return 1
@@ -995,6 +1010,7 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
     cache_lock = threading.Lock()
 
     global _active_dashboard
+    atexit.register(_restore_terminal)
     with make_dashboard(log_file=log_file) as dashboard:
         _active_dashboard = dashboard
         try:
@@ -1078,6 +1094,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                     else:
                         dashboard.log("[!] FATAL: DAG deadlock or unrecoverable error. No tasks running and none ready.")
                         dashboard.log(f"    Completed: {len(state['completed_tasks'])} / {non_blocked_total} (non-blocked)")
+                        _restore_terminal()
                         os._exit(1)
 
             # Wait for at least one future to complete
