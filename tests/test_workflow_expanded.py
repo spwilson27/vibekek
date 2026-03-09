@@ -462,6 +462,78 @@ def test_execute_dag():
         execute_dag("/root", dag, state, 1, "cmd", "gemini")
         assert "phase_1/01_a" in state["completed_tasks"]
 
+
+def test_execute_dag_process_task_failure():
+    """When process_task returns False, execute_dag should exit without RuntimeError.
+
+    Uses 3 independent tasks with jobs=2 so that after the first task fails and
+    the executor drains, a third task is still ready to be submitted — which
+    previously triggered 'cannot schedule new futures after shutdown'.
+    """
+    import workflow_lib.executor as executor_mod
+    executor_mod.shutdown_requested = False
+    dag = {"phase_1/01_a": [], "phase_1/01_b": [], "phase_1/01_c": []}
+    state = {"completed_tasks": [], "merged_tasks": []}
+
+    with patch('workflow_lib.executor.subprocess.run') as mock_run, \
+         patch('workflow_lib.executor.process_task', return_value=False), \
+         patch('workflow_lib.executor.merge_task', return_value=True), \
+         patch('workflow_lib.executor.rebuild_serena_cache'), \
+         patch('workflow_lib.executor.save_workflow_state'), \
+         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
+         patch('os.path.isdir', return_value=True):
+
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(SystemExit) as exc_info:
+            execute_dag("/root", dag, state, 2, "cmd", "gemini")
+        assert exc_info.value.code == 1
+
+
+def test_execute_dag_merge_task_failure():
+    """When merge_task returns False, execute_dag should exit without RuntimeError."""
+    import workflow_lib.executor as executor_mod
+    executor_mod.shutdown_requested = False
+    dag = {"phase_1/01_a": [], "phase_1/01_b": [], "phase_1/01_c": []}
+    state = {"completed_tasks": [], "merged_tasks": []}
+
+    with patch('workflow_lib.executor.subprocess.run') as mock_run, \
+         patch('workflow_lib.executor.process_task', return_value=True), \
+         patch('workflow_lib.executor.merge_task', return_value=False), \
+         patch('workflow_lib.executor.rebuild_serena_cache'), \
+         patch('workflow_lib.executor.save_workflow_state'), \
+         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
+         patch('os.path.isdir', return_value=True):
+
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(SystemExit) as exc_info:
+            execute_dag("/root", dag, state, 2, "cmd", "gemini")
+        assert exc_info.value.code == 1
+
+
+def test_execute_dag_process_task_exception():
+    """When process_task raises an exception, execute_dag should exit without RuntimeError."""
+    import workflow_lib.executor as executor_mod
+    executor_mod.shutdown_requested = False
+    dag = {"phase_1/01_a": [], "phase_1/01_b": [], "phase_1/01_c": []}
+    state = {"completed_tasks": [], "merged_tasks": []}
+
+    with patch('workflow_lib.executor.subprocess.run') as mock_run, \
+         patch('workflow_lib.executor.process_task', side_effect=RuntimeError("agent crashed")), \
+         patch('workflow_lib.executor.merge_task', return_value=True), \
+         patch('workflow_lib.executor.rebuild_serena_cache'), \
+         patch('workflow_lib.executor.save_workflow_state'), \
+         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
+         patch('os.path.isdir', return_value=True):
+
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(SystemExit) as exc_info:
+            execute_dag("/root", dag, state, 2, "cmd", "gemini")
+        assert exc_info.value.code == 1
+
+
 # Replan commands
 def test_cmd_status():
     args = MagicMock()

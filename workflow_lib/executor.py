@@ -1043,7 +1043,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
         while True:
             # Check for newly ready tasks
             ready_tasks = []
-            if not shutdown_requested:
+            if not shutdown_requested and not failed_tasks:
                 with state_lock:
                     ready_tasks = get_ready_tasks(master_dag, state["completed_tasks"], list(active_tasks))
 
@@ -1116,16 +1116,13 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                             dashboard.set_agent(task_id, "Merge", "failed", f"Failed to merge into {dev_branch}")
                             with state_lock:
                                 failed_tasks.add(f"Task {task_id} failed merging into {dev_branch}.")
-                            executor.shutdown(wait=True, cancel_futures=True)
                     else:
                         with state_lock:
                             failed_tasks.add(f"Task {task_id} failed implementation.")
-                        executor.shutdown(wait=True, cancel_futures=True)
                 except Exception as exc:
                     traceback.print_exc()
                     with state_lock:
                         failed_tasks.add(f"Task {task_id} generated an exception.")
-                    executor.shutdown(wait=True, cancel_futures=True)
 
     if failed_tasks:
         dashboard.log("\n" + "="*80)
