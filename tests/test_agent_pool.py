@@ -386,7 +386,81 @@ class TestRunnerWrapCmd:
         cmd = ["gemini", "-y"]
         wrapped = r._wrap_cmd(cmd)
         assert wrapped[:4] == ["sudo", "-u", "otheruser", "--set-home"]
+        assert "--" in wrapped
+        assert "env" in wrapped
         assert "gemini" in wrapped
+
+    def test_wrap_cmd_env_path_allows_finding_binary_outside_sudo_secure_path(self):
+        """Integration test: verify env PATH=... in sudo prefix makes binaries findable.
+
+        sudo strips PATH to its secure_path, so binaries in user-local directories
+        (e.g. ~/.nvm/bin, ~/.local/bin) are not found without this workaround.
+        This test verifies that:
+          (a) running the binary directly via sudo fails with 'command not found'
+          (b) running via 'sudo -- env PATH=... <binary>' succeeds
+        Skipped if no alternate OS user is available to sudo to, or if no
+        user-local binary outside sudo's secure path can be found.
+        """
+        import subprocess
+        import shutil
+        import pwd
+
+        current_user = os.getenv("USER", "")
+
+        # Find an alternate user we can sudo to
+        alt_user = None
+        for entry in pwd.getpwall():
+            if entry.pw_uid >= 1000 and entry.pw_uid < 65534 and entry.pw_name != current_user:
+                result = subprocess.run(
+                    ["sudo", "-n", "-u", entry.pw_name, "--", "true"],
+                    capture_output=True,
+                )
+                if result.returncode == 0:
+                    alt_user = entry.pw_name
+                    break
+        if alt_user is None:
+            pytest.skip("No alternate user available for passwordless sudo")
+
+        # Find a binary that is in our PATH but NOT in sudo's secure_path
+        sudo_secure_dirs = {"/usr/local/sbin", "/usr/local/bin", "/usr/sbin",
+                            "/usr/bin", "/sbin", "/bin", "/snap/bin"}
+        target_binary = None
+        target_path = None
+        for directory in os.environ.get("PATH", "").split(":"):
+            if directory in sudo_secure_dirs:
+                continue
+            for candidate in ("gemini", "node", "python3"):
+                full = shutil.which(candidate, path=directory)
+                if full:
+                    target_binary = candidate
+                    target_path = full
+                    break
+            if target_binary:
+                break
+        if target_binary is None:
+            pytest.skip("No user-local binary outside sudo's secure_path found")
+
+        # (a) Direct sudo (no env trick) should fail to find the binary
+        result_direct = subprocess.run(
+            ["sudo", "-u", alt_user, "--set-home", "--", target_binary, "--version"],
+            capture_output=True, text=True,
+        )
+        assert result_direct.returncode != 0, (
+            f"Expected '{target_binary}' to be unfindable via plain sudo, "
+            f"but it exited {result_direct.returncode}. "
+            f"stderr: {result_direct.stderr!r}"
+        )
+
+        # (b) sudo with env PATH=... should find and run the binary successfully
+        from workflow_lib.runners import GeminiRunner
+        r = GeminiRunner(user=alt_user)
+        wrapped = r._wrap_cmd([target_binary, "--version"])
+        result_wrapped = subprocess.run(wrapped, capture_output=True, text=True)
+        assert result_wrapped.returncode == 0, (
+            f"Expected wrapped sudo+env to run '{target_binary}' successfully, "
+            f"but got exit {result_wrapped.returncode}. "
+            f"stdout: {result_wrapped.stdout!r} stderr: {result_wrapped.stderr!r}"
+        )
 
     def test_make_runner_passes_user(self):
         from workflow_lib.runners import make_runner

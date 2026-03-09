@@ -133,7 +133,7 @@ class AIRunner:
         return os.environ.copy()
 
     def _wrap_cmd(self, cmd: List[str]) -> List[str]:
-        """Optionally prefix *cmd* with ``sudo -u <user> --set-home --``.
+        """Optionally prefix *cmd* with ``sudo -u <user> --set-home -- env PATH=... <cmd>``.
 
         When :attr:`user` is set and differs from the current OS user, the
         command is run as that user so that their home-directory config files
@@ -143,7 +143,7 @@ class AIRunner:
         :returns: Command list, possibly prefixed with ``sudo``.
         """
         if self.user and self.user != os.getenv("USER", ""):
-            return ["sudo", "-u", self.user, "--set-home", "--"] + cmd
+            return ["sudo", "-u", self.user, "--set-home", "--", "env", f"PATH={os.environ.get('PATH', '')}"] + cmd
         return cmd
 
     def _kill_process(self, proc: subprocess.Popen) -> None:  # type: ignore[type-arg]
