@@ -38,5 +38,63 @@
   // "pivot_remote": "origin",
 
   // Optional: GitHub repository (owner/repo) used by `./do ci` for remote checks.
-  // "github_repo": "owner/repo"
+  // "github_repo": "owner/repo",
+
+  // Multi-agent pool for `workflow run`.  When defined, the scheduler
+  // distributes tasks across these agents instead of using a single --backend.
+  // Passing --backend on the CLI overrides this section entirely.
+  //
+  // Each agent entry supports the following fields:
+  //   name        (required) Human-readable label shown in logs and the dashboard.
+  //   backend     (required) AI CLI to invoke: "gemini", "claude", "opencode",
+  //                          "copilot", "cline", "aider", "codex", or "qwen".
+  //   user        (required) OS user to run the CLI as.  The command is prefixed
+  //                          with `sudo -u <user> --set-home --` so that the
+  //                          target user's config files (API keys, CLI settings)
+  //                          are used.  Set to the current user to skip sudo.
+  //   parallel    (optional) Max concurrent jobs from this agent.  Default: 1.
+  //   priority    (optional) Scheduling preference — lower value = preferred first.
+  //                          Agents with the same priority are tried round-robin
+  //                          by available capacity.  Default: 1.
+  //   quota-time  (optional) Seconds to suppress this agent after a quota-exceeded
+  //                          message is detected in its output.  Default: 60.
+  //   model       (optional) Model name forwarded to the CLI via --model.
+  //                          Leave unset to use the CLI's own default.
+  //   steps       (optional) List of workflow steps this agent may handle.
+  //                          Allowed values: "develop", "review", "merge", "all".
+  //                          "all" (the default) matches every step.  Use a
+  //                          specific list to pin an agent to certain phases,
+  //                          e.g. a fast model for review and a powerful one
+  //                          for development.
+  //
+  // "agents": [
+  //   {
+  //     "name":       "claude-dev",
+  //     "backend":    "claude",
+  //     "user":       "mrwilson",
+  //     "parallel":   3,
+  //     "priority":   1,
+  //     "quota-time": 60,
+  //     "steps":      ["develop", "merge"]
+  //   },
+  //   {
+  //     "name":       "gemini-flash-review",
+  //     "backend":    "gemini",
+  //     "model":      "gemini-2.5-flash",
+  //     "user":       "subnat",
+  //     "parallel":   5,
+  //     "priority":   1,
+  //     "quota-time": 60,
+  //     "steps":      ["review"]
+  //   },
+  //   {
+  //     "name":       "gemini-fallback",
+  //     "backend":    "gemini",
+  //     "user":       "mrwilson",
+  //     "parallel":   2,
+  //     "priority":   2,
+  //     "quota-time": 120,
+  //     "steps":      ["all"]
+  //   }
+  // ]
 }

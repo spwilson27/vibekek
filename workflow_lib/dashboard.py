@@ -78,9 +78,10 @@ class Dashboard:
         self._log_file = log_file
         self._lock = threading.Lock()
         self._ring: Deque[str] = deque(maxlen=log_lines)
-        # task_id -> (command, status, lines_deque, start_time)
+        # task_id -> (stage, status, lines_deque, start_time, agent_name)
         # lines_deque holds (timestamp_str, text) pairs for the agent card
-        self._agents: Dict[str, Tuple[str, str, Deque[Tuple[str, str]], datetime]] = {}
+        # agent_name is the pool agent label (e.g. "claude-dev"); "" when no pool is active.
+        self._agents: Dict[str, Tuple[str, str, Deque[Tuple[str, str]], datetime, str]] = {}
         self._live: Optional[Live] = None
         self._console = Console(highlight=False)
         self._spinner_idx = 0
@@ -151,6 +152,7 @@ class Dashboard:
         stage: str,
         status: str,
         last_line: str = "",
+        agent_name: str = "",
     ) -> None:
         """Upsert an agent row in the status table.
 
@@ -159,18 +161,24 @@ class Dashboard:
         :param status: One of ``queued``, ``cloning``, ``running``, ``merging``,
             ``done``, ``failed``.
         :param last_line: Optional initial output line to show in the card.
+        :param agent_name: Pool agent label (e.g. ``"claude-dev"``).  When
+            non-empty, displayed in the header row alongside the stage.  If
+            empty, the existing agent_name for this task is preserved so
+            callers that only update status/line do not need to re-supply it.
         """
         with self._lock:
-            # Preserve existing log lines and start time when updating
+            # Preserve existing log lines, start time, and agent_name when updating
             if task_id in self._agents:
-                _, _, lines, started = self._agents[task_id]
+                _, _, lines, started, existing_name = self._agents[task_id]
+                effective_name = agent_name if agent_name else existing_name
             else:
                 lines = deque()
                 started = datetime.now(tz=_PST)
+                effective_name = agent_name
             short = last_line.strip() if last_line else ""
             if short:
                 lines.append((_now_short(), short))
-            self._agents[task_id] = (stage, status, lines, started)
+            self._agents[task_id] = (stage, status, lines, started, effective_name)
         self._refresh()
 
     def update_last_line(self, task_id: str, last_line: str) -> None:
@@ -184,7 +192,7 @@ class Dashboard:
             return
         with self._lock:
             if task_id in self._agents:
-                _cmd, _st, lines, _started = self._agents[task_id]
+                _cmd, _st, lines, _started, _name = self._agents[task_id]
                 lines.append((_now_short(), short))
         self._refresh()
 
@@ -270,7 +278,7 @@ class Dashboard:
         # --- Gather visible agents ---
         with self._lock:
             visible = {
-                k: (v[0], v[1], list(v[2]), v[3])
+                k: (v[0], v[1], list(v[2]), v[3], v[4])
                 for k, v in self._agents.items()
                 if v[1] in ("running", "failed", "cloning", "merging", "queued", "waiting")
             }
@@ -288,8 +296,8 @@ class Dashboard:
             # accounting for line wrapping in agent output.
             agent_data = []
             for task_id in sorted(visible):
-                stage, status, output_lines, started = visible[task_id]
-                header_left_len = len(task_id) + 2 + len(stage)
+                stage, status, output_lines, started, agent_name = visible[task_id]
+                header_left_len = len(task_id) + 2 + len(stage) + (2 + len(agent_name) if agent_name else 0)
                 # Right column: min_width=28 + padding=(0,1) gives 2 spaces per
                 # column × 2 columns = 4 total; left column gets the remainder.
                 header_left_width = max(content_width - 32, 1)
@@ -301,7 +309,7 @@ class Dashboard:
                 else:
                     rows_needed += 1  # "waiting for output..."
                 elapsed = now - started
-                agent_data.append((task_id, stage, status, output_lines, rows_needed, started, elapsed))
+                agent_data.append((task_id, stage, status, output_lines, rows_needed, started, elapsed, agent_name))
 
             # Two-pass allocation: give each agent min(need, share), redistribute surplus
             allocs = [min(a[4], per_agent) for a in agent_data]
@@ -323,7 +331,7 @@ class Dashboard:
             # Build agent section
             parts: list = []
             parts.append(Rule("[bold]Active Agents[/bold]", style="green"))
-            for idx, (task_id, stage, status, output_lines, _need, started, elapsed) in enumerate(agent_data):
+            for idx, (task_id, stage, status, output_lines, _need, started, elapsed, agent_name) in enumerate(agent_data):
                 style, symbol = _STATUS_STYLE.get(status, ("white", "?"))
                 if status in ("running", "cloning", "merging"):
                     symbol = spinner
@@ -337,11 +345,15 @@ class Dashboard:
                     elapsed_str = f"{total_secs}s"
                 start_str = started.strftime("%H:%M:%S")
 
+                left_text = f"[bold]{task_id}[/bold]  [dim]{stage}[/dim]"
+                if agent_name:
+                    left_text += f"  [cyan dim]{agent_name}[/cyan dim]"
+
                 header = Table.grid(expand=True, padding=(0, 1))
                 header.add_column(no_wrap=False, overflow="fold")
                 header.add_column(justify="right", no_wrap=True, min_width=28)
                 header.add_row(
-                    f"[bold]{task_id}[/bold]  [dim]{stage}[/dim]",
+                    left_text,
                     f"[dim]{start_str}[/dim] [dim]({elapsed_str})[/dim]  [{style}]{symbol} {status}[/{style}]",
                 )
                 parts.append(header)
@@ -519,7 +531,7 @@ class NullDashboard:
                     except Exception:
                         pass
 
-    def set_agent(self, task_id: str, stage: str, status: str, last_line: str = "") -> None:
+    def set_agent(self, task_id: str, stage: str, status: str, last_line: str = "", agent_name: str = "") -> None:
         pass
 
     def update_last_line(self, task_id: str, last_line: str) -> None:

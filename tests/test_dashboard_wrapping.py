@@ -42,8 +42,8 @@ def _add_agent(d: Dashboard, task_id: str = LONG_TASK_ID, stage: str = "Implemen
     now = datetime.now(tz=_PST)
     d.set_agent(task_id, stage, "running", "doing stuff")
     with d._lock:
-        s, st, lines, _ = d._agents[task_id]
-        d._agents[task_id] = (s, st, lines, now)
+        s, st, lines, _, an = d._agents[task_id]
+        d._agents[task_id] = (s, st, lines, now, an)
 
 
 def _render_to_str(d: Dashboard) -> str:
@@ -142,8 +142,8 @@ class TestAgentOutputLineWrapping:
         d.set_agent("p1/01/task.md", "Impl", "running", self.LONG_OUTPUT)
         now = datetime.now(tz=_PST)
         with d._lock:
-            s, st, lines, _ = d._agents["p1/01/task.md"]
-            d._agents["p1/01/task.md"] = (s, st, lines, now)
+            s, st, lines, _, an = d._agents["p1/01/task.md"]
+            d._agents["p1/01/task.md"] = (s, st, lines, now, an)
         texts = self._get_agent_text_objects(d)
         # Find the Text containing our agent output
         agent_texts = [t for t in texts if "read do.py" in t.plain]
@@ -161,8 +161,8 @@ class TestAgentOutputLineWrapping:
         d.set_agent("p1/01/task.md", "Impl", "running", self.LONG_OUTPUT)
         now = datetime.now(tz=_PST)
         with d._lock:
-            s, st, lines, _ = d._agents["p1/01/task.md"]
-            d._agents["p1/01/task.md"] = (s, st, lines, now)
+            s, st, lines, _, an = d._agents["p1/01/task.md"]
+            d._agents["p1/01/task.md"] = (s, st, lines, now, an)
         texts = self._get_agent_text_objects(d)
         agent_texts = [t for t in texts if "read do.py" in t.plain]
         assert agent_texts
@@ -178,8 +178,8 @@ class TestAgentOutputLineWrapping:
         d.set_agent("p1/01/task.md", "Impl", "running", self.LONG_OUTPUT)
         now = datetime.now(tz=_PST)
         with d._lock:
-            s, st, lines, _ = d._agents["p1/01/task.md"]
-            d._agents["p1/01/task.md"] = (s, st, lines, now)
+            s, st, lines, _, an = d._agents["p1/01/task.md"]
+            d._agents["p1/01/task.md"] = (s, st, lines, now, an)
         texts = self._get_agent_text_objects(d)
         agent_texts = [t for t in texts if "read do.py" in t.plain]
         assert agent_texts
@@ -196,8 +196,8 @@ class TestAgentOutputLineWrapping:
         d.update_last_line("p1/01/task.md", "Another very long line that should also be wrapped " * 3)
         now = datetime.now(tz=_PST)
         with d._lock:
-            s, st, lines, _ = d._agents["p1/01/task.md"]
-            d._agents["p1/01/task.md"] = (s, st, lines, now)
+            s, st, lines, _, an = d._agents["p1/01/task.md"]
+            d._agents["p1/01/task.md"] = (s, st, lines, now, an)
         output = _render_to_str(d)
         for i, line in enumerate(output.splitlines()):
             clean = _strip_ansi(line)
@@ -333,4 +333,185 @@ class TestShutdownBannerPlacement:
         assert "SHUTTING DOWN" in first_two, (
             "SHUTTING DOWN not found in first 2 rendered lines with many agents. "
             f"First 5 lines:\n" + "\n".join(clean.splitlines()[:5])
+        )
+
+
+# ---------------------------------------------------------------------------
+# Agent name column in the active-agents panel
+# ---------------------------------------------------------------------------
+
+class TestAgentNameColumn:
+    """The agent_name field is stored, preserved, and rendered correctly."""
+
+    # ------------------------------------------------------------------
+    # Storage and preservation
+    # ------------------------------------------------------------------
+
+    def test_agent_name_stored_on_set(self):
+        d = _make_dashboard()
+        d.set_agent("t1", "Impl", "running", agent_name="claude-dev")
+        assert d._agents["t1"][4] == "claude-dev"
+
+    def test_agent_name_defaults_to_empty_string(self):
+        d = _make_dashboard()
+        d.set_agent("t1", "Impl", "running")
+        assert d._agents["t1"][4] == ""
+
+    def test_empty_agent_name_preserves_existing(self):
+        """Calling set_agent with agent_name="" must not overwrite an existing name."""
+        d = _make_dashboard()
+        d.set_agent("t1", "Impl", "running", agent_name="gemini-flash")
+        d.set_agent("t1", "Impl", "running", "some output line")  # no agent_name
+        assert d._agents["t1"][4] == "gemini-flash"
+
+    def test_non_empty_agent_name_overwrites_existing(self):
+        """A new non-empty name replaces the previous one (agent rotated on quota)."""
+        d = _make_dashboard()
+        d.set_agent("t1", "Impl", "running", agent_name="agent-a")
+        d.set_agent("t1", "Impl", "running", agent_name="agent-b")
+        assert d._agents["t1"][4] == "agent-b"
+
+    def test_agent_name_preserved_across_status_updates(self):
+        d = _make_dashboard()
+        d.set_agent("t1", "Impl", "running", agent_name="my-agent")
+        d.set_agent("t1", "Verify", "waiting", "quota exceeded")
+        assert d._agents["t1"][4] == "my-agent"
+
+    # ------------------------------------------------------------------
+    # Render: agent name appears in output when set
+    # ------------------------------------------------------------------
+
+    def test_agent_name_appears_in_rendered_output(self):
+        d = _make_dashboard(width=120)
+        d.set_agent("phase_1/01_setup.md", "Impl", "running", agent_name="claude-dev")
+        output = _strip_ansi(_render_to_str(d))
+        assert "claude-dev" in output, (
+            f"Agent name 'claude-dev' not found in rendered output:\n{output}"
+        )
+
+    def test_agent_name_absent_when_not_set(self):
+        d = _make_dashboard(width=120)
+        d.set_agent("phase_1/01_setup.md", "Impl", "running")
+        # There's no agent name to check — just confirm render doesn't crash
+        # and the task ID is present
+        output = _strip_ansi(_render_to_str(d))
+        assert "phase_1/01_setup.md" in output
+
+    def test_multiple_agents_show_their_respective_names(self):
+        d = _make_dashboard(width=160, height=60)
+        d.set_agent("phase_1/task_a.md", "Impl", "running", agent_name="claude-dev")
+        d.set_agent("phase_1/task_b.md", "Review", "running", agent_name="gemini-flash")
+        output = _strip_ansi(_render_to_str(d))
+        assert "claude-dev" in output
+        assert "gemini-flash" in output
+
+    def test_agent_with_no_name_does_not_show_other_agents_name(self):
+        d = _make_dashboard(width=160, height=60)
+        d.set_agent("phase_1/named.md", "Impl", "running", agent_name="pool-agent")
+        d.set_agent("phase_1/unnamed.md", "Impl", "running")
+        output = _strip_ansi(_render_to_str(d))
+        # "pool-agent" must appear exactly once (only for the named task)
+        assert output.count("pool-agent") == 1
+
+    # ------------------------------------------------------------------
+    # NullDashboard accepts agent_name without error
+    # ------------------------------------------------------------------
+
+    def test_null_dashboard_accepts_agent_name(self):
+        import io as _io
+        from workflow_lib.dashboard import NullDashboard
+        nd = NullDashboard(log_file=None, stream=_io.StringIO())
+        nd.set_agent("t1", "Impl", "running", agent_name="test-agent")  # must not raise
+
+    # ------------------------------------------------------------------
+    # Executor: run_agent calls set_agent with agent_name from pool
+    # ------------------------------------------------------------------
+
+    def test_run_agent_sets_agent_name_from_pool(self):
+        """When a pool agent is acquired, the dashboard row shows its name."""
+        import subprocess as sp
+        from unittest.mock import patch, MagicMock, mock_open
+        from workflow_lib.executor import run_agent
+        from workflow_lib.agent_pool import AgentPoolManager, AgentConfig
+
+        cfg = AgentConfig("my-pool-agent", "gemini", "u", parallel=1, priority=1, quota_time=60)
+        pool = AgentPoolManager([cfg])
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = sp.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
+
+        set_agent_calls = []
+        mock_dashboard = MagicMock()
+        mock_dashboard.set_agent.side_effect = lambda *a, **kw: set_agent_calls.append((a, kw))
+
+        with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
+             patch("workflow_lib.executor.get_project_images", return_value=[]), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}), \
+             patch("builtins.open", mock_open(read_data="prompt {task_name}")):
+            run_agent("Implementation", "implement_task.md",
+                      {"task_name": "t", "phase_filename": "p"},
+                      "/tmp", dashboard=mock_dashboard, task_id="phase_1/t.md",
+                      agent_pool=pool)
+
+        # At least one call must supply agent_name="my-pool-agent"
+        names_supplied = [
+            kw.get("agent_name") or next((v for v in a if isinstance(v, str) and v == "my-pool-agent"), None)
+            for a, kw in set_agent_calls
+        ]
+        assert "my-pool-agent" in names_supplied, (
+            f"Expected set_agent to be called with agent_name='my-pool-agent'. "
+            f"Calls: {set_agent_calls}"
+        )
+
+    def test_agent_name_changes_between_steps_with_different_pool_agents(self):
+        """When develop and review steps are assigned to different pool agents,
+        the dashboard row must show each agent's name for its respective step."""
+        import subprocess as sp
+        from unittest.mock import patch, MagicMock, mock_open
+        from workflow_lib.executor import run_agent
+        from workflow_lib.agent_pool import AgentPoolManager, AgentConfig
+
+        # Two agents, each restricted to a single step.
+        dev_cfg = AgentConfig("dev-agent", "claude", "u", parallel=1, priority=1, quota_time=60,
+                              steps=["develop"])
+        rev_cfg = AgentConfig("rev-agent", "gemini", "u", parallel=1, priority=1, quota_time=60,
+                              steps=["review"])
+        pool = AgentPoolManager([dev_cfg, rev_cfg])
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = sp.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
+
+        # Use a real Dashboard so set_agent actually updates _agents.
+        dashboard = _make_dashboard(width=120)
+
+        common_patches = dict(
+            make_runner=patch("workflow_lib.executor.make_runner", return_value=mock_runner),
+            images=patch("workflow_lib.executor.get_project_images", return_value=[]),
+            cfg=patch("workflow_lib.config.get_config_defaults", return_value={}),
+            open=patch("builtins.open", mock_open(read_data="hello {task_name}")),
+        )
+
+        task_id = "phase_1/api/01_setup.md"
+        ctx = {"task_name": "01_setup", "phase_filename": "phase_1"}
+
+        with common_patches["make_runner"], common_patches["images"], \
+             common_patches["cfg"], common_patches["open"]:
+            # Step 1: Implementation (→ develop step → dev-agent)
+            run_agent("Implementation", "implement_task.md", ctx, "/tmp",
+                      dashboard=dashboard, task_id=task_id, agent_pool=pool)
+            name_after_develop = dashboard._agents[task_id][4]
+
+            # Step 2: Review (→ review step → rev-agent)
+            run_agent("Review", "review_task.md", ctx, "/tmp",
+                      dashboard=dashboard, task_id=task_id, agent_pool=pool)
+            name_after_review = dashboard._agents[task_id][4]
+
+        assert name_after_develop == "dev-agent", (
+            f"After Implementation step, expected agent 'dev-agent', got {name_after_develop!r}"
+        )
+        assert name_after_review == "rev-agent", (
+            f"After Review step, expected agent 'rev-agent', got {name_after_review!r}"
+        )
+        assert name_after_develop != name_after_review, (
+            "Agent name must change between steps when different pool agents are used"
         )

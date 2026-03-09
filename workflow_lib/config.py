@@ -16,7 +16,7 @@ Example ``.workflow.jsonc``::
 import os
 import re
 import json
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from .constants import TOOLS_DIR, ROOT_DIR
 
@@ -121,6 +121,72 @@ def get_config_defaults() -> Dict[str, Any]:
         if key in cfg:
             defaults[key] = cfg[key]
     return defaults
+
+
+def get_agent_pool_configs() -> List[Any]:
+    """Return the list of agent pool configurations from ``.workflow.jsonc``.
+
+    Each entry in the ``"agents"`` array is parsed into an
+    :class:`~workflow_lib.agent_pool.AgentConfig`.  Missing optional fields
+    receive sensible defaults:
+
+    * ``model`` — ``None``
+    * ``priority`` — ``1``
+    * ``parallel`` — ``1``
+    * ``quota-time`` — ``60``
+    * ``steps`` — ``["all"]``
+
+    Returns an empty list when the ``"agents"`` key is absent, allowing
+    callers to fall back to single-backend behaviour.
+
+    :raises ValueError: If any agent entry is missing a required field
+        (``name``, ``backend``, ``user``), specifies an unknown ``backend``
+        value, or contains an unsupported ``steps`` value.
+    :returns: List of :class:`~workflow_lib.agent_pool.AgentConfig` objects,
+        or ``[]`` when no agents are configured.
+    """
+    from .agent_pool import AgentConfig, VALID_STEPS  # local import to avoid circular deps
+    from .runners import VALID_BACKENDS
+
+    raw = load_config().get("agents", [])
+    configs: List[AgentConfig] = []
+    for i, entry in enumerate(raw):
+        label = f"agents[{i}]" + (f" (name={entry['name']!r})" if "name" in entry else "")
+
+        # Required fields
+        for field in ("name", "backend", "user"):
+            if field not in entry:
+                raise ValueError(f".workflow.jsonc {label}: missing required field {field!r}")
+
+        # Backend validation
+        backend = entry["backend"]
+        if backend not in VALID_BACKENDS:
+            raise ValueError(
+                f".workflow.jsonc {label}: unsupported backend {backend!r}. "
+                f"Valid backends: {sorted(VALID_BACKENDS)}"
+            )
+
+        # Steps validation
+        raw_steps = entry.get("steps", ["all"])
+        steps = list(raw_steps) if isinstance(raw_steps, (list, tuple)) else [raw_steps]
+        bad_steps = [s for s in steps if s not in VALID_STEPS]
+        if bad_steps:
+            raise ValueError(
+                f".workflow.jsonc {label}: unsupported step(s) {bad_steps}. "
+                f"Valid steps: {sorted(VALID_STEPS)}"
+            )
+
+        configs.append(AgentConfig(
+            name=entry["name"],
+            backend=backend,
+            user=entry["user"],
+            parallel=int(entry.get("parallel", 1)),
+            priority=int(entry.get("priority", 1)),
+            quota_time=int(entry.get("quota-time", 60)),
+            model=entry.get("model") or None,
+            steps=steps,
+        ))
+    return configs
 
 
 _DEFAULT_CONTEXT_LIMIT = 126_000

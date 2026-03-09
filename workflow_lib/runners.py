@@ -19,6 +19,9 @@ from typing import Callable, List, Dict, Any, Optional
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
 
+# All backend names accepted by make_runner().
+VALID_BACKENDS = {"gemini", "claude", "opencode", "copilot", "cline", "aider", "codex", "qwen"}
+
 
 def parse_stream_json_line(raw: str) -> Optional[str]:
     """Extract human-readable text from a single Anthropic-style JSONL line.
@@ -117,8 +120,9 @@ class AIRunner:
     Subclasses must implement :meth:`run`.
     """
 
-    def __init__(self, model: Optional[str] = None) -> None:
+    def __init__(self, model: Optional[str] = None, user: Optional[str] = None) -> None:
         self.model = model
+        self.user = user
 
     def _env(self) -> Dict[str, str]:
         """Return the environment dict to pass to subprocesses.
@@ -127,6 +131,20 @@ class AIRunner:
         PATH, and other variables are available to AI CLI tools.
         """
         return os.environ.copy()
+
+    def _wrap_cmd(self, cmd: List[str]) -> List[str]:
+        """Optionally prefix *cmd* with ``sudo -u <user> --set-home --``.
+
+        When :attr:`user` is set and differs from the current OS user, the
+        command is run as that user so that their home-directory config files
+        (API keys, CLI settings, etc.) are used.
+
+        :param cmd: Original command list.
+        :returns: Command list, possibly prefixed with ``sudo``.
+        """
+        if self.user and self.user != os.getenv("USER", ""):
+            return ["sudo", "-u", self.user, "--set-home", "--"] + cmd
+        return cmd
 
     def _kill_process(self, proc: subprocess.Popen) -> None:  # type: ignore[type-arg]
         """Kill a timed-out process.  Subclasses may override for graceful shutdown."""
@@ -161,7 +179,7 @@ class AIRunner:
         """
         use_stdin = bool(prompt)
         proc = subprocess.Popen(
-            cmd,
+            self._wrap_cmd(cmd),
             stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -232,7 +250,7 @@ class AIRunner:
         """
         use_stdin = bool(prompt)
         proc = subprocess.Popen(
-            cmd,
+            self._wrap_cmd(cmd),
             stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -374,8 +392,8 @@ class SessionResumableRunner(AIRunner):
     DEFAULT_SOFT_TIMEOUT = 480
     RESUME_HARD_TIMEOUT = 120
 
-    def __init__(self, model: Optional[str] = None, soft_timeout: Optional[int] = DEFAULT_SOFT_TIMEOUT) -> None:
-        super().__init__(model=model)
+    def __init__(self, model: Optional[str] = None, soft_timeout: Optional[int] = DEFAULT_SOFT_TIMEOUT, user: Optional[str] = None) -> None:
+        super().__init__(model=model, user=user)
         self.soft_timeout = soft_timeout
 
     def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
@@ -813,7 +831,7 @@ class CopilotRunner(AIRunner):
         raise last_exc if last_exc is not None else RuntimeError("Failed to invoke copilot CLI")
 
 
-def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optional[int] = None) -> AIRunner:
+def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optional[int] = None, user: Optional[str] = None) -> AIRunner:
     """Instantiate the correct AI runner for the given backend name.
 
     :param backend: One of ``"gemini"``, ``"claude"``, ``"copilot"``,
@@ -823,24 +841,27 @@ def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optiona
     :param soft_timeout: For backends that support soft timeout (qwen),
         overrides the default soft timeout.  If ``None``, the runner's
         class default is used.
+    :param user: Optional OS username.  When set (and different from the
+        current user), the CLI is prefixed with ``sudo -u <user> --set-home --``
+        so that the target user's home-directory config is used.
     :returns: An AI runner instance.
     """
     if backend == "claude":
-        return ClaudeRunner(model=model)
+        return ClaudeRunner(model=model, user=user)
     elif backend == "copilot":
-        return CopilotRunner(model=model)
+        return CopilotRunner(model=model, user=user)
     elif backend == "opencode":
-        return OpencodeRunner(model=model)
+        return OpencodeRunner(model=model, user=user)
     elif backend == "cline":
-        return ClineRunner(model=model)
+        return ClineRunner(model=model, user=user)
     elif backend == "aider":
-        return AiderRunner(model=model)
+        return AiderRunner(model=model, user=user)
     elif backend == "codex":
-        return CodexRunner(model=model)
+        return CodexRunner(model=model, user=user)
     elif backend == "qwen":
-        kwargs: Dict[str, Any] = {"model": model}
+        kwargs: Dict[str, Any] = {"model": model, "user": user}
         if soft_timeout is not None:
             kwargs["soft_timeout"] = soft_timeout
         return QwenRunner(**kwargs)
     # default: gemini
-    return GeminiRunner(model=model)
+    return GeminiRunner(model=model, user=user)

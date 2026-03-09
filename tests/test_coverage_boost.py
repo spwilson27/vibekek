@@ -3522,7 +3522,7 @@ class TestDashboardUpdateLastLine:
         with Dashboard(log_file=io.StringIO()) as d:
             d.set_agent("t1", "Generate", "running", "old")
             d.update_last_line("t1", "new")
-            command, status, lines_deque, _started = d._agents["t1"]
+            command, status, lines_deque, _started, _agent_name = d._agents["t1"]
             assert command == "Generate"
             assert status == "running"
             line_texts = [t for _, t in lines_deque]

@@ -60,6 +60,7 @@ import subprocess
 import threading
 import argparse
 import signal
+from typing import Optional
 
 from .constants import TOOLS_DIR, ROOT_DIR
 from .orchestrator import Orchestrator
@@ -67,9 +68,10 @@ from .context import ProjectContext
 from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade, cmd_fixup
 from .executor import execute_dag, Logger, signal_handler
 from .dashboard import make_dashboard, _DashboardStream
-from .config import get_serena_enabled, get_config_defaults, get_dev_branch
+from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs
+from .agent_pool import AgentPoolManager
 from .state import load_workflow_state, load_dags, get_tasks_dir, restore_state_from_branch
-from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner, QwenRunner
+from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner, QwenRunner, VALID_BACKENDS
 
 
 def cmd_setup(args: argparse.Namespace) -> None:
@@ -245,11 +247,29 @@ def cmd_run(args: argparse.Namespace) -> None:
     state = load_workflow_state()
 
     serena_status = "enabled" if get_serena_enabled() else "disabled"
+
+    # Build agent pool when --backend was not explicitly passed on the CLI.
+    # args.backend is None here only when the user did not pass --backend;
+    # main() layers in the config/hardcoded default only for other commands.
+    agent_pool: Optional[AgentPoolManager] = None
+    effective_backend: str = "gemini"
+    if args.backend is None:
+        agent_configs = get_agent_pool_configs()
+        if agent_configs:
+            agent_pool = AgentPoolManager(agent_configs)
+            names = ", ".join(c.name for c in agent_configs)
+            print(f"[Agents] Using pool: {names}")
+        else:
+            # No explicit --backend and no agents config: apply default.
+            effective_backend = "gemini"
+    else:
+        effective_backend = args.backend
+
     lock = threading.Lock()
     original_stderr = sys.stderr
     sys.stderr = Logger(original_stderr, log_stream, lock)
     try:
-        execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, args.backend, log_file=log_stream, model=args.model)
+        execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, effective_backend, log_file=log_stream, model=args.model, agent_pool=agent_pool)
     finally:
         sys.stderr = original_stderr
 
@@ -264,7 +284,7 @@ def main() -> None:
     # Defaults are None so we can distinguish "not passed" from "passed".
     # Actual defaults are layered: hardcoded -> .workflow.jsonc -> CLI.
     shared = argparse.ArgumentParser(add_help=False)
-    shared.add_argument("--backend", choices=["gemini", "claude", "opencode", "copilot", "cline", "aider", "codex", "qwen"], default=None, help="AI CLI backend to use (default: gemini)")
+    shared.add_argument("--backend", choices=sorted(VALID_BACKENDS), default=None, help="AI CLI backend to use (default: gemini)")
     shared.add_argument("--model", default=None, help="Model name to pass through to the AI CLI (e.g. 'claude-sonnet-4-5-20250514')")
     shared.add_argument("--ignore-sandbox", action="store_true", default=None, help="Disable sandbox violation checks")
 
@@ -340,7 +360,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Layer defaults: hardcoded -> .workflow.jsonc -> CLI args
+    # Layer defaults: hardcoded -> .workflow.jsonc -> CLI args.
+    # For the `run` subcommand, backend is intentionally left as None when the
+    # user did not pass --backend, so cmd_run can detect that and use the agent
+    # pool from .workflow.jsonc instead. Apply the backend default only for
+    # other subcommands.
     _HARDCODED = {
         "backend": "gemini",
         "model": None,
@@ -350,7 +374,10 @@ def main() -> None:
         "auto_retries": None,
     }
     cfg_defaults = get_config_defaults()
+    skip_backend_default = (args.command == "run")
     for key, hardcoded in _HARDCODED.items():
+        if key == "backend" and skip_backend_default:
+            continue
         if getattr(args, key, None) is None:
             setattr(args, key, cfg_defaults.get(key, hardcoded))
 

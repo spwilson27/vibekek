@@ -47,6 +47,7 @@ from .state import save_workflow_state
 from .config import get_serena_enabled, get_dev_branch, get_pivot_remote
 from .discord import notify_failure
 from .dashboard import make_dashboard
+from .agent_pool import AgentPoolManager, QUOTA_RETURN_CODE, QUOTA_PATTERNS
 
 shutdown_requested = False
 _active_dashboard: Any = None
@@ -88,6 +89,22 @@ def _compact_task_id(phase_id: str, task_name: str) -> str:
         if len(leaf) > 20:
             leaf = leaf[:20]
         return f"{short_phase}/{leaf}"
+
+
+def _step_for_agent_type(agent_type: str) -> str:
+    """Map an agent_type label to the corresponding pool step name.
+
+    :param agent_type: Label passed to :func:`run_agent` (e.g.
+        ``"Implementation"``, ``"Review"``, ``"Merge"``).
+    :returns: One of ``"develop"``, ``"review"``, ``"merge"``, or ``"all"``.
+    """
+    if agent_type.startswith("Implementation"):
+        return "develop"
+    if agent_type.startswith("Review"):
+        return "review"
+    if agent_type == "Merge":
+        return "merge"
+    return "all"
 
 
 def signal_handler(sig: int, frame: Any) -> None:  # type: ignore[type-arg]
@@ -213,12 +230,17 @@ def run_ai_command(
     image_paths: Optional[List[str]] = None,
     on_line: Optional[Callable[[str], None]] = None,
     model: Optional[str] = None,
+    user: Optional[str] = None,
 ) -> tuple:  # type: ignore[type-arg]
     """Launch an AI CLI process and stream its output.
 
     Delegates to the appropriate :class:`~workflow_lib.runners.AIRunner`
     subclass.  Output lines are printed to ``stdout`` with an optional
     *prefix* so concurrent tasks can be distinguished in the log.
+
+    When a quota-exceeded pattern is detected in the output stream,
+    :data:`~workflow_lib.agent_pool.QUOTA_RETURN_CODE` is returned so the
+    caller can rotate to a different agent.
 
     :param prompt: Full prompt text to pass to the AI CLI.
     :param cwd: Working directory for the subprocess.
@@ -227,15 +249,22 @@ def run_ai_command(
     :param image_paths: Optional list of absolute paths to image files.
     :param on_line: Optional callback invoked per output line.
     :param model: Optional model name passed to the CLI.
+    :param user: Optional OS user to run the CLI as (via sudo).
     :returns: Tuple of (return_code, stderr_text).
     """
     from .config import get_config_defaults
     cfg = get_config_defaults()
     soft_timeout = cfg.get("soft_timeout")
 
-    runner = make_runner(backend, model=model, soft_timeout=soft_timeout)
+    runner = make_runner(backend, model=model, soft_timeout=soft_timeout, user=user)
+
+    quota_detected = [False]
+    quota_patterns_lower = [p.lower() for p in QUOTA_PATTERNS]
 
     def output_line(line: str) -> None:
+        line_lower = line.lower()
+        if any(p in line_lower for p in quota_patterns_lower):
+            quota_detected[0] = True
         if on_line:
             on_line(line)
         else:
@@ -244,6 +273,8 @@ def run_ai_command(
 
     try:
         result = runner.run(cwd, prompt, image_paths=image_paths, on_line=output_line)
+        if quota_detected[0]:
+            return QUOTA_RETURN_CODE, "quota exceeded"
         stderr_text = result.stderr or ""
         if result.returncode != 0 and stderr_text:
             for line in stderr_text.strip().splitlines():
@@ -379,12 +410,17 @@ def get_project_images() -> List[str]:
     )
 
 
-def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "", model: Optional[str] = None) -> bool:
+def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "", model: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None) -> bool:
     """Format a prompt template and execute an AI agent subprocess.
 
     Reads the named prompt template from ``.tools/prompts/``, performs simple
     ``{key}`` substitution using *task_context*, then delegates to
     :func:`run_ai_command`.
+
+    When *agent_pool* is provided, an :class:`~workflow_lib.agent_pool.AgentConfig`
+    is acquired before each attempt and released afterwards.  Quota-exceeded
+    events are recorded on the pool so that exhausted agents are temporarily
+    suppressed and the next attempt picks a different agent.
 
     :param agent_type: Human-readable label for log output (e.g.
         ``"Implementation"``, ``"Review"``).
@@ -397,9 +433,12 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
     :param cwd: Working directory in which to run the AI subprocess (typically
         the task clone path).
     :type cwd: str
-    :param backend: AI backend to use.  Passed through to
-        :func:`run_ai_command`.  Defaults to ``"gemini"``.
+    :param backend: AI backend to use when *agent_pool* is ``None``.
+        Passed through to :func:`run_ai_command`.  Defaults to ``"gemini"``.
     :type backend: str
+    :param agent_pool: Optional pool manager.  When provided, agents are
+        selected and tracked through the pool instead of using *backend* directly.
+    :type agent_pool: AgentPoolManager or None
     :returns: ``True`` if the agent exited with code 0, ``False`` otherwise.
     :rtype: bool
     """
@@ -433,30 +472,85 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
     base_delay = 30  # seconds
 
     for attempt in range(1, max_capacity_retries + 1):
-        returncode, stderr_text = run_ai_command(prompt, cwd, prefix=prefix, backend=backend, image_paths=get_project_images(), on_line=on_line, model=model)
+        # Resolve backend/user/model from pool (if active) or fixed backend.
+        agent_cfg = None
+        active_backend = backend
+        active_model = model
+        active_user: Optional[str] = None
+
+        if agent_pool is not None:
+            step = _step_for_agent_type(agent_type)
+            agent_cfg = agent_pool.acquire(timeout=300.0, step=step)
+            if agent_cfg is None:
+                err = f"[{agent_type}] FATAL: No agent available for step '{step}' after waiting (all quota-exhausted, at capacity, or none configured)"
+                if dashboard:
+                    dashboard.log(err)
+                else:
+                    print(f"      {err}")
+                return False
+            active_backend = agent_cfg.backend
+            active_model = agent_cfg.model or model
+            active_user = agent_cfg.user
+            if dashboard and task_id:
+                dashboard.set_agent(task_id, agent_type, "running", agent_name=agent_cfg.name)
+
+        returncode = 1
+        stderr_text = ""
+        try:
+            returncode, stderr_text = run_ai_command(
+                prompt, cwd, prefix=prefix, backend=active_backend,
+                image_paths=get_project_images(), on_line=on_line,
+                model=active_model, user=active_user,
+            )
+        finally:
+            if agent_pool is not None and agent_cfg is not None:
+                quota_exhausted = (returncode == QUOTA_RETURN_CODE)
+                agent_pool.release(agent_cfg, quota_exhausted=quota_exhausted)
+                if quota_exhausted and dashboard:
+                    dashboard.log(
+                        f"[!] [{agent_cfg.name}] Quota exceeded — suppressed for {agent_cfg.quota_time}s"
+                    )
+                    if task_id:
+                        dashboard.set_agent(task_id, agent_type, "waiting", f"Quota exceeded on {agent_cfg.name}", agent_name="")
 
         if returncode == 0:
             return True
 
-        # Check if this is a transient capacity error worth retrying
-        is_capacity_error = any(s in stderr_text for s in (
-            "RESOURCE_EXHAUSTED",
-            "MODEL_CAPACITY_EXHAUSTED",
-            "No capacity available",
-            "rateLimitExceeded",
-        ))
-
-        if is_capacity_error and attempt < max_capacity_retries:
-            delay = base_delay * (2 ** (attempt - 1))  # 30s, 60s, 120s, 240s
-            retry_msg = f"[{agent_type}] Capacity exhausted (attempt {attempt}/{max_capacity_retries}). Retrying in {delay}s..."
+        # Quota exceeded: retry immediately with a different agent (pool handles rotation).
+        if returncode == QUOTA_RETURN_CODE:
+            if attempt < max_capacity_retries:
+                retry_msg = f"[{agent_type}] Quota exceeded on {agent_cfg.name if agent_cfg else active_backend} (attempt {attempt}/{max_capacity_retries}). Retrying with next agent..."
+                if dashboard:
+                    dashboard.log(f"{prefix}{retry_msg}")
+                else:
+                    print(f"      {retry_msg}")
+                continue
+            err = f"[{agent_type}] FATAL: All agents quota-exhausted after {max_capacity_retries} attempts"
             if dashboard:
-                dashboard.log(f"{prefix}{retry_msg}")
-                if task_id:
-                    dashboard.set_agent(task_id, agent_type, "waiting", f"Capacity retry {attempt}/{max_capacity_retries}")
+                dashboard.log(err)
             else:
-                print(f"      {retry_msg}")
-            time.sleep(delay)
-            continue
+                print(f"      {err}")
+            return False
+
+        # When no pool is active, fall back to the existing capacity-error retry with backoff.
+        if agent_pool is None:
+            is_capacity_error = any(s in stderr_text for s in (
+                "RESOURCE_EXHAUSTED",
+                "MODEL_CAPACITY_EXHAUSTED",
+                "No capacity available",
+                "rateLimitExceeded",
+            ))
+            if is_capacity_error and attempt < max_capacity_retries:
+                delay = base_delay * (2 ** (attempt - 1))  # 30s, 60s, 120s, 240s
+                retry_msg = f"[{agent_type}] Capacity exhausted (attempt {attempt}/{max_capacity_retries}). Retrying in {delay}s..."
+                if dashboard:
+                    dashboard.log(f"{prefix}{retry_msg}")
+                    if task_id:
+                        dashboard.set_agent(task_id, agent_type, "waiting", f"Capacity retry {attempt}/{max_capacity_retries}")
+                else:
+                    print(f"      {retry_msg}")
+                time.sleep(delay)
+                continue
 
         err = f"[{agent_type}] FATAL: Agent process failed with exit code {returncode}"
         if dashboard:
@@ -520,7 +614,7 @@ def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.L
 
 
 
-def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None) -> bool:
+def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None) -> bool:
     """Run the full implementation lifecycle for one task.
 
     Steps performed:
@@ -634,7 +728,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
         # 1. Implementation Agent
         if dashboard:
             dashboard.set_agent(full_task_id, "Impl", "running", "")
-        if not run_agent("Implementation", "implement_task.md", context, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model):
+        if not run_agent("Implementation", "implement_task.md", context, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model, agent_pool=agent_pool):
             if dashboard:
                 dashboard.set_agent(full_task_id, "Impl", "failed", "Implementation agent failed")
             return False
@@ -642,7 +736,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
         # 2. Review Agent
         if dashboard:
             dashboard.set_agent(full_task_id, "Review", "running", "")
-        if not run_agent("Review", "review_task.md", context, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model):
+        if not run_agent("Review", "review_task.md", context, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model, agent_pool=agent_pool):
             if dashboard:
                 dashboard.set_agent(full_task_id, "Review", "failed", "Review agent failed")
             return False
@@ -705,7 +799,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
                  failure_ctx["task_details"] += f"\n\n### PRESUBMIT FAILURE (Attempt {attempt})\nThe presubmit script failed with the following output. Please fix the code.\n\n```\n{presubmit_res.stdout}\n{presubmit_res.stderr}\n```\n"
                  if dashboard:
                      dashboard.set_agent(full_task_id, "Review", "running", f"Retry after presubmit failure")
-                 if not run_agent("Review (Retry)", "review_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model):
+                 if not run_agent("Review (Retry)", "review_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model, agent_pool=agent_pool):
                      return False
 
         _log(f"   -> [!] Task {full_task_id} failed presubmit {max_retries} times. Aborting task.")
@@ -751,7 +845,7 @@ def _commit_state_in_clone(tmpdir: str, workflow_state: Optional[Dict], _log: An
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, workflow_state: Optional[Dict] = None) -> bool:
+def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, workflow_state: Optional[Dict] = None, agent_pool: Optional[AgentPoolManager] = None) -> bool:
     """Squash-merge a task branch into ``dev`` via a temporary clone and verify.
 
     Steps performed:
@@ -924,7 +1018,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                 failure_ctx["description_ctx"] += f"\n\n### PREVIOUS ATTEMPT FAILURE\nThe previous squash merge or presubmit failed with:\n```\n{failure_output}\n```\n"
                 failure_ctx["description_ctx"] += f"\nPlease resolve the conflicts and ensure the final state is a single commit on the {dev_branch} branch with the message: {commit_msg}"
                 
-                if not run_agent("Merge", "merge_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=task_id, model=model):
+                if not run_agent("Merge", "merge_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=task_id, model=model, agent_pool=agent_pool):
                     _log(f"      [!] Merge agent failed to cleanly exit.")
                     continue
                     
@@ -1034,7 +1128,7 @@ def get_ready_tasks(master_dag: Dict[str, List[str]], completed_tasks: List[str]
     return ready
 
 
-def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str = "gemini", log_file: Any = None, model: Optional[str] = None) -> None:
+def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str = "gemini", log_file: Any = None, model: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None) -> None:
     """Orchestrate parallel task execution according to the dependency DAG.
 
     Runs a scheduling loop inside a :class:`~concurrent.futures.ThreadPoolExecutor`
@@ -1090,12 +1184,12 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
     with make_dashboard(log_file=log_file) as dashboard:
         _active_dashboard = dashboard
         try:
-            _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, serena_enabled, cache_lock, dashboard, model=model, dev_branch=dev_branch)
+            _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, serena_enabled, cache_lock, dashboard, model=model, dev_branch=dev_branch, agent_pool=agent_pool)
         finally:
             _active_dashboard = None
 
 
-def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str, serena_enabled: bool, cache_lock: threading.Lock, dashboard: Any, model: Optional[str] = None, dev_branch: str = "dev") -> None:
+def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str, serena_enabled: bool, cache_lock: threading.Lock, dashboard: Any, model: Optional[str] = None, dev_branch: str = "dev", agent_pool: Optional[AgentPoolManager] = None) -> None:
     """Inner DAG execution loop run inside the dashboard context manager."""
     pivot_remote = get_pivot_remote()
     try:
@@ -1153,7 +1247,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                 with state_lock:
                     active_tasks.add(task_id)
 
-                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url)
+                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, agent_pool=agent_pool)
                 future_to_task[future] = task_id
 
             # If no tasks are running and (none are ready or shutdown requested), we are done/deadlocked
@@ -1205,7 +1299,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                             }
 
                         # Trigger DAG Merge Workflow immediately
-                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, workflow_state=pending_state):
+                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, workflow_state=pending_state, agent_pool=agent_pool):
                             dashboard.set_agent(task_id, "Merge", "done", "Merged successfully")
                             with state_lock:
                                 state["completed_tasks"].append(task_id)

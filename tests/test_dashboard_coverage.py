@@ -311,9 +311,9 @@ class TestDashboard:
         # Add agent with long elapsed time
         d.set_agent("t1", "implement", "running", "work")
         # Manually set start time to 2 hours ago
-        stage, status, lines, _ = d._agents["t1"]
+        stage, status, lines, _, agent_name = d._agents["t1"]
         old_start = datetime.now(tz=d._start_time.tzinfo) - timedelta(hours=2)
-        d._agents["t1"] = (stage, status, lines, old_start)
+        d._agents["t1"] = (stage, status, lines, old_start, agent_name)
         result = d._render()
         assert result is not None
 
