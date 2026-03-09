@@ -24,6 +24,11 @@
   // with a "finish up" prompt using --resume.  Set to null to disable.
   // "soft_timeout": 480,
 
+  // Maximum prompt size in words for phases that aggregate task content
+  // (e.g. cross-phase review, task reordering).  Reduce for models with
+  // smaller context windows.  Default: 126000 (~128k token estimate).
+  // "context_limit": 126000,
+
   // Optional: GitHub repository (owner/repo) used by `./do ci` for remote checks.
   // "github_repo": "owner/repo"
 }

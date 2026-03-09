@@ -95,13 +95,30 @@ def get_config_defaults() -> Dict[str, Any]:
     * ``soft_timeout`` (int) — Soft timeout in seconds for Qwen sessions.
       When reached, the session is interrupted and resumed with a
       "finish up" prompt.  Defaults to 480 (8 minutes).
+    * ``context_limit`` (int) — Maximum prompt size in words for phases
+      that aggregate task content.  Defaults to 126 000.
 
     :returns: Dict of config values (only keys present in the file).
     :rtype: dict
     """
     cfg = load_config()
     defaults: Dict[str, Any] = {}
-    for key in ("backend", "model", "ignore_sandbox", "timeout", "retries", "soft_timeout"):
+    for key in ("backend", "model", "ignore_sandbox", "timeout", "retries", "soft_timeout", "context_limit"):
         if key in cfg:
             defaults[key] = cfg[key]
     return defaults
+
+
+_DEFAULT_CONTEXT_LIMIT = 126_000
+
+
+def get_context_limit() -> int:
+    """Return the configured context limit in words.
+
+    Reads the ``"context_limit"`` key from ``.workflow.jsonc``.  Defaults to
+    126 000 when absent.
+
+    :returns: Maximum prompt size in words.
+    :rtype: int
+    """
+    return int(load_config().get("context_limit", _DEFAULT_CONTEXT_LIMIT))

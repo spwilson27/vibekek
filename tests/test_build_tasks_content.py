@@ -3,6 +3,7 @@
 import os
 import sys
 import textwrap
+from unittest.mock import patch
 
 import pytest
 
@@ -140,4 +141,60 @@ class TestBuildTasksContent:
         content = _build_tasks_content(tasks_dir, ["phase_1"], max_words=50)
         # Should still have some content
         assert "01_a.md" in content
+        assert "..." in content
+
+    def test_extra_words_reserves_budget(self, tmp_path):
+        """extra_words reduces space available for task content."""
+        long_content = "\n".join(
+            ["word1 word2 word3 word4 word5 word6 word7 word8 word9 word10"] * 50
+        ) + "\n"
+        tasks_dir = _make_tasks(tmp_path, [
+            ("01_a.md", long_content),
+            ("02_b.md", long_content),
+        ])
+        # With no extra_words, 800 is enough for decent content
+        full = _build_tasks_content(tasks_dir, ["phase_1"], max_words=800, extra_words=0)
+        # With 400 extra_words reserved, less task content fits
+        reduced = _build_tasks_content(tasks_dir, ["phase_1"], max_words=800, extra_words=400)
+        assert len(reduced.split()) < len(full.split())
+
+    def test_extra_words_causes_truncation(self, tmp_path):
+        """Large extra_words value forces truncation even with generous max_words."""
+        long_content = "\n".join(
+            ["word1 word2 word3 word4 word5"] * 50
+        ) + "\n"
+        tasks_dir = _make_tasks(tmp_path, [("01_a.md", long_content)])
+        # max_words is big but extra_words eats most of the budget
+        content = _build_tasks_content(tasks_dir, ["phase_1"], max_words=5000, extra_words=4800)
+        assert "..." in content
+        assert len(content.split()) <= 250
+
+    def test_uses_context_limit_from_config(self, tmp_path):
+        """When max_words is not passed, it reads context_limit from config."""
+        long_content = "\n".join(
+            ["word1 word2 word3 word4 word5 word6 word7 word8 word9 word10"] * 50
+        ) + "\n"
+        tasks_dir = _make_tasks(tmp_path, [
+            ("01_a.md", long_content),
+            ("02_b.md", long_content),
+        ])
+        # With a very small config limit, output should be truncated
+        with patch("workflow_lib.phases.get_context_limit", return_value=100):
+            small = _build_tasks_content(tasks_dir, ["phase_1"])
+        # With a large config limit, output should be untruncated
+        with patch("workflow_lib.phases.get_context_limit", return_value=50000):
+            large = _build_tasks_content(tasks_dir, ["phase_1"])
+        assert len(small.split()) < len(large.split())
+
+    def test_explicit_max_words_overrides_config(self, tmp_path):
+        """Explicit max_words takes precedence over config."""
+        long_content = "\n".join(
+            ["word1 word2 word3 word4 word5 word6 word7 word8 word9 word10"] * 50
+        ) + "\n"
+        tasks_dir = _make_tasks(tmp_path, [
+            ("01_a.md", long_content),
+        ])
+        # Config says 50000, but explicit max_words=100 should win
+        with patch("workflow_lib.phases.get_context_limit", return_value=50000):
+            content = _build_tasks_content(tasks_dir, ["phase_1"], max_words=100)
         assert "..." in content

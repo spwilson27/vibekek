@@ -54,6 +54,7 @@ import re
 import threading
 from typing import List, Dict, Any, Optional
 
+from .config import get_context_limit
 from .constants import TOOLS_DIR, DOCS, parse_requirements
 from .context import ProjectContext
 
@@ -86,11 +87,20 @@ def _collect_task_files(tasks_dir: str, phase_dirs: List[str]) -> List[Dict[str,
 def _build_tasks_content(
     tasks_dir: str,
     phase_dirs: List[str],
-    max_words: int = 126_000,
+    max_words: Optional[int] = None,
+    extra_words: int = 0,
 ) -> str:
     """Build a prompt-embeddable summary of all tasks, dynamically truncated
     so the total word count stays under *max_words*.
+
+    *max_words* defaults to the ``context_limit`` setting from
+    ``.workflow.jsonc`` (126 000 when unconfigured).
+
+    *extra_words* reserves space for the rest of the prompt (template text,
+    description context, etc.) that will be added around this content.
     """
+    if max_words is None:
+        max_words = get_context_limit()
     tasks = _collect_task_files(tasks_dir, phase_dirs)
     if not tasks:
         return ""
@@ -98,7 +108,7 @@ def _build_tasks_content(
     # Per-task overhead (header + file path + trailing newlines) is small;
     # estimate ~15 words per task for headers.
     header_words = len(tasks) * 15
-    available_words = max_words - header_words
+    available_words = max_words - header_words - extra_words
 
     # Binary-search for the best lines-per-task that fits the budget.
     # Start with "all lines" and shrink if needed.
@@ -1275,14 +1285,16 @@ class Phase6CCrossPhaseReview(BasePhase):
 
         review_prompt_tmpl = ctx.load_prompt("cross_phase_review.md")
         review_summary_path = os.path.join(tasks_dir, f"cross_phase_review_summary_pass_{self.pass_num}.md")
-        
+
         if os.path.exists(review_summary_path):
              print(f"   -> Skipping Cross-Phase Task Review (already reviewed).")
              ctx.state[state_key] = True
              ctx.save_state()
              return
 
-        tasks_content = _build_tasks_content(tasks_dir, phase_dirs)
+        # Reserve space for the prompt template and description context
+        extra = len(review_prompt_tmpl.split()) + len(ctx.description_ctx.split())
+        tasks_content = _build_tasks_content(tasks_dir, phase_dirs, extra_words=extra)
         if not tasks_content:
             return
 
@@ -1376,7 +1388,8 @@ class Phase6DReorderTasks(BasePhase):
              ctx.save_state()
              return
 
-        tasks_content = _build_tasks_content(tasks_dir, phase_dirs)
+        extra = len(reorder_prompt_tmpl.split()) + len(ctx.description_ctx.split())
+        tasks_content = _build_tasks_content(tasks_dir, phase_dirs, extra_words=extra)
         if not tasks_content:
             return
 
