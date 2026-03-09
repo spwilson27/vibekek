@@ -56,6 +56,7 @@ Available commands
 
 import os
 import sys
+import subprocess
 import threading
 import argparse
 import signal
@@ -225,13 +226,20 @@ def cmd_run(args: argparse.Namespace) -> None:
         - ``backend`` (str) — AI backend to use.
     :type args: argparse.Namespace
     """
+    dev_branch = get_dev_branch()
+
+    result = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, cwd=ROOT_DIR)
+    current_branch = result.stdout.strip()
+    if current_branch == dev_branch:
+        print(f"Error: currently on dev branch '{dev_branch}'. Check out a different branch before running.", file=sys.stderr)
+        sys.exit(1)
+
     signal.signal(signal.SIGINT, signal_handler)
     tasks_dir = get_tasks_dir()
     log_path = os.path.join(ROOT_DIR, "run_workflow.log")
 
     log_stream = open(log_path, "a", encoding="utf-8")
 
-    dev_branch = get_dev_branch()
     restore_state_from_branch(ROOT_DIR, dev_branch)
     master_dag = load_dags(tasks_dir)
     state = load_workflow_state()
