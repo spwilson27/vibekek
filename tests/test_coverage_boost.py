@@ -4146,8 +4146,15 @@ class TestSoftInterrupt:
     # 2. process_task() — Implementation agent blocked by shutdown
     # ----------------------------------------------------------------
 
-    def test_process_task_skips_implementation_agent_on_shutdown(self):
-        """Shutdown before Implementation agent → task returns False."""
+    def test_process_task_completes_if_agents_pass_during_shutdown(self):
+        """If run_agent is bypassed and presubmit passes, task succeeds even on shutdown.
+
+        The real guard lives inside run_agent (tested by
+        test_process_task_skips_implementation_via_run_agent_guard).  When
+        run_agent is mocked to return True and presubmit passes, process_task
+        should succeed — shutdown does not prevent the verification + commit
+        stage from completing.
+        """
         self._mod.shutdown_requested = True
 
         agent_calls = []
@@ -4159,12 +4166,7 @@ class TestSoftInterrupt:
             result = self._mod.process_task(
                 "/root", "phase_1/task", "./presubmit", dashboard=MagicMock(),
             )
-        assert result is False
-        # run_agent is the real function (not patched at call site) —
-        # the guard inside run_agent prevents it, so our side_effect never fires
-        # But we patched run_agent itself, so the shutdown_requested check
-        # we need to test is the one *inside* run_agent. Let's verify
-        # the mock was called and returned False.
+        assert result is True
 
     def test_process_task_skips_implementation_via_run_agent_guard(self):
         """The real run_agent guard prevents Implementation from spawning."""
@@ -4211,14 +4213,18 @@ class TestSoftInterrupt:
     # 4. process_task() — Verification loop blocked by shutdown
     # ----------------------------------------------------------------
 
-    def test_process_task_skips_verification_on_shutdown(self):
-        """Verification loop should exit early when shutdown_requested."""
+    def test_process_task_runs_verification_during_shutdown(self):
+        """Verification runs even when shutdown_requested — task completes if presubmit passes.
+
+        Shutdown only prevents new tasks from being scheduled; in-flight tasks
+        must finish verification and merge so work is not lost.
+        """
         self._mod.shutdown_requested = False
 
         call_count = [0]
         def fake_run_agent(agent_type, *args, **kwargs):
             call_count[0] += 1
-            if call_count[0] == 2:  # After Review passes
+            if call_count[0] == 2:  # After Review passes, shutdown fires
                 self._mod.shutdown_requested = True
             return True
 
@@ -4226,8 +4232,8 @@ class TestSoftInterrupt:
             result = self._mod.process_task(
                 "/root", "phase_1/task", "./presubmit", dashboard=MagicMock(),
             )
-        assert result is False
-        assert call_count[0] == 2  # Implementation + Review, no Retry
+        assert result is True
+        assert call_count[0] == 2  # Implementation + Review only (no retry needed)
 
     # ----------------------------------------------------------------
     # 5. process_task() — Review (Retry) blocked by shutdown

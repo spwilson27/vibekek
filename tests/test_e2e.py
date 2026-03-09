@@ -1632,15 +1632,18 @@ class TestProcessTaskRetryE2E:
         assert result is False
         assert agent_calls == ["Implementation", "Review"]
 
-    def test_shutdown_during_verification_skips_remaining(self, tmp_path):
-        """If shutdown_requested during verification loop, task returns False."""
+    def test_shutdown_during_verification_exhausts_retries(self, tmp_path):
+        """Shutdown during verification no longer skips remaining attempts.
+
+        Verification runs to completion even after shutdown_requested is set —
+        all max_retries attempts are exhausted before the task fails.
+        """
         from workflow_lib.executor import process_task
         import workflow_lib.executor as executor_mod
 
         executor_mod.shutdown_requested = False
         root = str(tmp_path)
         _init_git_repo(root)
-
 
         def _fake_run_agent(agent_type, prompt_file, context, cwd, backend,
                             dashboard=None, task_id="", model=None):
@@ -1674,9 +1677,9 @@ class TestProcessTaskRetryE2E:
                                   backend="gemini", max_retries=3)
 
         assert result is False
-        # Only 1 presubmit ran (failed), review retry set shutdown,
-        # second iteration's shutdown check prevented further presubmit
-        assert presubmit_calls[0] == 1
+        # All 3 presubmit attempts ran — shutdown no longer short-circuits
+        # the verification loop; tasks must exhaust retries before failing.
+        assert presubmit_calls[0] == 3
 
 
 # ---------------------------------------------------------------------------

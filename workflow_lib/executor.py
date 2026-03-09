@@ -617,9 +617,6 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
 
         # 3. Verification Loop
         for attempt in range(1, max_retries + 1):
-            if shutdown_requested:
-                _log(f"      [Verification] Skipped — shutdown requested.")
-                return False
             _log(f"      [Verification] Running presubmit (Attempt {attempt}/{max_retries})...")
             if dashboard:
                 dashboard.set_agent(full_task_id, "Verify", "running", f"Attempt {attempt}/{max_retries}")
