@@ -190,11 +190,41 @@ def is_completed(task_ref: str, wf_state: Dict[str, Any]) -> bool:
     return task_ref in completed or task_ref in merged
 
 
+def _reconstruct_completed_from_commits(root_dir: str, dev_branch: str) -> List[str]:
+    """Extract completed task IDs from commit messages on the dev branch.
+
+    Commit messages produced by the workflow start with the task ref using
+    a ``phase_N:subdir/task.md:`` prefix.  This converts the colon-separated
+    form back to the slash-separated DAG task ID.
+
+    :param root_dir: Absolute path to the project root git repository.
+    :param dev_branch: Name of the dev branch to scan.
+    :returns: List of fully-qualified task IDs found in commit messages.
+    """
+    import re as _re
+    res = subprocess.run(
+        ["git", "log", dev_branch, "--format=%s"],
+        cwd=root_dir, capture_output=True, text=True,
+    )
+    if res.returncode != 0:
+        return []
+    completed = []
+    for line in res.stdout.splitlines():
+        # Match "phase_N:rest/of/task.md: ..." and convert colon to slash
+        m = _re.match(r"^(phase_\d+):(.+?\.md):", line)
+        if m:
+            task_id = f"{m.group(1)}/{m.group(2)}"
+            completed.append(task_id)
+    return completed
+
+
 def restore_state_from_branch(root_dir: str, dev_branch: str) -> None:
     """Seed local state files from the dev branch if they don't exist locally.
 
     For each state file (workflow and replan), if the local file is missing
     but the file exists in the dev branch, extract it via ``git show``.
+    As a fallback, if the workflow state file is still missing after checking
+    the branch, reconstruct completed tasks from commit messages.
 
     :param root_dir: Absolute path to the project root git repository.
     :param dev_branch: Name of the dev branch to read state from.
@@ -211,6 +241,18 @@ def restore_state_from_branch(root_dir: str, dev_branch: str) -> None:
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(res.stdout)
+
+    # Fallback: reconstruct workflow state from commit history
+    if not os.path.exists(WORKFLOW_STATE_FILE):
+        completed = _reconstruct_completed_from_commits(root_dir, dev_branch)
+        if completed:
+            os.makedirs(os.path.dirname(WORKFLOW_STATE_FILE), exist_ok=True)
+            state = {
+                "completed_tasks": completed,
+                "merged_tasks": completed,
+            }
+            with open(WORKFLOW_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=4)
 
 
 def commit_state_to_branch(root_dir: str, dev_branch: str) -> bool:

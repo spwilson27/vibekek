@@ -305,8 +305,8 @@ class TestRestoreStateFromBranch:
             current = json.load(f)
         assert current == new_state
 
-    def test_no_error_when_branch_has_no_state(self, temp_repo, monkeypatch):
-        """No error when dev branch has no state files."""
+    def test_no_error_when_branch_has_no_state_and_no_commits(self, temp_repo, monkeypatch):
+        """No error when dev branch has no state files and no task commits."""
         from workflow_lib.state import restore_state_from_branch
         from workflow_lib import constants, state as state_mod
 
@@ -318,6 +318,77 @@ class TestRestoreStateFromBranch:
         # Should not raise
         restore_state_from_branch(temp_repo["root_dir"], "dev")
         assert not os.path.exists(temp_repo["workflow_state_file"])
+
+    def test_reconstructs_state_from_commit_messages(self, temp_repo, monkeypatch):
+        """When no state file exists, completed tasks are reconstructed from commit history."""
+        from workflow_lib.state import restore_state_from_branch
+        from workflow_lib import constants, state as state_mod
+
+        monkeypatch.setattr(constants, "WORKFLOW_STATE_FILE", temp_repo["workflow_state_file"])
+        monkeypatch.setattr(constants, "REPLAN_STATE_FILE", temp_repo["replan_state_file"])
+        monkeypatch.setattr(state_mod, "WORKFLOW_STATE_FILE", temp_repo["workflow_state_file"])
+        monkeypatch.setattr(state_mod, "REPLAN_STATE_FILE", temp_repo["replan_state_file"])
+
+        root = temp_repo["root_dir"]
+
+        # Add task-style commits to the dev branch
+        _run(["git", "checkout", "dev"], cwd=root)
+        Path(root, "a.py").write_text("a\n")
+        _run(["git", "add", "a.py"], cwd=root)
+        _run(["git", "commit", "-m", "phase_1:01_setup/01_init.md: Initial setup"], cwd=root)
+
+        Path(root, "b.py").write_text("b\n")
+        _run(["git", "add", "b.py"], cwd=root)
+        _run(["git", "commit", "-m", "phase_1:02_core/03_api.md: Add API endpoint"], cwd=root)
+
+        _run(["git", "checkout", "main"], cwd=root)
+
+        # Ensure no local state file exists
+        assert not os.path.exists(temp_repo["workflow_state_file"])
+
+        restore_state_from_branch(root, "dev")
+
+        assert os.path.exists(temp_repo["workflow_state_file"])
+        with open(temp_repo["workflow_state_file"]) as f:
+            state = json.load(f)
+
+        assert "phase_1/01_setup/01_init.md" in state["completed_tasks"]
+        assert "phase_1/02_core/03_api.md" in state["completed_tasks"]
+        assert len(state["completed_tasks"]) == 2
+
+    def test_reconstruct_ignores_non_task_commits(self, temp_repo, monkeypatch):
+        """Commit messages that don't match the task pattern are ignored."""
+        from workflow_lib.state import restore_state_from_branch
+        from workflow_lib import constants, state as state_mod
+
+        monkeypatch.setattr(constants, "WORKFLOW_STATE_FILE", temp_repo["workflow_state_file"])
+        monkeypatch.setattr(constants, "REPLAN_STATE_FILE", temp_repo["replan_state_file"])
+        monkeypatch.setattr(state_mod, "WORKFLOW_STATE_FILE", temp_repo["workflow_state_file"])
+        monkeypatch.setattr(state_mod, "REPLAN_STATE_FILE", temp_repo["replan_state_file"])
+
+        root = temp_repo["root_dir"]
+
+        _run(["git", "checkout", "dev"], cwd=root)
+        Path(root, "a.py").write_text("a\n")
+        _run(["git", "add", "a.py"], cwd=root)
+        _run(["git", "commit", "-m", "Initial commit after setup"], cwd=root)
+
+        Path(root, "b.py").write_text("b\n")
+        _run(["git", "add", "b.py"], cwd=root)
+        _run(["git", "commit", "-m", "phase_1:01_setup/01_init.md: Real task"], cwd=root)
+
+        Path(root, "c.py").write_text("c\n")
+        _run(["git", "add", "c.py"], cwd=root)
+        _run(["git", "commit", "-m", "Update workflow state"], cwd=root)
+
+        _run(["git", "checkout", "main"], cwd=root)
+
+        restore_state_from_branch(root, "dev")
+
+        with open(temp_repo["workflow_state_file"]) as f:
+            state = json.load(f)
+
+        assert state["completed_tasks"] == ["phase_1/01_setup/01_init.md"]
 
 
 class TestStateRoundTrip:
