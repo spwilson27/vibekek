@@ -222,6 +222,7 @@ class TestAccumulatedContextSummaryPreference:
             return "summaries" in path
 
         with patch("workflow_lib.context.DOCS", [prev, current]), \
+             patch("workflow_lib.context.get_context_limit", return_value=126_000), \
              patch("os.path.exists", side_effect=exists_side), \
              patch("builtins.open", mock_open(read_data="PRD summary")):
             result = ctx.get_accumulated_context(current)
@@ -239,6 +240,7 @@ class TestAccumulatedContextSummaryPreference:
             return "summaries" not in path
 
         with patch("workflow_lib.context.DOCS", [prev, current]), \
+             patch("workflow_lib.context.get_context_limit", return_value=126_000), \
              patch("os.path.exists", side_effect=exists_side), \
              patch("builtins.open", mock_open(read_data="Full PRD content")):
             result = ctx.get_accumulated_context(current)
@@ -253,7 +255,6 @@ class TestAccumulatedContextSummaryPreference:
         doc_b = {"id": "doc_b", "type": "spec", "name": "Doc B"}
         current = {"id": "doc_c", "type": "spec", "name": "Doc C"}
 
-        call_count = {"n": 0}
         file_contents = {
             "/fake/root/docs/plan/summaries/doc_a.md": "Summary of A",
             "/fake/root/docs/plan/specs/doc_b.md": "Full content of B",
@@ -267,6 +268,7 @@ class TestAccumulatedContextSummaryPreference:
             return m
 
         with patch("workflow_lib.context.DOCS", [doc_a, doc_b, current]), \
+             patch("workflow_lib.context.get_context_limit", return_value=126_000), \
              patch("os.path.exists", side_effect=exists_side), \
              patch("builtins.open", side_effect=open_side):
             result = ctx.get_accumulated_context(current)
@@ -289,11 +291,129 @@ class TestAccumulatedContextSummaryPreference:
         current = {"id": "prd", "type": "spec", "name": "PRD"}
 
         with patch("workflow_lib.context.DOCS", [research, current]), \
+             patch("workflow_lib.context.get_context_limit", return_value=126_000), \
              patch("os.path.exists", return_value=True), \
              patch("builtins.open", mock_open(read_data="market summary")):
             result = ctx.get_accumulated_context(current, include_research=False)
 
         assert result == ""
+
+
+class TestAccumulatedContextTruncation:
+    """Tests for context_limit enforcement in get_accumulated_context."""
+
+    def _make_long_content(self, num_lines, words_per_line=10):
+        """Generate content with a known number of lines and words."""
+        return "\n".join(
+            " ".join(f"word{j}" for j in range(words_per_line))
+            for i in range(num_lines)
+        ) + "\n"
+
+    def test_no_truncation_when_within_limit(self):
+        """All content included when total words fit under context_limit."""
+        ctx = _real_ctx()
+        prev = {"id": "doc_a", "type": "spec", "name": "Doc A"}
+        current = {"id": "doc_b", "type": "spec", "name": "Doc B"}
+        content = self._make_long_content(10, words_per_line=5)  # 50 words
+
+        with patch("workflow_lib.context.DOCS", [prev, current]), \
+             patch("workflow_lib.context.get_context_limit", return_value=126_000), \
+             patch("os.path.exists", side_effect=lambda p: "specs" in p), \
+             patch("builtins.open", mock_open(read_data=content)):
+            result = ctx.get_accumulated_context(current)
+
+        assert "more lines" not in result
+        assert "word0" in result
+
+    def test_truncation_when_exceeding_limit(self):
+        """Documents are truncated with a file-path hint when over limit."""
+        ctx = _real_ctx()
+        prev = {"id": "doc_a", "type": "spec", "name": "Doc A"}
+        current = {"id": "doc_b", "type": "spec", "name": "Doc B"}
+        # 100 lines * 10 words = 1000 words of content
+        content = self._make_long_content(100, words_per_line=10)
+
+        with patch("workflow_lib.context.DOCS", [prev, current]), \
+             patch("workflow_lib.context.get_context_limit", return_value=200), \
+             patch("os.path.exists", side_effect=lambda p: "specs" in p), \
+             patch("builtins.open", mock_open(read_data=content)):
+            result = ctx.get_accumulated_context(current)
+
+        assert "more lines" in result
+        assert "read full content from:" in result
+        # Should include the relative file path
+        assert "docs/plan/specs/doc_a.md" in result
+
+    def test_truncation_respects_extra_words(self):
+        """extra_words reserves space, causing earlier truncation."""
+        ctx = _real_ctx()
+        prev = {"id": "doc_a", "type": "spec", "name": "Doc A"}
+        current = {"id": "doc_b", "type": "spec", "name": "Doc B"}
+        content = self._make_long_content(50, words_per_line=10)  # 500 words
+
+        # With generous limit: no truncation
+        with patch("workflow_lib.context.DOCS", [prev, current]), \
+             patch("workflow_lib.context.get_context_limit", return_value=1000), \
+             patch("os.path.exists", side_effect=lambda p: "specs" in p), \
+             patch("builtins.open", mock_open(read_data=content)):
+            result_no_extra = ctx.get_accumulated_context(current, extra_words=0)
+
+        # With large extra_words: should truncate
+        with patch("workflow_lib.context.DOCS", [prev, current]), \
+             patch("workflow_lib.context.get_context_limit", return_value=1000), \
+             patch("os.path.exists", side_effect=lambda p: "specs" in p), \
+             patch("builtins.open", mock_open(read_data=content)):
+            result_with_extra = ctx.get_accumulated_context(current, extra_words=800)
+
+        assert "more lines" not in result_no_extra
+        assert "more lines" in result_with_extra
+
+    def test_multiple_docs_truncated_uniformly(self):
+        """All docs get the same lines_per_doc limit."""
+        ctx = _real_ctx()
+        doc_a = {"id": "doc_a", "type": "spec", "name": "Doc A"}
+        doc_b = {"id": "doc_b", "type": "spec", "name": "Doc B"}
+        current = {"id": "doc_c", "type": "spec", "name": "Doc C"}
+
+        content_a = self._make_long_content(80, words_per_line=10)  # 800 words
+        content_b = self._make_long_content(80, words_per_line=10)  # 800 words
+
+        file_contents = {
+            "/fake/root/docs/plan/specs/doc_a.md": content_a,
+            "/fake/root/docs/plan/specs/doc_b.md": content_b,
+        }
+
+        def exists_side(path):
+            return path in file_contents
+
+        def open_side(path, *args, **kwargs):
+            return mock_open(read_data=file_contents.get(path, ""))()
+
+        # Limit of 300 words — both docs should be truncated
+        with patch("workflow_lib.context.DOCS", [doc_a, doc_b, current]), \
+             patch("workflow_lib.context.get_context_limit", return_value=300), \
+             patch("os.path.exists", side_effect=exists_side), \
+             patch("builtins.open", side_effect=open_side):
+            result = ctx.get_accumulated_context(current)
+
+        # Both docs should show truncation
+        assert result.count("more lines") == 2
+        assert "doc_a" in result
+        assert "doc_b" in result
+
+    def test_path_attribute_included_in_output(self):
+        """Output XML includes path attribute for agent file access."""
+        ctx = _real_ctx()
+        prev = {"id": "doc_a", "type": "spec", "name": "Doc A"}
+        current = {"id": "doc_b", "type": "spec", "name": "Doc B"}
+
+        with patch("workflow_lib.context.DOCS", [prev, current]), \
+             patch("workflow_lib.context.get_context_limit", return_value=126_000), \
+             patch("os.path.exists", side_effect=lambda p: "specs" in p), \
+             patch("builtins.open", mock_open(read_data="some content")):
+            result = ctx.get_accumulated_context(current)
+
+        assert 'path="docs/plan/specs/doc_a.md"' in result
 
 
 # ---------------------------------------------------------------------------

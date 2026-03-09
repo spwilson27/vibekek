@@ -245,8 +245,9 @@ class Phase1GenerateDoc(BasePhase):
         # Exclude research docs from spec context to prevent hallucinated
         # market/competitive data from influencing architectural decisions
         include_research = self.doc["type"] == "research"
-        accumulated_context = ctx.get_accumulated_context(self.doc, include_research=include_research)
         base_prompt_template = ctx.load_prompt(self.doc["prompt_file"])
+        extra = len(base_prompt_template.split()) + len(ctx.description_ctx.split()) + 100
+        accumulated_context = ctx.get_accumulated_context(self.doc, include_research=include_research, extra_words=extra)
 
         base_prompt = base_prompt_template.replace("{target_path}", target_path)
         base_prompt = base_prompt.replace("{document_name}", self.doc["name"])
@@ -331,10 +332,10 @@ class Phase2FleshOutDoc(BasePhase):
         expected_file = ctx.get_document_path(self.doc)
         target_path = ctx.get_target_path(self.doc)
         out_folder = "specs"
-        accumulated_context = ctx.get_accumulated_context(self.doc, include_research=False)
-
         headers = ctx.parse_markdown_headers(expected_file, doc=self.doc)
         flesh_prompt_tmpl = ctx.load_prompt("flesh_out.md")
+        extra = len(flesh_prompt_tmpl.split()) + len(ctx.description_ctx.split()) + 100
+        accumulated_context = ctx.get_accumulated_context(self.doc, include_research=False, extra_words=extra)
         
         ctx.state.setdefault("fleshed_out_headers", {})
         ctx.state["fleshed_out_headers"].setdefault(self.doc["id"], [])

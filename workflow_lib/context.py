@@ -17,6 +17,7 @@ import re
 from typing import Any, Callable, List, Dict, Optional
 
 from .constants import TOOLS_DIR, INPUT_DIR, GEN_STATE_FILE, DOCS
+from .config import get_context_limit
 from .runners import AIRunner, GeminiRunner, IMAGE_EXTENSIONS
 
 
@@ -280,12 +281,17 @@ class ProjectContext:
         self,
         current_doc: Dict[str, Any],
         include_research: bool = True,
+        extra_words: int = 0,
     ) -> str:
         """Build an XML-tagged context string from all documents preceding *current_doc*.
 
         When a summary exists for a preceding document (in ``docs/plan/summaries/``),
         the summary is used instead of the full document to keep the prompt within
         model input limits.
+
+        Documents are truncated to a uniform line limit (found via binary search)
+        so the total stays within ``context_limit``.  Truncated documents include
+        a file-path hint so the agent can read the full content if needed.
 
         Research documents can be excluded when generating spec documents to
         prevent hallucinated market data from influencing architectural choices.
@@ -296,34 +302,87 @@ class ProjectContext:
         :param include_research: When ``False``, research-type documents are
             skipped.
         :type include_research: bool
+        :param extra_words: Words reserved for the rest of the prompt (template,
+            description context, etc.) so the accumulated context leaves room.
+        :type extra_words: int
         :returns: Concatenated ``<previous_document>`` XML blocks for each
             existing preceding document.
         :rtype: str
         """
-        accumulated_context = ""
+        # Collect raw document entries: (doc, lines[], file_path, is_summary)
+        entries: list = []
         for prev_doc in DOCS:
             if prev_doc == current_doc:
                 break
             if not include_research and prev_doc["type"] == "research":
                 continue
-            # Prefer summary over full document
             summary_file = self.get_summary_path(prev_doc)
             full_file = self.get_document_path(prev_doc)
             if os.path.exists(summary_file):
                 with open(summary_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                    accumulated_context += (
-                        f'\n\n<previous_document name="{prev_doc["name"]}" type="summary">'
-                        f'\n{content}\n</previous_document>\n'
-                    )
+                    lines = f.readlines()
+                # Store relative path for the hint
+                rel = os.path.relpath(summary_file, self.root_dir)
+                entries.append((prev_doc, lines, rel, True))
             elif os.path.exists(full_file):
                 with open(full_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                    accumulated_context += (
-                        f'\n\n<previous_document name="{prev_doc["name"]}">'
-                        f'\n{content}\n</previous_document>\n'
-                    )
-        return accumulated_context
+                    lines = f.readlines()
+                rel = os.path.relpath(full_file, self.root_dir)
+                entries.append((prev_doc, lines, rel, False))
+
+        if not entries:
+            return ""
+
+        # Budget: context_limit minus extra_words minus per-doc header overhead
+        max_words = get_context_limit()
+        header_words = len(entries) * 20  # XML tags, name attr, etc.
+        available_words = max(max_words - extra_words - header_words, 0)
+
+        max_lines_any = max(len(e[1]) for e in entries)
+
+        def _word_count_at(limit: int) -> int:
+            total = 0
+            for _, lines, _, _ in entries:
+                for line in lines[:limit]:
+                    total += len(line.split())
+            return total
+
+        # Binary search for the max lines-per-doc that fits the budget
+        if _word_count_at(max_lines_any) <= available_words:
+            lines_per_doc = max_lines_any
+        else:
+            lo, hi = 1, max_lines_any
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if _word_count_at(mid) <= available_words:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            lines_per_doc = lo
+
+        total_words = _word_count_at(lines_per_doc) + header_words
+        print(f"   -> Accumulated context: {len(entries)} docs, "
+              f"{lines_per_doc} lines/doc, ~{total_words} words")
+
+        # Build the context string
+        parts: list = []
+        for prev_doc, lines, rel_path, is_summary in entries:
+            doc_type = ' type="summary"' if is_summary else ""
+            preview = lines[:lines_per_doc]
+            content = "".join(preview)
+            truncation_note = ""
+            if len(lines) > lines_per_doc:
+                truncation_note = (
+                    f"\n... ({len(lines) - lines_per_doc} more lines "
+                    f"— read full content from: {rel_path})\n"
+                )
+            parts.append(
+                f'\n\n<previous_document name="{prev_doc["name"]}"{doc_type} '
+                f'path="{rel_path}">'
+                f'\n{content.rstrip()}{truncation_note}\n</previous_document>\n'
+            )
+
+        return "".join(parts)
 
     def get_workspace_snapshot(self) -> Dict[str, float]:
         """Capture a modification-time snapshot of all workspace files.
