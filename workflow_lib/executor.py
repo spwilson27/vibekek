@@ -1121,6 +1121,14 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                             if not commit_state_to_branch(root_dir, dev_branch):
                                 dashboard.log(f"      [!] Warning: Failed to commit workflow state to {dev_branch}.")
                             dashboard.log(f"      Pushing {dev_branch} to remote origin...")
+                            # Fetch and rebase onto remote before pushing to handle concurrent merges
+                            fetch_res = subprocess.run(["git", "fetch", "origin", dev_branch], cwd=root_dir, capture_output=True, text=True)
+                            if fetch_res.returncode != 0:
+                                dashboard.log(f"      [!] Warning: Failed to fetch remote {dev_branch}:\n{fetch_res.stderr}")
+                            else:
+                                rebase_res = subprocess.run(["git", "rebase", f"origin/{dev_branch}", dev_branch], cwd=root_dir, capture_output=True, text=True)
+                                if rebase_res.returncode != 0:
+                                    dashboard.log(f"      [!] Warning: Failed to rebase {dev_branch} onto origin/{dev_branch}:\n{rebase_res.stderr}")
                             push_res = subprocess.run(["git", "push", "origin", dev_branch], cwd=root_dir, capture_output=True, text=True)
                             if push_res.returncode != 0:
                                 dashboard.log(f"      [!] Failed to push to remote:\n{push_res.stderr}")
