@@ -1124,6 +1124,13 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
         if _fix_task_mappings(tasks_check["missing_reqs"], ctx, dry_run=dry_run):
             fixed_anything = True
 
+    # Fix verify-dags failures
+    dags_check = results["checks"].get("verify-dags", {})
+    if not dags_check.get("passed", True):
+        dag_fixes = _fix_dag_references(dry_run=dry_run, ctx=ctx)
+        if dag_fixes > 0:
+            fixed_anything = True
+
     if not fixed_anything:
         print("\nNo automatic fixes available for the remaining failures.")
         sys.exit(1)
@@ -1145,6 +1152,148 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
         sys.exit(1)
     else:
         print("\nAll checks passing.")
+
+
+def _fix_dag_references(dry_run: bool = False, ctx: Optional[ProjectContext] = None) -> int:
+    """Fix broken task references in DAG files.
+
+    Handles three categories of broken references:
+
+    1. **Relative ``../`` prefixes** — e.g. ``../14_foo/bar.md`` when the task
+       lives in the same phase.  Fixed by stripping the ``../`` prefix.
+    2. **Redundant phase prefixes** — e.g. ``phase_2/02_css/foo.md`` appearing
+       in ``phase_2/dag.json``.  Fixed by stripping the ``phase_N/`` prefix.
+    3. **Cross-phase references** — e.g. ``phase_1/foo/bar.md`` in
+       ``phase_3/dag.json``.  Removed entirely since DAGs are per-phase.
+
+    :param dry_run: If ``True``, print what would change without writing.
+    :returns: Number of references fixed.
+    :rtype: int
+    """
+    tasks_dir = get_tasks_dir()
+    total_fixes = 0
+
+    def _iter_phase_dags():
+        """Yield (phase_dir_name, phase_path, dag_file) for each phase."""
+        for name in sorted(os.listdir(tasks_dir)):
+            path = os.path.join(tasks_dir, name)
+            if not os.path.isdir(path) or not name.startswith("phase_"):
+                continue
+            df = os.path.join(path, "dag_reviewed.json")
+            if not os.path.exists(df):
+                df = os.path.join(path, "dag.json")
+            if os.path.exists(df):
+                yield name, path, df
+
+    # Pass 1: rebuild DAGs for phases with orphan tasks (tasks on disk but
+    # not in the DAG).  This must happen before reference fixing because
+    # the programmatic DAG builder reads depends_on metadata from task
+    # files and may re-introduce cross-phase refs that pass 2 will clean.
+    _NON_TASK = {"review_summary.md", "cross_phase_review_summary", "reorder_tasks_summary"}
+    for phase_dir_name, phase_path, dag_file in _iter_phase_dags():
+        with open(dag_file, "r", encoding="utf-8") as f:
+            dag = json.load(f)
+
+        on_disk = set()
+        for root, _dirs, files in os.walk(phase_path):
+            for fname in files:
+                if fname.endswith(".md"):
+                    rel = os.path.relpath(os.path.join(root, fname), phase_path)
+                    if not any(pat in rel for pat in _NON_TASK):
+                        on_disk.add(rel)
+
+        orphans = on_disk - set(dag.keys())
+        if orphans:
+            print(f"  {len(orphans)} orphan task(s) in {phase_dir_name}, rebuilding DAG...")
+            if not dry_run:
+                _rebuild_phase_dag(phase_path, ctx=ctx)
+            total_fixes += len(orphans)
+
+    # Pass 2: fix broken references (../ prefixes, redundant phase prefixes,
+    # cross-phase refs).
+    for phase_dir_name, phase_path, dag_file in _iter_phase_dags():
+        with open(dag_file, "r", encoding="utf-8") as f:
+            dag = json.load(f)
+
+        modified = False
+        new_dag: Dict[str, List[str]] = {}
+
+        for task_id, deps in dag.items():
+            fixed_task_id = _fix_single_dag_ref(task_id, phase_path, phase_dir_name)
+            if fixed_task_id is None:
+                print(f"  Removing cross-phase DAG key: {task_id} in {phase_dir_name}")
+                modified = True
+                total_fixes += 1
+                continue
+            if fixed_task_id != task_id:
+                modified = True
+                total_fixes += 1
+
+            fixed_deps = []
+            for dep in deps:
+                fixed_dep = _fix_single_dag_ref(dep, phase_path, phase_dir_name)
+                if fixed_dep is None:
+                    print(f"  Removing cross-phase dep: {dep} from {task_id} in {phase_dir_name}")
+                    modified = True
+                    total_fixes += 1
+                    continue
+                if fixed_dep != dep:
+                    print(f"  Fixing ref: {dep} -> {fixed_dep} in {phase_dir_name}")
+                    modified = True
+                    total_fixes += 1
+                fixed_deps.append(fixed_dep)
+
+            new_dag[fixed_task_id] = fixed_deps
+
+        if modified and not dry_run:
+            with open(dag_file, "w", encoding="utf-8") as f:
+                json.dump(new_dag, f, indent=2)
+                f.write("\n")
+            print(f"  Updated {dag_file}")
+
+    if total_fixes > 0:
+        print(f"\n=> Fixed {total_fixes} DAG reference(s)")
+    return total_fixes
+
+
+def _fix_single_dag_ref(
+    ref: str, phase_path: str, phase_dir_name: str
+) -> Optional[str]:
+    """Attempt to fix a single DAG reference.
+
+    :param ref: The task reference string from the DAG.
+    :param phase_path: Absolute path to the phase directory.
+    :param phase_dir_name: The phase directory name (e.g. ``phase_2``).
+    :returns: The corrected reference, or ``None`` if the reference is a
+        cross-phase dependency that should be removed.
+    :rtype: Optional[str]
+    """
+    # Already valid?
+    if os.path.exists(os.path.join(phase_path, ref)):
+        return ref
+
+    # Strip ../ prefix (same-phase ref with unnecessary relative path)
+    if ref.startswith("../"):
+        candidate = ref.lstrip("../")
+        # Need to re-strip since lstrip removes chars not prefix
+        candidate = ref[3:]  # strip exactly one ../
+        while candidate.startswith("../"):
+            candidate = candidate[3:]
+        if os.path.exists(os.path.join(phase_path, candidate)):
+            return candidate
+
+    # Strip redundant same-phase prefix (e.g. phase_2/foo in phase_2's DAG)
+    if ref.startswith(phase_dir_name + "/"):
+        candidate = ref[len(phase_dir_name) + 1:]
+        if os.path.exists(os.path.join(phase_path, candidate)):
+            return candidate
+
+    # Cross-phase reference (starts with phase_N/ but different phase)
+    if re.match(r"^phase_\d+/", ref):
+        return None
+
+    # Unknown broken ref — return as-is, validation will still catch it
+    return ref
 
 
 # ---------------------------------------------------------------------------

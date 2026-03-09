@@ -8,7 +8,10 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch, ANY
 
-from workflow_lib.replan import cmd_fixup, _fix_task_mappings, _fix_phase_mappings
+from workflow_lib.replan import (
+    cmd_fixup, _fix_task_mappings, _fix_phase_mappings,
+    _fix_dag_references, _fix_single_dag_ref,
+)
 
 
 def _setup_dirs(tmp, phases_content, tasks_content, grouping_jsons=None, req_content=None):
@@ -460,6 +463,7 @@ class TestCmdFixup(unittest.TestCase):
         }
 
         with patch("workflow_lib.replan._run_all_checks", return_value=results), \
+             patch("workflow_lib.replan._fix_dag_references", return_value=0), \
              patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
              patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()):
             with self.assertRaises(SystemExit) as cm:
@@ -487,6 +491,265 @@ class TestCmdFixup(unittest.TestCase):
              patch("workflow_lib.replan.load_replan_state", return_value={}), \
              patch("workflow_lib.replan.save_replan_state"), \
              patch("workflow_lib.replan.log_action"):
+            with self.assertRaises(SystemExit) as cm:
+                cmd_fixup(_make_args(dry_run=False))
+            self.assertEqual(cm.exception.code, 1)
+
+
+# ── _fix_single_dag_ref tests ─────────────────────────────────────────────
+
+
+class TestFixSingleDagRef(unittest.TestCase):
+
+    def test_valid_ref_returned_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "04_foo"))
+            task = os.path.join(tmp, "04_foo", "01_bar.md")
+            with open(task, "w") as f:
+                f.write("")
+            result = _fix_single_dag_ref("04_foo/01_bar.md", tmp, "phase_0")
+            self.assertEqual(result, "04_foo/01_bar.md")
+
+    def test_dotdot_prefix_stripped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "14_risk"))
+            task = os.path.join(tmp, "14_risk", "01_plans.md")
+            with open(task, "w") as f:
+                f.write("")
+            result = _fix_single_dag_ref("../14_risk/01_plans.md", tmp, "phase_0")
+            self.assertEqual(result, "14_risk/01_plans.md")
+
+    def test_same_phase_prefix_stripped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "02_css"))
+            task = os.path.join(tmp, "02_css", "07_spec.md")
+            with open(task, "w") as f:
+                f.write("")
+            result = _fix_single_dag_ref("phase_2/02_css/07_spec.md", tmp, "phase_2")
+            self.assertEqual(result, "02_css/07_spec.md")
+
+    def test_cross_phase_ref_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = _fix_single_dag_ref(
+                "phase_1/01_crate/04_backend.md", tmp, "phase_3"
+            )
+            self.assertIsNone(result)
+
+    def test_unknown_broken_ref_returned_as_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = _fix_single_dag_ref("nonexistent/task.md", tmp, "phase_0")
+            self.assertEqual(result, "nonexistent/task.md")
+
+
+# ── _fix_dag_references tests ────────────────────────────────────────────
+
+
+class TestFixDagReferences(unittest.TestCase):
+
+    def _make_phase_dir(self, tmp, phase_name, dag, task_files):
+        """Create a phase directory with a DAG and task files."""
+        tasks_dir = os.path.join(tmp, "docs", "plan", "tasks")
+        phase_dir = os.path.join(tasks_dir, phase_name)
+        os.makedirs(phase_dir, exist_ok=True)
+        with open(os.path.join(phase_dir, "dag.json"), "w") as f:
+            json.dump(dag, f)
+        for rel_path in task_files:
+            full = os.path.join(phase_dir, rel_path)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as f:
+                f.write(f"# Task\n")
+        return tasks_dir
+
+    def test_fixes_dotdot_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dag = {
+                "14_risk/01_plans.md": [],
+                "15_gov/02_lifecycle.md": [
+                    "../14_risk/01_plans.md"
+                ],
+            }
+            tasks_dir = self._make_phase_dir(tmp, "phase_0", dag, [
+                "14_risk/01_plans.md",
+                "15_gov/02_lifecycle.md",
+            ])
+            with _patches(tmp, tasks_dir):
+                fixes = _fix_dag_references()
+            self.assertGreater(fixes, 0)
+            with open(os.path.join(tasks_dir, "phase_0", "dag.json")) as f:
+                fixed_dag = json.load(f)
+            self.assertIn("14_risk/01_plans.md", fixed_dag["15_gov/02_lifecycle.md"])
+            self.assertNotIn("../14_risk/01_plans.md", fixed_dag["15_gov/02_lifecycle.md"])
+
+    def test_fixes_same_phase_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dag = {
+                "02_css/07_spec.md": [],
+                "03_style/03_cascade.md": [
+                    "phase_2/02_css/07_spec.md"
+                ],
+            }
+            tasks_dir = self._make_phase_dir(tmp, "phase_2", dag, [
+                "02_css/07_spec.md",
+                "03_style/03_cascade.md",
+            ])
+            with _patches(tmp, tasks_dir):
+                fixes = _fix_dag_references()
+            self.assertGreater(fixes, 0)
+            with open(os.path.join(tasks_dir, "phase_2", "dag.json")) as f:
+                fixed_dag = json.load(f)
+            self.assertEqual(
+                fixed_dag["03_style/03_cascade.md"],
+                ["02_css/07_spec.md"],
+            )
+
+    def test_removes_cross_phase_dep(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dag = {
+                "01_render/01_pixel.md": [
+                    "phase_1/10_mcp/03_buffer.md"
+                ],
+            }
+            tasks_dir = self._make_phase_dir(tmp, "phase_3", dag, [
+                "01_render/01_pixel.md",
+            ])
+            with _patches(tmp, tasks_dir):
+                fixes = _fix_dag_references()
+            self.assertGreater(fixes, 0)
+            with open(os.path.join(tasks_dir, "phase_3", "dag.json")) as f:
+                fixed_dag = json.load(f)
+            self.assertEqual(fixed_dag["01_render/01_pixel.md"], [])
+
+    def test_no_changes_when_dag_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dag = {
+                "01_foo/01_bar.md": [],
+                "01_foo/02_baz.md": ["01_foo/01_bar.md"],
+            }
+            tasks_dir = self._make_phase_dir(tmp, "phase_0", dag, [
+                "01_foo/01_bar.md",
+                "01_foo/02_baz.md",
+            ])
+            with _patches(tmp, tasks_dir):
+                fixes = _fix_dag_references()
+            self.assertEqual(fixes, 0)
+
+    def test_dry_run_does_not_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dag = {
+                "14_risk/01_plans.md": [],
+                "15_gov/02_lifecycle.md": ["../14_risk/01_plans.md"],
+            }
+            tasks_dir = self._make_phase_dir(tmp, "phase_0", dag, [
+                "14_risk/01_plans.md",
+                "15_gov/02_lifecycle.md",
+            ])
+            with _patches(tmp, tasks_dir):
+                fixes = _fix_dag_references(dry_run=True)
+            self.assertGreater(fixes, 0)
+            # File should still have the broken ref
+            with open(os.path.join(tasks_dir, "phase_0", "dag.json")) as f:
+                unchanged = json.load(f)
+            self.assertIn("../14_risk/01_plans.md", unchanged["15_gov/02_lifecycle.md"])
+
+    def test_orphan_triggers_dag_rebuild(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dag = {
+                "01_foo/01_bar.md": [],
+            }
+            tasks_dir = self._make_phase_dir(tmp, "phase_0", dag, [
+                "01_foo/01_bar.md",
+                "01_foo/02_orphan.md",  # on disk but not in DAG
+            ])
+            with _patches(tmp, tasks_dir), \
+                 patch("workflow_lib.replan._rebuild_phase_dag") as mock_rebuild:
+                fixes = _fix_dag_references()
+            self.assertGreater(fixes, 0)
+            mock_rebuild.assert_called_once()
+
+    def test_multiple_fixes_in_single_phase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dag = {
+                "01_a/01_x.md": [],
+                "02_b/01_y.md": [
+                    "../01_a/01_x.md",
+                    "phase_0/01_a/01_x.md",
+                ],
+            }
+            tasks_dir = self._make_phase_dir(tmp, "phase_0", dag, [
+                "01_a/01_x.md",
+                "02_b/01_y.md",
+            ])
+            with _patches(tmp, tasks_dir):
+                fixes = _fix_dag_references()
+            self.assertEqual(fixes, 2)
+            with open(os.path.join(tasks_dir, "phase_0", "dag.json")) as f:
+                fixed_dag = json.load(f)
+            # Both should resolve to the same valid ref
+            self.assertEqual(
+                fixed_dag["02_b/01_y.md"],
+                ["01_a/01_x.md", "01_a/01_x.md"],
+            )
+
+
+# ── cmd_fixup DAG integration tests ─────────────────────────────────────
+
+
+class TestCmdFixupDags(unittest.TestCase):
+
+    def test_fixup_calls_fix_dag_references_on_dag_failure(self):
+        results = {
+            "all_pass": False,
+            "checks": {
+                "verify-dags": {"passed": False, "output": "FAILED", "missing_reqs": []},
+            },
+        }
+        final_results = {"all_pass": True, "checks": {}}
+
+        with patch("workflow_lib.replan._run_all_checks", side_effect=[results, final_results]), \
+             patch("workflow_lib.replan._fix_dag_references", return_value=3) as mock_fix_dags, \
+             patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
+             patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()), \
+             patch("workflow_lib.replan.load_replan_state", return_value={}), \
+             patch("workflow_lib.replan.save_replan_state"), \
+             patch("workflow_lib.replan.log_action"):
+            cmd_fixup(_make_args(dry_run=False))
+
+        mock_fix_dags.assert_called_once_with(dry_run=False, ctx=ANY)
+
+    def test_fixup_skips_dags_when_dags_pass(self):
+        results = {
+            "all_pass": False,
+            "checks": {
+                "verify-dags": {"passed": True, "output": "", "missing_reqs": []},
+                "verify-tasks": {"passed": False, "missing_reqs": ["R-001"]},
+            },
+        }
+        final_results = {"all_pass": True, "checks": {}}
+
+        with patch("workflow_lib.replan._run_all_checks", side_effect=[results, final_results]), \
+             patch("workflow_lib.replan._fix_dag_references") as mock_fix_dags, \
+             patch("workflow_lib.replan._fix_task_mappings", return_value=True), \
+             patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
+             patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()), \
+             patch("workflow_lib.replan.load_replan_state", return_value={}), \
+             patch("workflow_lib.replan.save_replan_state"), \
+             patch("workflow_lib.replan.log_action"):
+            cmd_fixup(_make_args(dry_run=False))
+
+        mock_fix_dags.assert_not_called()
+
+    def test_fixup_exits_when_dag_fix_returns_zero(self):
+        results = {
+            "all_pass": False,
+            "checks": {
+                "verify-dags": {"passed": False, "output": "FAILED", "missing_reqs": []},
+            },
+        }
+
+        with patch("workflow_lib.replan._run_all_checks", return_value=results), \
+             patch("workflow_lib.replan._fix_dag_references", return_value=0), \
+             patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
+             patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()):
             with self.assertRaises(SystemExit) as cm:
                 cmd_fixup(_make_args(dry_run=False))
             self.assertEqual(cm.exception.code, 1)
