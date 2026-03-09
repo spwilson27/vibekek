@@ -359,6 +359,95 @@ class TestProcessTask:
         mock_copytree.assert_called_once()
         mock_copy2.assert_called_once()
 
+    def test_presubmit_called_with_start_new_session(self):
+        """subprocess.run for presubmit must use start_new_session=True.
+
+        This prevents Ctrl-C (SIGINT to the terminal process group) from being
+        forwarded to the presubmit subprocess and causing a spurious failure.
+        """
+        presubmit_calls = []
+        def mock_run_side_effect(*args, **kwargs):
+            cmd = args[0] if args else []
+            if isinstance(cmd, list) and cmd and cmd[0] == "./do":
+                presubmit_calls.append(kwargs)
+                return MagicMock(returncode=0, stdout="M file.py", stderr="")
+            return MagicMock(returncode=0, stdout="M file.py", stderr="")
+
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("subprocess.run", side_effect=mock_run_side_effect), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: T"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("os.path.isdir", return_value=False), \
+             patch("os.path.exists", return_value=False), \
+             patch("shutil.rmtree"):
+            process_task("/root", "phase_1/task.md", "./do presubmit")
+
+        assert presubmit_calls, "presubmit subprocess.run was never called"
+        for call_kwargs in presubmit_calls:
+            assert call_kwargs.get("start_new_session") is True, (
+                "presubmit subprocess.run must be called with start_new_session=True "
+                "so Ctrl-C does not propagate to the presubmit process"
+            )
+
+    def test_presubmit_survives_sigint_to_parent_process_group(self):
+        """Integration test: SIGINT sent to the parent process group must not kill
+        the presubmit subprocess.
+
+        Without start_new_session=True the presubmit would be in the same process
+        group as the workflow runner and would receive SIGINT, causing it to exit
+        early with a non-zero return code and be treated as a failure.
+        """
+        import signal
+        import textwrap
+
+        # Child script: registers a SIGINT handler that exits with code 42,
+        # then sleeps. Exit code 42 means it received SIGINT; timeout (kill)
+        # means it did NOT receive SIGINT.
+        child_script = textwrap.dedent("""\
+            import signal, sys, time
+            signal.signal(signal.SIGINT, lambda *a: sys.exit(42))
+            time.sleep(10)
+        """)
+
+        def run_scenario(start_new_session: bool) -> int:
+            """Run child + send SIGINT to process group; return child exit code."""
+            wrapper = textwrap.dedent(f"""\
+                import subprocess, signal, os, time, sys
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", {child_script!r}],
+                    start_new_session={start_new_session},
+                )
+                time.sleep(0.1)  # let child install its handler
+                os.killpg(os.getpgid(os.getpid()), signal.SIGINT)
+                time.sleep(0.3)  # let signal propagate
+                rc = proc.poll()
+                if rc is None:
+                    proc.kill()
+                    proc.wait()
+                    sys.exit(0)   # child survived -> exit 0
+                sys.exit(rc)      # child exited -> pass through its code
+            """)
+            result = subprocess.run(
+                [sys.executable, "-c", wrapper],
+                start_new_session=True,  # isolate from our own process group
+            )
+            return result.returncode
+
+        # Without the fix: child is in the same process group and receives SIGINT
+        rc_no_fix = run_scenario(start_new_session=False)
+        assert rc_no_fix == 42, (
+            f"Expected child to receive SIGINT (exit 42) without start_new_session, got {rc_no_fix}"
+        )
+
+        # With the fix: child is in its own session and does NOT receive SIGINT
+        rc_with_fix = run_scenario(start_new_session=True)
+        assert rc_with_fix == 0, (
+            f"Expected child to survive SIGINT (exit 0) with start_new_session=True, got {rc_with_fix}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # executor.py – merge_task

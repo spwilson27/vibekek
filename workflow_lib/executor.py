@@ -748,7 +748,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
                 dashboard.set_agent(full_task_id, "Verify", "running", f"Attempt {attempt}/{max_retries}")
             # We split the command string into a list for subprocess
             cmd_list = presubmit_cmd.split()
-            presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True)
+            presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True, start_new_session=True)
 
             if presubmit_res.returncode == 0:
                 _log(f"      [Verification] Presubmit passed!")
@@ -946,7 +946,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                     
                     _log(f"      [Merge] Squash successful. Verifying with presubmit...")
                     cmd_list = presubmit_cmd.split()
-                    presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True)
+                    presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True, start_new_session=True)
                     
                     if presubmit_res.returncode == 0:
                         _log(f"      [Merge] Presubmit passed! Pushing to origin.")
@@ -984,7 +984,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                                 _log(f"      [Merge] No changes to squash merge after rebase for {task_id}.")
 
                             cmd_list = presubmit_cmd.split()
-                            presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True)
+                            presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True, start_new_session=True)
                             if presubmit_res.returncode == 0:
                                 _log(f"      [Merge] Presubmit passed after rebase + squash! Pushing to origin.")
                                 _commit_state_in_clone(tmpdir, workflow_state, _log)
@@ -1025,7 +1025,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                 # The agent claims it's done. Let's verify.
                 _log(f"      [Merge] Verifying agent's merge...")
                 cmd_list = presubmit_cmd.split()
-                presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True)
+                presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True, start_new_session=True)
                 
                 if presubmit_res.returncode == 0:
                      _log(f"      [Merge] Presubmit passed! Pushing to origin.")
