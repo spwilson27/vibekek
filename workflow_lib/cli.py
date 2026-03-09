@@ -78,7 +78,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     1. Creates ``.tools/.venv/`` (skipped when it already exists).
     2. Installs packages from ``.tools/requirements.txt`` using the venv pip.
-    3. Copies template files (``.agent``, ``do.py``, ``.workflow.jsonc``) from
+    3. Copies template files (``.agent``, ``do``, ``.workflow.jsonc``) from
        ``.tools/templates/`` to the project root (skipped when already present).
 
     :param args: Parsed :mod:`argparse` namespace (no relevant attributes).
@@ -125,7 +125,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
             shutil.copy2(src, dst)
             print(f"Copied: {src} -> {dst}")
 
-    for name in [".agent", "do.py", ".workflow.jsonc", "tests"]:
+    for name in [".agent", "do", ".workflow.jsonc", "tests"]:
         src = os.path.join(templates_dir, name)
         dst = os.path.join(ROOT_DIR, name)
         if not os.path.exists(src):
@@ -237,7 +237,13 @@ def cmd_run(args: argparse.Namespace) -> None:
     state = load_workflow_state()
 
     serena_status = "enabled" if get_serena_enabled() else "disabled"
-    execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, args.backend, log_file=log_stream, model=args.model)
+    lock = threading.Lock()
+    original_stderr = sys.stderr
+    sys.stderr = Logger(original_stderr, log_stream, lock)
+    try:
+        execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, args.backend, log_file=log_stream, model=args.model)
+    finally:
+        sys.stderr = original_stderr
 
 def main() -> None:
     """Parse CLI arguments and dispatch to the appropriate command handler.

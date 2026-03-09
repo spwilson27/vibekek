@@ -15,7 +15,7 @@ idea to a fully-planned, parallel-executed codebase. It has two main phases:
 ```mermaid
 flowchart TD
     A([Start]) --> C["1. Setup<br/>workflow.py setup"]
-    C --> C1[".tools/.venv/<br/>do.py, ci.py, .agent/<br/>input/"]
+    C --> C1[".tools/.venv/<br/>do, ci.py, .agent/<br/>input/"]
 
     C1 --> B["2. Describe project<br/>Edit input/ files"]
 
@@ -83,7 +83,7 @@ python .tools/workflow.py setup
 ```
 
 This creates `.tools/.venv/`, installs dependencies, and copies starter templates
-(`.agent/`, `do.py`, `ci.py`, `tests/`) into the project root.
+(`.agent/`, `do`, `ci.py`, `tests/`) into the project root.
 
 ### 3. Run the planning pipeline
 
@@ -407,7 +407,7 @@ Rescans tasks, checks requirement coverage, rebuilds the DAG, and validates.
     project-description.md   # ← Edit this first
   templates/
     .agent/MEMORY.md   # Agent memory template
-    do.py              # Presubmit / build script template
+    do                 # Presubmit / build script template
     ci.py              # CI script template
     tests/             # Template test suite (memory size check)
     .mcp.json          # Serena MCP server config template
