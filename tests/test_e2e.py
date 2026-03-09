@@ -2058,7 +2058,7 @@ class TestMergeDuringShutdownE2E:
                 # Merge agent with allow_during_shutdown should proceed
                 # (will fail because no real AI, but should not be skipped)
                 with patch("workflow_lib.executor.run_ai_command",
-                           return_value=0):
+                           return_value=(0, "")):
                     result = run_agent("Merge", "implement_task.md",
                                        {"task_name": "test"}, root, "gemini",
                                        allow_during_shutdown=True)

@@ -102,21 +102,21 @@ class TestRunAiCommand:
         runner = self._mock_runner()
         with patch("workflow_lib.executor.make_runner", return_value=runner), \
              patch("workflow_lib.config.get_config_defaults", return_value={}):
-            rc = run_ai_command("prompt", "/tmp", backend="claude")
+            rc, _ = run_ai_command("prompt", "/tmp", backend="claude")
         assert rc == 0
 
     def test_copilot_backend(self):
         runner = self._mock_runner()
         with patch("workflow_lib.executor.make_runner", return_value=runner), \
              patch("workflow_lib.config.get_config_defaults", return_value={}):
-            rc = run_ai_command("prompt", "/tmp", backend="copilot")
+            rc, _ = run_ai_command("prompt", "/tmp", backend="copilot")
         assert rc == 0
 
     def test_gemini_backend(self):
         runner = self._mock_runner(returncode=1)
         with patch("workflow_lib.executor.make_runner", return_value=runner), \
              patch("workflow_lib.config.get_config_defaults", return_value={}):
-            rc = run_ai_command("prompt", "/tmp", backend="gemini")
+            rc, _ = run_ai_command("prompt", "/tmp", backend="gemini")
         assert rc == 1
 
     def test_timeout_returns_1(self):
@@ -125,7 +125,7 @@ class TestRunAiCommand:
         runner.run.side_effect = subprocess.TimeoutExpired(["cmd"], 10)
         with patch("workflow_lib.executor.make_runner", return_value=runner), \
              patch("workflow_lib.config.get_config_defaults", return_value={}):
-            rc = run_ai_command("prompt", "/tmp")
+            rc, _ = run_ai_command("prompt", "/tmp")
         assert rc == 1
 
     def test_file_not_found_returns_1(self):
@@ -134,7 +134,7 @@ class TestRunAiCommand:
         runner.run.side_effect = FileNotFoundError("not found")
         with patch("workflow_lib.executor.make_runner", return_value=runner), \
              patch("workflow_lib.config.get_config_defaults", return_value={}):
-            rc = run_ai_command("prompt", "/tmp")
+            rc, _ = run_ai_command("prompt", "/tmp")
         assert rc == 1
 
 
@@ -196,13 +196,13 @@ class TestHelpers:
 class TestRunAgent:
     def test_success(self):
         with patch("builtins.open", mock_open(read_data="Hello {task_name}")), \
-             patch("workflow_lib.executor.run_ai_command", return_value=0):
+             patch("workflow_lib.executor.run_ai_command", return_value=(0, "")):
             result = run_agent("Impl", "implement_task.md", {"task_name": "my_task"}, "/tmp")
         assert result is True
 
     def test_failure(self):
         with patch("builtins.open", mock_open(read_data="template")), \
-             patch("workflow_lib.executor.run_ai_command", return_value=1):
+             patch("workflow_lib.executor.run_ai_command", return_value=(1, "")):
             result = run_agent("Impl", "implement_task.md", {}, "/tmp")
         assert result is False
 
@@ -558,7 +558,7 @@ class TestRunAiCommandOnLine:
         runner = self._mock_runner()
         with patch("workflow_lib.executor.make_runner", return_value=runner), \
              patch("workflow_lib.config.get_config_defaults", return_value={}):
-            rc = run_ai_command("prompt", "/tmp", backend="gemini", image_paths=["/a.png"])
+            rc, _ = run_ai_command("prompt", "/tmp", backend="gemini", image_paths=["/a.png"])
         assert rc == 0
         call_kwargs = runner.run.call_args.kwargs
         assert call_kwargs.get("image_paths") == ["/a.png"]
@@ -567,14 +567,14 @@ class TestRunAiCommandOnLine:
         runner = self._mock_runner()
         with patch("workflow_lib.executor.make_runner", return_value=runner), \
              patch("workflow_lib.config.get_config_defaults", return_value={}):
-            rc = run_ai_command("prompt", "/tmp", backend="opencode", image_paths=["/img.png"])
+            rc, _ = run_ai_command("prompt", "/tmp", backend="opencode", image_paths=["/img.png"])
         assert rc == 0
 
     def test_copilot_with_images(self):
         runner = self._mock_runner()
         with patch("workflow_lib.executor.make_runner", return_value=runner), \
              patch("workflow_lib.config.get_config_defaults", return_value={}):
-            rc = run_ai_command("prompt", "/tmp", backend="copilot", image_paths=["/img.png"])
+            rc, _ = run_ai_command("prompt", "/tmp", backend="copilot", image_paths=["/img.png"])
         assert rc == 0
 
 
@@ -582,7 +582,7 @@ class TestRunAgentWithDashboard:
     def test_with_dashboard_and_task_id_success(self):
         dash = MagicMock()
         with patch("builtins.open", mock_open(read_data="Hello {task_name}")), \
-             patch("workflow_lib.executor.run_ai_command", return_value=0), \
+             patch("workflow_lib.executor.run_ai_command", return_value=(0, "")), \
              patch("workflow_lib.executor.get_project_images", return_value=[]):
             result = run_agent("Impl", "implement_task.md", {"task_name": "t"}, "/tmp",
                                dashboard=dash, task_id="phase_1/t.md")
@@ -592,7 +592,7 @@ class TestRunAgentWithDashboard:
     def test_with_dashboard_failure(self):
         dash = MagicMock()
         with patch("builtins.open", mock_open(read_data="template")), \
-             patch("workflow_lib.executor.run_ai_command", return_value=1), \
+             patch("workflow_lib.executor.run_ai_command", return_value=(1, "")), \
              patch("workflow_lib.executor.get_project_images", return_value=[]):
             result = run_agent("Impl", "implement_task.md", {}, "/tmp",
                                dashboard=dash, task_id="phase_1/t.md")
@@ -603,7 +603,7 @@ class TestRunAgentWithDashboard:
         """When dashboard + task_id, on_line callback is passed to run_ai_command."""
         dash = MagicMock()
         with patch("builtins.open", mock_open(read_data="tpl")), \
-             patch("workflow_lib.executor.run_ai_command", return_value=0) as mock_cmd, \
+             patch("workflow_lib.executor.run_ai_command", return_value=(0, "")) as mock_cmd, \
              patch("workflow_lib.executor.get_project_images", return_value=[]):
             run_agent("Impl", "impl.md", {"task_name": "t", "phase_filename": "p"}, "/tmp",
                       dashboard=dash, task_id="phase_1/t.md")
@@ -4145,7 +4145,7 @@ class TestSoftInterrupt:
 
     def test_run_agent_proceeds_when_not_shutdown(self):
         self._mod.shutdown_requested = False
-        with patch('workflow_lib.executor.run_ai_command', return_value=0) as mock_ai, \
+        with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
              patch('builtins.open', mock_open(read_data="prompt {task_name}")):
             result = self._mod.run_agent(
@@ -4299,7 +4299,7 @@ class TestSoftInterrupt:
                 return MagicMock(returncode=1, stdout="fail", stderr="err")
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch('workflow_lib.executor.run_ai_command', return_value=0) as mock_ai, \
+        with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_task_details', return_value="# Task: test"), \
              patch('workflow_lib.executor.get_project_context', return_value="ctx"), \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \

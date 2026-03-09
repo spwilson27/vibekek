@@ -328,7 +328,7 @@ class TestRunAiCommand:
             mock_runner.run.return_value = expected
             mock_make.return_value = mock_runner
 
-            rc = run_ai_command("prompt", "/tmp", backend="gemini")
+            rc, _ = run_ai_command("prompt", "/tmp", backend="gemini")
 
         assert rc == 0
         mock_make.assert_called_once()
@@ -357,7 +357,7 @@ class TestRunAiCommand:
             mock_runner.run.side_effect = subprocess.TimeoutExpired(["cmd"], 10)
             mock_make.return_value = mock_runner
 
-            rc = run_ai_command("prompt", "/tmp")
+            rc, _ = run_ai_command("prompt", "/tmp")
 
         assert rc == 1
 
@@ -370,7 +370,7 @@ class TestRunAiCommand:
             mock_runner.run.side_effect = FileNotFoundError("gemini not found")
             mock_make.return_value = mock_runner
 
-            rc = run_ai_command("prompt", "/tmp")
+            rc, _ = run_ai_command("prompt", "/tmp")
 
         assert rc == 1
 
@@ -406,7 +406,7 @@ class TestRunAiCommand:
             mock_runner.run.return_value = result
             mock_make.return_value = mock_runner
 
-            rc = run_ai_command("prompt", "/tmp", on_line=collected.append)
+            rc, _ = run_ai_command("prompt", "/tmp", on_line=collected.append)
 
         assert rc == 1
         assert any("TerminalQuotaError" in line for line in collected)
@@ -427,7 +427,7 @@ class TestRunAiCommand:
             mock_runner.run.return_value = result
             mock_make.return_value = mock_runner
 
-            rc = run_ai_command("prompt", "/tmp", on_line=collected.append)
+            rc, _ = run_ai_command("prompt", "/tmp", on_line=collected.append)
 
         assert rc == 0
         assert not collected

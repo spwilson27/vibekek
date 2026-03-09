@@ -33,6 +33,7 @@ from typing import Callable, List, Dict, Any, Optional
 import threading
 import concurrent.futures
 import tempfile
+import time
 import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -209,8 +210,8 @@ def run_ai_command(
     image_paths: Optional[List[str]] = None,
     on_line: Optional[Callable[[str], None]] = None,
     model: Optional[str] = None,
-) -> int:
-    """Launch an AI CLI process and stream its output, returning the exit code.
+) -> tuple:  # type: ignore[type-arg]
+    """Launch an AI CLI process and stream its output.
 
     Delegates to the appropriate :class:`~workflow_lib.runners.AIRunner`
     subclass.  Output lines are printed to ``stdout`` with an optional
@@ -223,7 +224,7 @@ def run_ai_command(
     :param image_paths: Optional list of absolute paths to image files.
     :param on_line: Optional callback invoked per output line.
     :param model: Optional model name passed to the CLI.
-    :returns: Process return code (``0`` on success).
+    :returns: Tuple of (return_code, stderr_text).
     """
     from .config import get_config_defaults
     cfg = get_config_defaults()
@@ -240,14 +241,15 @@ def run_ai_command(
 
     try:
         result = runner.run(cwd, prompt, image_paths=image_paths, on_line=output_line)
-        if result.returncode != 0 and result.stderr:
-            for line in result.stderr.strip().splitlines():
+        stderr_text = result.stderr or ""
+        if result.returncode != 0 and stderr_text:
+            for line in stderr_text.strip().splitlines():
                 output_line(f"[stderr] {line}")
-        return result.returncode
+        return result.returncode, stderr_text
     except subprocess.TimeoutExpired:
-        return 1
+        return 1, "timeout"
     except FileNotFoundError:
-        return 1
+        return 1, "command not found"
 
 
 def phase_sort_key(task_id: str) -> tuple:  # type: ignore[type-arg]
@@ -437,9 +439,35 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
             dashboard.log(f"{prefix}{line}")
             dashboard.set_agent(_tid, _stage, "running", line)
 
-    returncode = run_ai_command(prompt, cwd, prefix=prefix, backend=backend, image_paths=get_project_images(), on_line=on_line, model=model)
+    max_capacity_retries = 5
+    base_delay = 30  # seconds
 
-    if returncode != 0:
+    for attempt in range(1, max_capacity_retries + 1):
+        returncode, stderr_text = run_ai_command(prompt, cwd, prefix=prefix, backend=backend, image_paths=get_project_images(), on_line=on_line, model=model)
+
+        if returncode == 0:
+            return True
+
+        # Check if this is a transient capacity error worth retrying
+        is_capacity_error = any(s in stderr_text for s in (
+            "RESOURCE_EXHAUSTED",
+            "MODEL_CAPACITY_EXHAUSTED",
+            "No capacity available",
+            "rateLimitExceeded",
+        ))
+
+        if is_capacity_error and attempt < max_capacity_retries:
+            delay = base_delay * (2 ** (attempt - 1))  # 30s, 60s, 120s, 240s
+            retry_msg = f"[{agent_type}] Capacity exhausted (attempt {attempt}/{max_capacity_retries}). Retrying in {delay}s..."
+            if dashboard:
+                dashboard.log(f"{prefix}{retry_msg}")
+                if task_id:
+                    dashboard.set_agent(task_id, agent_type, "waiting", f"Capacity retry {attempt}/{max_capacity_retries}")
+            else:
+                print(f"      {retry_msg}")
+            time.sleep(delay)
+            continue
+
         err = f"[{agent_type}] FATAL: Agent process failed with exit code {returncode}"
         if dashboard:
             dashboard.log(err)
@@ -447,7 +475,7 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
             print(f"      {err}")
         return False
 
-    return True
+    return False
 
 
 def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.Lock, dashboard: Any = None) -> None:
