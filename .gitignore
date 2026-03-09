@@ -7,5 +7,5 @@ repo_index/
 __pycache__/
 *.py[cod]
 .DS_Store
-.coverage
+.coverage.*
 .coverage_report.json

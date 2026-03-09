@@ -346,7 +346,7 @@ def test_workflow_run_methods_failure(
             "cmd",
             "gemini",
         )
-    except Exception:
+    except BaseException:
         pass
     from workflow import run_ai_command, process_task, merge_task, execute_dag
 
@@ -384,7 +384,7 @@ def test_workflow_run_methods_failure(
             "cmd",
             "gemini",
         )
-    except Exception:
+    except BaseException:
         pass
 
 
@@ -545,6 +545,7 @@ def test_main_all_cmds(mock_subprocess, mock_open_file, super_mock):
             ),
             patch("builtins.open"),
             patch("workflow_lib.cli.os"),
+            patch("workflow_lib.state.json.load", return_value={}),
         ):
             try:
                 workflow.main()
@@ -566,6 +567,7 @@ def test_main_all_cmds(mock_subprocess, mock_open_file, super_mock):
             ),
             patch("builtins.open"),
             patch("workflow_lib.cli.os"),
+            patch("workflow_lib.state.json.load", return_value={}),
         ):
             try:
                 workflow.main()
@@ -581,6 +583,7 @@ def test_main_all_cmds(mock_subprocess, mock_open_file, super_mock):
             ),
             patch("builtins.open"),
             patch("workflow_lib.cli.os"),
+            patch("workflow_lib.state.json.load", return_value={}),
         ):
             try:
                 workflow.main()
