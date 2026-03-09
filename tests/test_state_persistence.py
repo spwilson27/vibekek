@@ -9,6 +9,9 @@ Validates that:
 3. Sequential commit_state_to_branch() calls produce fast-forward-compatible
    history (no merge conflicts when a clone pushes back).
 4. State round-trips correctly (save → commit → delete local → restore → load).
+5. State files must live outside any git submodule path — placing them inside
+   a submodule (e.g. .tools/.state/) causes commit_state_to_branch() to fail
+   because the parent repo treats the submodule as a gitlink, not a directory.
 """
 
 import json
@@ -55,7 +58,7 @@ def temp_repo(tmp_path):
     """
     repo = tmp_path / "repo"
     repo.mkdir()
-    _run(["git", "init"], cwd=repo)
+    _run(["git", "-c", "init.defaultBranch=main", "init"], cwd=repo)
     _run(["git", "config", "user.email", "test@test.com"], cwd=repo)
     _run(["git", "config", "user.name", "Test"], cwd=repo)
 
@@ -431,3 +434,125 @@ class TestStateRoundTrip:
         assert restored_wf["merged_tasks"] == wf_state["merged_tasks"]
         assert restored_rp["blocked_tasks"] == rp_state["blocked_tasks"]
         assert restored_rp["removed_tasks"] == rp_state["removed_tasks"]
+
+
+def _make_repo_with_tools_submodule(tmp_path):
+    """Return a repo path where .tools is a real git submodule.
+
+    Creates a minimal upstream repo for the submodule, then creates the main
+    repo and adds it as .tools.  Both repos are fully initialised with an
+    initial commit so the submodule reference is valid.
+    """
+    # Upstream repo that will become the .tools submodule
+    tools_src = tmp_path / "tools_src"
+    tools_src.mkdir()
+    _run(["git", "-c", "init.defaultBranch=main", "init"], cwd=tools_src)
+    _run(["git", "config", "user.email", "t@t.com"], cwd=tools_src)
+    _run(["git", "config", "user.name", "T"], cwd=tools_src)
+    (tools_src / "README.md").write_text("tools\n")
+    _run(["git", "add", "README.md"], cwd=tools_src)
+    _run(["git", "commit", "-m", "init tools"], cwd=tools_src)
+
+    # Main repo
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _run(["git", "-c", "init.defaultBranch=main", "init"], cwd=repo)
+    _run(["git", "config", "user.email", "t@t.com"], cwd=repo)
+    _run(["git", "config", "user.name", "T"], cwd=repo)
+    _run(["git", "config", "protocol.file.allow", "always"], cwd=repo)
+    (repo / "README.md").write_text("# test\n")
+    _run(["git", "add", "README.md"], cwd=repo)
+    _run(["git", "commit", "-m", "init"], cwd=repo)
+
+    # Add .tools as a submodule
+    _run(
+        ["git", "-c", "protocol.file.allow=always", "submodule", "add",
+         str(tools_src), ".tools"],
+        cwd=repo,
+    )
+    _run(["git", "commit", "-m", "add .tools submodule"], cwd=repo)
+
+    # Create dev branch
+    _run(["git", "branch", "dev"], cwd=repo)
+
+    return repo
+
+
+class TestSubmoduleSubtlety:
+    """Regression tests for the .tools-submodule state-commit bug.
+
+    When .tools is a git submodule, the parent repo records it as a gitlink
+    (mode 160000) in its tree.  git update-index --cacheinfo cannot add a
+    regular file under a gitlink path, so commit_state_to_branch() silently
+    fails whenever STATE_DIR was inside .tools/.state/.
+
+    These tests verify:
+    * Placing state files inside the submodule path causes the commit to fail.
+    * Placing state files outside the submodule (ROOT_DIR/.workflow_state/)
+      causes the commit to succeed — the behaviour guaranteed by the fix that
+      moved STATE_DIR from TOOLS_DIR/.state to ROOT_DIR/.workflow_state.
+
+    The second test directly uses the relative path derived from
+    constants.WORKFLOW_STATE_FILE so it fails if the constant is ever
+    accidentally moved back inside a submodule directory.
+    """
+
+    def test_state_inside_submodule_path_fails(self, tmp_path, monkeypatch):
+        """commit_state_to_branch returns False when state files live inside .tools/."""
+        from workflow_lib.state import commit_state_to_branch
+        from workflow_lib import state as state_mod
+
+        repo = _make_repo_with_tools_submodule(tmp_path)
+
+        # Simulate the old (broken) layout: state inside the .tools submodule
+        old_state_dir = repo / ".tools" / ".state"
+        old_state_dir.mkdir(parents=True, exist_ok=True)
+        wf_file = old_state_dir / "workflow_state.json"
+        rp_file = old_state_dir / "replan_state.json"
+        wf_file.write_text('{"completed_tasks": ["t1"], "merged_tasks": ["t1"]}')
+
+        monkeypatch.setattr(state_mod, "WORKFLOW_STATE_FILE", str(wf_file))
+        monkeypatch.setattr(state_mod, "REPLAN_STATE_FILE", str(rp_file))
+
+        result = commit_state_to_branch(str(repo), "dev")
+        assert result is False, (
+            "Expected commit_state_to_branch to fail when state files are "
+            "inside the .tools git submodule path"
+        )
+
+    def test_state_dir_outside_submodule_succeeds(self, tmp_path, monkeypatch):
+        """commit_state_to_branch succeeds when STATE_DIR is in the root repo.
+
+        This test derives the state-file location from constants.WORKFLOW_STATE_FILE
+        (relative to constants.ROOT_DIR) so it will fail if that constant is ever
+        moved back inside a submodule directory.
+        """
+        from workflow_lib.state import commit_state_to_branch
+        from workflow_lib import constants, state as state_mod
+
+        repo = _make_repo_with_tools_submodule(tmp_path)
+
+        # Mirror the relative path of the real WORKFLOW_STATE_FILE under our
+        # temp repo.  If constants still points inside .tools/, this test fails.
+        wf_rel = os.path.relpath(constants.WORKFLOW_STATE_FILE, constants.ROOT_DIR)
+        rp_rel = os.path.relpath(constants.REPLAN_STATE_FILE, constants.ROOT_DIR)
+
+        wf_file = repo / wf_rel
+        rp_file = repo / rp_rel
+        wf_file.parent.mkdir(parents=True, exist_ok=True)
+
+        state_data = {"completed_tasks": ["phase_1/t1.md"], "merged_tasks": ["phase_1/t1.md"]}
+        wf_file.write_text(json.dumps(state_data))
+
+        monkeypatch.setattr(state_mod, "WORKFLOW_STATE_FILE", str(wf_file))
+        monkeypatch.setattr(state_mod, "REPLAN_STATE_FILE", str(rp_file))
+
+        result = commit_state_to_branch(str(repo), "dev")
+        assert result is True, (
+            f"commit_state_to_branch failed with state at '{wf_rel}'. "
+            f"STATE_DIR must be outside any git submodule (not under .tools/)."
+        )
+
+        content = _git_show(str(repo), "dev", wf_rel)
+        assert content is not None, f"State file not found in dev branch at {wf_rel}"
+        assert json.loads(content) == state_data

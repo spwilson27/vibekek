@@ -28,6 +28,7 @@ def _get_webhook_url():
 
 class TestDiscordWebhook(unittest.TestCase):
 
+    @unittest.skip("Disabled: causes Discord rate limiting during test runs")
     def test_webhook_sends_test_message(self):
         """Validate that the configured Discord webhook accepts a test message."""
         url = _get_webhook_url()
