@@ -570,13 +570,16 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
     # If the task branch already exists in origin (e.g. from a prior run that
     # succeeded but failed to record state), skip re-running the agent and let
     # merge_task handle it directly.
-    existing = subprocess.run(
-        ["git", "ls-remote", "--heads", root_dir, branch_name],
-        capture_output=True, text=True,
-    )
-    if existing.stdout.strip():
-        _log(f"\n   -> [Implementation] Skipping {full_task_id} — branch {branch_name} already exists in origin.")
-        return True
+    try:
+        existing = subprocess.run(
+            ["git", "ls-remote", "--heads", root_dir, branch_name],
+            capture_output=True, text=True,
+        )
+        if "refs/heads/" in existing.stdout:
+            _log(f"\n   -> [Implementation] Skipping {full_task_id} — branch {branch_name} already exists in origin.")
+            return True
+    except Exception:
+        pass  # ls-remote failed; proceed with normal implementation flow
 
     _log(f"\n   -> [Implementation] Starting {full_task_id}")
     if dashboard:
