@@ -706,6 +706,9 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
 
     _log = dashboard.log if dashboard else print
 
+    if dashboard:
+        dashboard.set_agent(task_id, "Merge", "running", "Starting merge...")
+
     # Extract task title for the commit message
     task_details = get_task_details(task_id)
     commit_msg = f"{phase_part}:{name_part}: Standardized Implementation"
@@ -1095,6 +1098,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
 
                         # Trigger DAG Merge Workflow immediately
                         if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch):
+                            dashboard.set_agent(task_id, "Merge", "done", "Merged successfully")
                             with state_lock:
                                 state["completed_tasks"].append(task_id)
                                 state["merged_tasks"].append(task_id)
@@ -1109,6 +1113,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                             else:
                                 dashboard.log(f"      [Push] Success.")
                         else:
+                            dashboard.set_agent(task_id, "Merge", "failed", f"Failed to merge into {dev_branch}")
                             with state_lock:
                                 failed_tasks.add(f"Task {task_id} failed merging into {dev_branch}.")
                             executor.shutdown(wait=True, cancel_futures=True)
