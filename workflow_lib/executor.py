@@ -667,6 +667,15 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
                      subprocess.run(["git", "commit", "--no-verify", "-m", commit_msg], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL)
                 else:
                      _log(f"      [Verification] No changes to commit for {full_task_id}.")
+                # Push the task branch back to the main repo so merge_task can access it
+                push_res = subprocess.run(
+                    ["git", "push", "origin", branch_name],
+                    cwd=tmpdir, capture_output=True, text=True,
+                )
+                if push_res.returncode != 0:
+                    _log(f"      [!] Failed to push task branch {branch_name} to origin:\n{push_res.stderr}")
+                    return False
+
                 if dashboard:
                     dashboard.set_agent(full_task_id, "Verify", "done", "Presubmit passed")
                 success = True

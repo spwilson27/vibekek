@@ -1683,6 +1683,97 @@ class TestProcessTaskRetryE2E:
 
 
 # ---------------------------------------------------------------------------
+# process_task pushes branch to origin
+# ---------------------------------------------------------------------------
+
+
+class TestProcessTaskPushesBranch:
+    """Verify process_task pushes the task branch back to the main repo.
+
+    Without this push, merge_task cannot find the task branch because the
+    clone (where the work was done) is cleaned up after process_task returns.
+    """
+
+    def test_task_branch_pushed_to_origin_on_success(self, tmp_path):
+        """After process_task succeeds, the task branch must exist in root_dir."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        push_calls = []
+
+        with patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run") as mock_run:
+
+            def _fake_run(cmd, **kwargs):
+                result = MagicMock(returncode=0, stdout="", stderr=b"")
+                if isinstance(cmd, list):
+                    if "status" in cmd and "--porcelain" in cmd:
+                        result.stdout = "M file.py"
+                    if "push" in cmd and "origin" in cmd:
+                        push_calls.append(cmd)
+                    # Ensure stderr is a string for text-mode callers
+                    if kwargs.get("text") or kwargs.get("capture_output"):
+                        result.stderr = ""
+                return result
+
+            mock_run.side_effect = _fake_run
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", max_retries=3)
+
+        assert result is True
+        # Verify git push was called with the correct task branch name
+        assert len(push_calls) == 1, (
+            f"Expected exactly 1 push call, got {len(push_calls)}"
+        )
+        push_cmd = push_calls[0]
+        assert push_cmd == ["git", "push", "origin", "ai-phase-sub_01_a"], (
+            f"Push called with unexpected args: {push_cmd}"
+        )
+
+    def test_task_fails_if_push_fails(self, tmp_path):
+        """process_task returns False when the branch push fails."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo(root)
+
+        with patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run") as mock_run:
+
+            def _fake_run(cmd, **kwargs):
+                result = MagicMock(returncode=0, stdout="", stderr="")
+                if isinstance(cmd, list):
+                    if "status" in cmd and "--porcelain" in cmd:
+                        result.stdout = "M file.py"
+                    if "push" in cmd and "origin" in cmd:
+                        result.returncode = 1
+                        result.stderr = "error: failed to push"
+                    if isinstance(result.stderr, bytes) and (kwargs.get("text") or kwargs.get("capture_output")):
+                        result.stderr = ""
+                return result
+
+            mock_run.side_effect = _fake_run
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", max_retries=3)
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
 # Resume from Partial State E2E
 # ---------------------------------------------------------------------------
 
