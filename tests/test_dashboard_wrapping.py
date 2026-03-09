@@ -260,3 +260,77 @@ class TestLogLineWrapping:
         assert not any("…" in l for l in log_lines), (
             f"Log was truncated with '…' instead of wrapped"
         )
+
+
+class TestShutdownBannerPlacement:
+    """Regression tests: SHUTTING DOWN banner must be rendered before log/agents.
+
+    Before the fix the render order was Group(*log_parts, *parts, *shutdown_parts),
+    placing the banner at the end of the renderable list.  When agents or log
+    content exceeded the terminal height the banner was pushed off the bottom of
+    the screen.
+
+    The fix changed the order to Group(*shutdown_parts, *log_parts, *parts) so
+    the banner is always the first thing rendered and can never be displaced.
+
+    test_shutdown_banner_is_first_renderable fails without the fix because the
+    first renderable is the log-header Rule, not the shutdown Rule.
+
+    test_shutdown_banner_renders_before_log fails without the fix because the
+    log text appears before "SHUTTING DOWN" in the output string.
+    """
+
+    def test_shutdown_banner_is_first_renderable(self):
+        """The SHUTTING DOWN Rule must be the very first item in the render group."""
+        from rich.rule import Rule
+        d = _make_dashboard()
+        d.set_shutting_down()
+        group = d._render()
+        first = group._renderables[0]
+        assert isinstance(first, Rule), (
+            f"Expected Rule as first renderable (shutdown banner), got "
+            f"{type(first).__name__}. "
+            "The banner must come before log and agents so it cannot be pushed "
+            "off the bottom of the screen by overflowing content."
+        )
+        # Confirm it is the shutdown rule and not the log-header rule
+        assert "SHUTTING DOWN" in str(first.title), (
+            f"First renderable is a Rule but not the shutdown banner: {first.title!r}"
+        )
+
+    def test_shutdown_banner_renders_before_log(self):
+        """SHUTTING DOWN text appears before any log content in the rendered output."""
+        d = _make_dashboard(width=120, height=40)
+        d.log("sentinel_log_message")
+        d.set_shutting_down()
+        output = _render_to_str(d)
+        clean = _strip_ansi(output)
+        lines = clean.splitlines()
+
+        shutdown_line = next((i for i, l in enumerate(lines) if "SHUTTING DOWN" in l), None)
+        log_line = next((i for i, l in enumerate(lines) if "sentinel_log_message" in l), None)
+
+        assert shutdown_line is not None, "SHUTTING DOWN not found in rendered output"
+        assert log_line is not None, "sentinel_log_message not found in rendered output"
+        assert shutdown_line < log_line, (
+            f"SHUTTING DOWN banner (line {shutdown_line}) appears AFTER log content "
+            f"(line {log_line}). Banner must come first to avoid being pushed off screen."
+        )
+
+    def test_shutdown_banner_visible_when_agents_overflow(self):
+        """Banner stays in the first two lines even when many agents fill the terminal."""
+        d = _make_dashboard(width=80, height=20)
+        for i in range(6):
+            d.set_agent(
+                f"phase_1/epic_{i}/task_{i:02d}_long_name.md",
+                "Implementation", "running",
+                f"agent {i} doing work processing files and writing code",
+            )
+        d.set_shutting_down()
+        output = _render_to_str(d)
+        clean = _strip_ansi(output)
+        first_two = "\n".join(clean.splitlines()[:2])
+        assert "SHUTTING DOWN" in first_two, (
+            "SHUTTING DOWN not found in first 2 rendered lines with many agents. "
+            f"First 5 lines:\n" + "\n".join(clean.splitlines()[:5])
+        )

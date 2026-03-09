@@ -290,7 +290,9 @@ class Dashboard:
             for task_id in sorted(visible):
                 stage, status, output_lines, started = visible[task_id]
                 header_left_len = len(task_id) + 2 + len(stage)
-                header_left_width = content_width * 5 // 6  # ratio=5 out of 5+1
+                # Right column: min_width=28 + padding=(0,1) gives 2 spaces per
+                # column × 2 columns = 4 total; left column gets the remainder.
+                header_left_width = max(content_width - 32, 1)
                 rows_needed = max(1, -(-header_left_len // max(header_left_width, 1)))
                 if output_lines:
                     for _ts, line in output_lines:
@@ -422,7 +424,7 @@ class Dashboard:
                      style="bold red")
             )
 
-        return Group(*log_parts, *parts, *shutdown_parts)
+        return Group(*shutdown_parts, *log_parts, *parts)
 
     def _refresh(self) -> None:
         if self._live is None:
