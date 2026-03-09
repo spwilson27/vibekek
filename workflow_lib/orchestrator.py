@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional, Union
 
 from .constants import DOCS
 from .context import ProjectContext
+from .discord import notify_failure
 from .prompt_registry import validate_all_prompts_exist
 from .phases import *
 
@@ -190,6 +191,7 @@ class Orchestrator:
                 self.ctx.state = self.ctx._load_state()
 
         self._log(f"[!] {name} failed after {max_retries} attempts.")
+        notify_failure(f"Plan phase '{name}' failed after {max_retries} attempts.")
         sys.exit(1)
 
     def _validate_artifacts(self, files: list, phase_name: str) -> None:

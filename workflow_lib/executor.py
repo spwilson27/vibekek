@@ -45,6 +45,7 @@ from .context import ProjectContext
 from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state, commit_state_to_branch
 from .config import get_serena_enabled, get_dev_branch
+from .discord import notify_failure
 from .dashboard import make_dashboard
 
 shutdown_requested = False
@@ -1128,6 +1129,8 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                     else:
                         dashboard.log("[!] FATAL: DAG deadlock or unrecoverable error. No tasks running and none ready.")
                         dashboard.log(f"    Completed: {len(state['completed_tasks'])} / {non_blocked_total} (non-blocked)")
+                        notify_failure("DAG deadlock or unrecoverable error — no tasks running and none ready.",
+                                       context=f"Completed: {len(state['completed_tasks'])} / {non_blocked_total}")
                         _restore_terminal()
                         os._exit(1)
 
@@ -1188,6 +1191,8 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
         for err in failed_tasks:
             dashboard.log(f"[!] FATAL: {err} Halting workflow.")
         dashboard.log("="*80 + "\n")
+        notify_failure("Run workflow halted due to task failures.",
+                       context="\n".join(failed_tasks))
         sys.exit(1)
 
 
