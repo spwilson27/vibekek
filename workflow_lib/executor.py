@@ -567,6 +567,17 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
         else:
             print(msg)
 
+    # If the task branch already exists in origin (e.g. from a prior run that
+    # succeeded but failed to record state), skip re-running the agent and let
+    # merge_task handle it directly.
+    existing = subprocess.run(
+        ["git", "ls-remote", "--heads", root_dir, branch_name],
+        capture_output=True, text=True,
+    )
+    if existing.stdout.strip():
+        _log(f"\n   -> [Implementation] Skipping {full_task_id} — branch {branch_name} already exists in origin.")
+        return True
+
     _log(f"\n   -> [Implementation] Starting {full_task_id}")
     if dashboard:
         dashboard.set_agent(full_task_id, "Impl", "queued", "")
@@ -661,8 +672,21 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
                     cwd=tmpdir, capture_output=True, text=True,
                 )
                 if push_res.returncode != 0:
-                    _log(f"      [!] Failed to push task branch {branch_name} to origin:\n{push_res.stderr}")
-                    return False
+                    # Non-fast-forward means the branch already exists from a prior run
+                    # that passed presubmit but failed to record state. Force-push our
+                    # verified implementation so merge_task can proceed.
+                    if "non-fast-forward" in push_res.stderr or "[rejected]" in push_res.stderr:
+                        _log(f"      [!] Push rejected (branch exists from prior run); force-pushing verified branch.")
+                        force_res = subprocess.run(
+                            ["git", "push", "--force-with-lease", "origin", branch_name],
+                            cwd=tmpdir, capture_output=True, text=True,
+                        )
+                        if force_res.returncode != 0:
+                            _log(f"      [!] Force-push also failed:\n{force_res.stderr}")
+                            return False
+                    else:
+                        _log(f"      [!] Failed to push task branch {branch_name} to origin:\n{push_res.stderr}")
+                        return False
 
                 if dashboard:
                     dashboard.set_agent(full_task_id, "Verify", "done", "Presubmit passed")
