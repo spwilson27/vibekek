@@ -28,18 +28,18 @@ QUOTA_RETURN_CODE: int = -2
 # Substrings (case-insensitive) that indicate a quota / rate-limit error in
 # an agent's stdout or stderr stream.
 QUOTA_PATTERNS: List[str] = [
-    "quota",
-    "rate limit",
-    "rate_limit",
-    "ratelimit",
+    #"quota",
+    #"rate limit",
+    #"rate_limit",
+    #"ratelimit",
     "RESOURCE_EXHAUSTED",
     "MODEL_CAPACITY_EXHAUSTED",
-    "No capacity available",
-    "rateLimitExceeded",
+    #"rateLimitExceeded",
     "usage limit reached",
-    "too many requests",
+    #"too many requests",
+    "No capacity available for model"
     "exhausted your capacity",
-    "429",
+    #"429",
 ]
 
 
