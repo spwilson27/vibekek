@@ -285,7 +285,7 @@ def verify_dags(tasks_dir):
             try:
                 with open(dag_file, "r", encoding="utf-8") as f:
                     phase_dag = json.load(f)
-                    
+
                 # Check for orphans and file existence WITHIN this phase
                 if not _verify_phase_consistency(phase_path, phase_dag):
                     all_success = False
@@ -301,6 +301,16 @@ def verify_dags(tasks_dir):
                     master_dag[full_task_id] = [f"{phase_dir}/{p}" for p in prerequisites]
             except Exception as e:
                 print(f"    FAILED: Error processing {dag_file}: {e}")
+                all_success = False
+        else:
+            # A phase directory with task sub-epics but no DAG file means
+            # Phase 7A either never ran or failed for this phase.
+            has_tasks = any(
+                os.path.isdir(os.path.join(phase_path, d))
+                for d in os.listdir(phase_path)
+            )
+            if has_tasks:
+                print(f"  FAILED: {phase_dir} has no DAG file (dag.json / dag_reviewed.json). Run 'workflow.py plan --phase 7-dag --force' to regenerate.")
                 all_success = False
     
     if not all_success:

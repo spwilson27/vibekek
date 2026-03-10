@@ -13,6 +13,7 @@ Two independent state files are managed:
 """
 
 import os
+import sys
 import json
 import subprocess
 import tempfile
@@ -149,8 +150,8 @@ def load_dags(tasks_dir: str) -> Dict[str, List[str]]:
                     for task_id, prereqs in phase_dag.items():
                         full_id = f"{phase_dir}/{task_id}"
                         master_dag[full_id] = [f"{phase_dir}/{p}" for p in prereqs]
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as exc:
+                    print(f"[!] WARNING: Skipping corrupt DAG file {dag_file}: {exc}", file=sys.stderr)
     return master_dag
 
 

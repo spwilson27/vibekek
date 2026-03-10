@@ -2143,6 +2143,7 @@ class TestReplanHelpers:
         dag = {"sub/t.md": []}
         with patch("os.path.exists", return_value=False), \
              patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=dag), \
+             patch.object(Phase7ADAGGeneration, "_validate_dag", return_value=[]), \
              patch("builtins.open", mock_open()), \
              patch("builtins.print"):
             _rebuild_phase_dag("/fake/tasks/phase_1", ctx)
@@ -2157,9 +2158,10 @@ class TestReplanHelpers:
         ctx.run_ai.return_value = MagicMock(returncode=0)
         with patch("os.path.exists", side_effect=lambda p: "dag.json" in p and "reviewed" not in p), \
              patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=None), \
+             patch.object(Phase7ADAGGeneration, "_validate_dag", return_value=[]), \
              patch("os.listdir", side_effect=[["sub"], ["t.md"]]), \
              patch("os.path.isdir", return_value=True), \
-             patch("builtins.open", mock_open(read_data="task content")), \
+             patch("builtins.open", mock_open(read_data='{"sub/t.md": []}')), \
              patch("builtins.print"):
             _rebuild_phase_dag("/fake/tasks/phase_1", ctx)
 
@@ -2578,11 +2580,39 @@ class TestPhase7AInner:
     """Tests that actually exercise the process_phase_dag closure."""
 
     def test_dag_exists_skip(self):
+        """Existing valid dag.json is accepted and phase is skipped."""
         ctx = _mock_ctx_for_phases()
         ctx.load_prompt.return_value = "dag tmpl"
         with patch("os.path.exists", return_value=True), \
              patch("os.listdir", return_value=["phase_1"]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p):
+             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
+             patch.object(Phase7ADAGGeneration, "_validate_dag", return_value=[]), \
+             patch("builtins.open", mock_open(read_data='{"sub/01.md": []}')):
+            Phase7ADAGGeneration().execute(ctx)
+        assert ctx.state.get("dag_completed") is True
+
+    def test_dag_exists_stale_triggers_regeneration(self):
+        """Stale dag.json (validation errors) is deleted and regenerated."""
+        ctx = _mock_ctx_for_phases()
+        ctx.load_prompt.return_value = "dag tmpl"
+        fresh_dag = {"sub/01_a.md": []}
+
+        def exists_side(p):
+            # dag.json exists the first time (stale check), not after removal
+            if "dag.json" in p and "reviewed" not in p:
+                return not getattr(exists_side, "_removed", False)
+            return True
+
+        with patch("os.path.exists", side_effect=exists_side), \
+             patch("os.listdir", side_effect=lambda p: ["phase_1"] if "tasks" in p and "phase_1" not in p else []), \
+             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
+             patch("os.remove"), \
+             patch.object(Phase7ADAGGeneration, "_validate_dag", side_effect=[
+                 ["File on disk not in DAG: sub/02_extra.md"],  # stale: has errors
+                 [],  # after rebuild: valid
+             ]), \
+             patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=fresh_dag), \
+             patch("builtins.open", mock_open(read_data='{"sub/01_a.md": []}')):
             Phase7ADAGGeneration().execute(ctx)
         assert ctx.state.get("dag_completed") is True
 

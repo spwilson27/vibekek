@@ -1189,18 +1189,19 @@ def _fix_dag_references(dry_run: bool = False, ctx: Optional[ProjectContext] = N
     # not in the DAG).  This must happen before reference fixing because
     # the programmatic DAG builder reads depends_on metadata from task
     # files and may re-introduce cross-phase refs that pass 2 will clean.
-    _NON_TASK = {"review_summary.md", "cross_phase_review_summary", "reorder_tasks_summary"}
     for phase_dir_name, phase_path, dag_file in _iter_phase_dags():
         with open(dag_file, "r", encoding="utf-8") as f:
             dag = json.load(f)
 
+        # Use the same 2-level discovery as _validate_dag: only sub_epic/*.md
         on_disk = set()
-        for root, _dirs, files in os.walk(phase_path):
-            for fname in files:
+        for sub_epic in sorted(os.listdir(phase_path)):
+            se_path = os.path.join(phase_path, sub_epic)
+            if not os.path.isdir(se_path):
+                continue
+            for fname in sorted(os.listdir(se_path)):
                 if fname.endswith(".md"):
-                    rel = os.path.relpath(os.path.join(root, fname), phase_path)
-                    if not any(pat in rel for pat in _NON_TASK):
-                        on_disk.add(rel)
+                    on_disk.add(f"{sub_epic}/{fname}")
 
         orphans = on_disk - set(dag.keys())
         if orphans:
@@ -1337,19 +1338,26 @@ def _rebuild_phase_dag(phase_dir: str, ctx: Optional[ProjectContext]) -> None:
     if os.path.exists(dag_reviewed):
         os.remove(dag_reviewed)
 
+    phase_id = os.path.basename(phase_dir)
+
     # Try programmatic build
     programmatic_dag = Phase7ADAGGeneration._build_programmatic_dag(phase_dir)
     if programmatic_dag is not None:
-        with open(dag_file, "w", encoding="utf-8") as f:
-            json.dump(programmatic_dag, f, indent=2)
-        print(f"Built DAG programmatically ({len(programmatic_dag)} tasks): {dag_file}")
-        return
+        errors = Phase7ADAGGeneration._validate_dag(phase_dir, programmatic_dag)
+        if not errors:
+            with open(dag_file, "w", encoding="utf-8") as f:
+                json.dump(programmatic_dag, f, indent=2)
+            print(f"Built DAG programmatically ({len(programmatic_dag)} tasks): {dag_file}")
+            return
+        print(f"\n[!] WARNING: Programmatic DAG for {phase_id} has {len(errors)} consistency issues:")
+        for e in errors:
+            print(f"      - {e}")
+        print(f"   -> Falling back to AI DAG inference for {phase_id}...")
 
     # Fallback to AI
     if ctx is None:
         print(f"Some tasks lack depends_on metadata but no ctx provided; skipping AI DAG generation.")
         return
-    phase_id = os.path.basename(phase_dir)
     print(f"Some tasks lack depends_on metadata. Using AI to generate DAG for {phase_id}...")
 
     dag_prompt_tmpl = ctx.load_prompt("dag_tasks.md")
@@ -1373,15 +1381,37 @@ def _rebuild_phase_dag(phase_dir: str, ctx: Optional[ProjectContext]) -> None:
         tasks_content=tasks_content,
     )
 
-    result = ctx.run_ai(prompt, allowed_files=[dag_file], sandbox=False)
+    for attempt in range(1, 4):
+        result = ctx.run_ai(prompt, allowed_files=[dag_file], sandbox=False)
 
-    if result.returncode == 0 and os.path.exists(dag_file):
-        print(f"AI-generated DAG: {dag_file}")
-    else:
-        print(f"[!] Failed to generate DAG for {phase_id}")
+        if result.returncode == 0 and os.path.exists(dag_file):
+            try:
+                with open(dag_file, "r", encoding="utf-8") as f:
+                    ai_dag = json.load(f)
+                errors = Phase7ADAGGeneration._validate_dag(phase_dir, ai_dag)
+                if errors:
+                    print(f"\n[!] WARNING: AI-generated DAG for {phase_id} has {len(errors)} consistency issues (attempt {attempt}/3):")
+                    for e in errors[:10]:
+                        print(f"      - {e}")
+                    if len(errors) > 10:
+                        print(f"      ... and {len(errors) - 10} more")
+                    os.remove(dag_file)
+                    continue
+            except (json.JSONDecodeError, OSError) as exc:
+                print(f"\n[!] Invalid DAG JSON for {phase_id} (attempt {attempt}/3): {exc}")
+                os.remove(dag_file)
+                continue
+            print(f"AI-generated DAG: {dag_file}")
+            return
+
+        print(f"\n[!] Error generating DAG for {phase_id} (attempt {attempt}/3).")
         if result.returncode != 0:
             print(result.stdout)
             print(result.stderr)
+        elif not os.path.exists(dag_file):
+            print(f"\n[!] Error: Agent failed to generate DAG JSON file {dag_file}.")
+
+    print(f"[!] Failed to generate DAG for {phase_id} after 3 attempts.")
 
 
 def _show_affected_tasks(req_id: str) -> None:

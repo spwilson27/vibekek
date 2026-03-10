@@ -1653,8 +1653,24 @@ class Phase7ADAGGeneration(BasePhase):
             dag_file_path = os.path.join(phase_dir_path, "dag.json")
 
             if os.path.exists(dag_file_path):
-                 print(f"   -> Skipping DAG Generation for {phase_id} (already exists).")
-                 return True
+                try:
+                    with open(dag_file_path, "r", encoding="utf-8") as f:
+                        existing_dag = json.load(f)
+                    errors = self._validate_dag(phase_dir_path, existing_dag)
+                    if not errors:
+                        print(f"   -> Skipping DAG Generation for {phase_id} (already exists and is valid).")
+                        return True
+                    print(f"\n[!] WARNING: Existing DAG for {phase_id} is stale ({len(errors)} issue(s)). Regenerating...")
+                    for e in errors[:5]:
+                        print(f"      - {e}")
+                    if len(errors) > 5:
+                        print(f"      ... and {len(errors) - 5} more")
+                except (json.JSONDecodeError, OSError) as exc:
+                    print(f"\n[!] WARNING: Existing DAG for {phase_id} is corrupt ({exc}). Regenerating...")
+                try:
+                    os.remove(dag_file_path)
+                except OSError:
+                    pass
 
             # Try programmatic DAG first
             programmatic_dag = self._build_programmatic_dag(phase_dir_path)

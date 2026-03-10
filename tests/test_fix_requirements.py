@@ -755,6 +755,207 @@ class TestCmdFixupDags(unittest.TestCase):
             self.assertEqual(cm.exception.code, 1)
 
 
+# ── _rebuild_phase_dag tests ─────────────────────────────────────────────
+
+
+class TestRebuildPhaseDag(unittest.TestCase):
+    """E2E tests for _rebuild_phase_dag validation and retry logic."""
+
+    def _make_phase(self, tmp, tasks):
+        """Create a minimal phase directory with the given task files."""
+        phase_dir = os.path.join(tmp, "phase_1")
+        for sub_epic, fname in tasks:
+            se_dir = os.path.join(phase_dir, sub_epic)
+            os.makedirs(se_dir, exist_ok=True)
+            with open(os.path.join(se_dir, fname), "w") as f:
+                f.write("# Task\n\ndepends_on: []\n")
+        return phase_dir
+
+    def test_programmatic_dag_valid_writes_without_ai(self):
+        """When programmatic DAG passes validation, it is written and AI is not called."""
+        from workflow_lib.replan import _rebuild_phase_dag
+
+        with tempfile.TemporaryDirectory() as tmp:
+            phase_dir = self._make_phase(tmp, [("sub", "01_task.md")])
+            ctx = MagicMock()
+            dag = {"sub/01_task.md": []}
+
+            with patch.object(
+                __import__("workflow_lib.phases", fromlist=["Phase7ADAGGeneration"]).Phase7ADAGGeneration,
+                "_build_programmatic_dag", return_value=dag
+            ):
+                _rebuild_phase_dag(phase_dir, ctx)
+
+            ctx.run_ai.assert_not_called()
+            dag_file = os.path.join(phase_dir, "dag.json")
+            self.assertTrue(os.path.exists(dag_file))
+            with open(dag_file) as f:
+                written = json.load(f)
+            self.assertEqual(written, dag)
+
+    def test_programmatic_dag_invalid_falls_back_to_ai(self):
+        """When programmatic DAG fails _validate_dag, AI fallback is used."""
+        from workflow_lib.replan import _rebuild_phase_dag
+
+        with tempfile.TemporaryDirectory() as tmp:
+            phase_dir = self._make_phase(tmp, [("sub", "01_task.md"), ("sub", "02_task.md")])
+            ctx = MagicMock()
+            ctx.load_prompt.return_value = "tmpl"
+            ctx.format_prompt.return_value = "prompt"
+            # Programmatic DAG is missing sub/02_task.md -> validation fails
+            partial_dag = {"sub/01_task.md": []}
+            ai_dag = {"sub/01_task.md": [], "sub/02_task.md": []}
+
+            dag_file = os.path.join(phase_dir, "dag.json")
+
+            def fake_run_ai(*args, **kwargs):
+                with open(dag_file, "w") as f:
+                    json.dump(ai_dag, f)
+                return MagicMock(returncode=0)
+
+            ctx.run_ai.side_effect = fake_run_ai
+
+            with patch.object(
+                __import__("workflow_lib.phases", fromlist=["Phase7ADAGGeneration"]).Phase7ADAGGeneration,
+                "_build_programmatic_dag", return_value=partial_dag
+            ):
+                _rebuild_phase_dag(phase_dir, ctx)
+
+            ctx.run_ai.assert_called_once()
+            with open(dag_file) as f:
+                written = json.load(f)
+            self.assertEqual(written, ai_dag)
+
+    def test_ai_fallback_retries_on_validation_failure(self):
+        """AI fallback retries up to 3 times when DAG validation fails."""
+        from workflow_lib.replan import _rebuild_phase_dag
+
+        with tempfile.TemporaryDirectory() as tmp:
+            phase_dir = self._make_phase(tmp, [("sub", "01_task.md")])
+            ctx = MagicMock()
+            ctx.load_prompt.return_value = "tmpl"
+            ctx.format_prompt.return_value = "prompt"
+
+            dag_file = os.path.join(phase_dir, "dag.json")
+            call_count = [0]
+
+            def fake_run_ai(*args, **kwargs):
+                call_count[0] += 1
+                # First 2 calls produce a DAG with a phantom file (fails validation)
+                # 3rd call produces a valid DAG
+                if call_count[0] < 3:
+                    bad_dag = {"sub/01_task.md": [], "sub/PHANTOM.md": []}
+                    with open(dag_file, "w") as f:
+                        json.dump(bad_dag, f)
+                else:
+                    good_dag = {"sub/01_task.md": []}
+                    with open(dag_file, "w") as f:
+                        json.dump(good_dag, f)
+                return MagicMock(returncode=0)
+
+            ctx.run_ai.side_effect = fake_run_ai
+
+            with patch.object(
+                __import__("workflow_lib.phases", fromlist=["Phase7ADAGGeneration"]).Phase7ADAGGeneration,
+                "_build_programmatic_dag", return_value=None
+            ):
+                _rebuild_phase_dag(phase_dir, ctx)
+
+            self.assertEqual(call_count[0], 3)
+            with open(dag_file) as f:
+                written = json.load(f)
+            self.assertEqual(written, {"sub/01_task.md": []})
+
+    def test_ai_fallback_gives_up_after_3_attempts(self):
+        """AI fallback stops after 3 failed attempts and leaves no dag.json."""
+        from workflow_lib.replan import _rebuild_phase_dag
+
+        with tempfile.TemporaryDirectory() as tmp:
+            phase_dir = self._make_phase(tmp, [("sub", "01_task.md")])
+            ctx = MagicMock()
+            ctx.load_prompt.return_value = "tmpl"
+            ctx.format_prompt.return_value = "prompt"
+
+            dag_file = os.path.join(phase_dir, "dag.json")
+
+            def fake_run_ai(*args, **kwargs):
+                # Always produce a DAG with phantom file -> always fails validation
+                bad_dag = {"sub/PHANTOM.md": []}
+                with open(dag_file, "w") as f:
+                    json.dump(bad_dag, f)
+                return MagicMock(returncode=0)
+
+            ctx.run_ai.side_effect = fake_run_ai
+
+            with patch.object(
+                __import__("workflow_lib.phases", fromlist=["Phase7ADAGGeneration"]).Phase7ADAGGeneration,
+                "_build_programmatic_dag", return_value=None
+            ):
+                _rebuild_phase_dag(phase_dir, ctx)
+
+            self.assertEqual(ctx.run_ai.call_count, 3)
+            # After all retries fail, the bad dag.json should have been removed
+            self.assertFalse(os.path.exists(dag_file))
+
+
+# ── orphan detection depth tests ─────────────────────────────────────────
+
+
+class TestFixDagOrphanDepth(unittest.TestCase):
+    """Tests that _fix_dag_references orphan detection uses 2-level depth."""
+
+    def test_deeply_nested_file_not_treated_as_orphan(self):
+        """A file at sub/nested/deep.md is ignored by orphan detection."""
+        with tempfile.TemporaryDirectory() as tmp:
+            dag = {"sub/01_task.md": []}
+            tasks_dir = os.path.join(tmp, "docs", "plan", "tasks")
+            phase_dir = os.path.join(tasks_dir, "phase_0")
+            os.makedirs(phase_dir, exist_ok=True)
+            with open(os.path.join(phase_dir, "dag.json"), "w") as f:
+                json.dump(dag, f)
+            # Create the valid task
+            os.makedirs(os.path.join(phase_dir, "sub"), exist_ok=True)
+            with open(os.path.join(phase_dir, "sub", "01_task.md"), "w") as f:
+                f.write("# Task\n")
+            # Create a deeply-nested file that should NOT be treated as an orphan
+            os.makedirs(os.path.join(phase_dir, "sub", "nested"), exist_ok=True)
+            with open(os.path.join(phase_dir, "sub", "nested", "deep.md"), "w") as f:
+                f.write("# Deep\n")
+
+            with patch("workflow_lib.replan.ROOT_DIR", tmp), \
+                 patch("workflow_lib.replan.get_tasks_dir", return_value=tasks_dir), \
+                 patch("workflow_lib.replan._rebuild_phase_dag") as mock_rebuild:
+                fixes = _fix_dag_references()
+
+            # No rebuild should have been triggered by the deep file
+            mock_rebuild.assert_not_called()
+            self.assertEqual(fixes, 0)
+
+    def test_shallow_orphan_still_triggers_rebuild(self):
+        """A file at sub/02_orphan.md (2-level) does trigger a rebuild."""
+        with tempfile.TemporaryDirectory() as tmp:
+            dag = {"sub/01_task.md": []}
+            tasks_dir = os.path.join(tmp, "docs", "plan", "tasks")
+            phase_dir = os.path.join(tasks_dir, "phase_0")
+            os.makedirs(phase_dir, exist_ok=True)
+            with open(os.path.join(phase_dir, "dag.json"), "w") as f:
+                json.dump(dag, f)
+            os.makedirs(os.path.join(phase_dir, "sub"), exist_ok=True)
+            with open(os.path.join(phase_dir, "sub", "01_task.md"), "w") as f:
+                f.write("# Task\n")
+            # Add a real orphan at 2-level depth
+            with open(os.path.join(phase_dir, "sub", "02_orphan.md"), "w") as f:
+                f.write("# Orphan\n")
+
+            with patch("workflow_lib.replan.ROOT_DIR", tmp), \
+                 patch("workflow_lib.replan.get_tasks_dir", return_value=tasks_dir), \
+                 patch("workflow_lib.replan._rebuild_phase_dag") as mock_rebuild:
+                fixes = _fix_dag_references()
+
+            mock_rebuild.assert_called_once()
+            self.assertGreater(fixes, 0)
+
+
 # ── CLI wiring test ──────────────────────────────────────────────────────
 
 

@@ -31,7 +31,7 @@ QUOTA_PATTERNS: List[str] = [
     "RESOURCE_EXHAUSTED",
     "MODEL_CAPACITY_EXHAUSTED",
     "usage limit reached",
-    "No capacity available for model"
+    "No capacity available for model",
     "exhausted your capacity",
 ]
 
