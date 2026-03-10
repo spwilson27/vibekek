@@ -363,9 +363,13 @@ class TestRunAgentWithPool:
             f"but got order: {call_order}"
         )
 
-    def test_no_chown_when_same_user(self):
-        """_set_dir_owner must NOT be called when the agent runs as the current user."""
-        import subprocess as sp
+    def test_chown_called_even_when_same_user(self):
+        """_set_dir_owner must be called even when the agent's user matches the current user.
+
+        A previous agent in the pool may have run as a different user, leaving
+        files owned by them.  Always chowning ensures the current agent can
+        write regardless of which agent ran before it.
+        """
         from workflow_lib.executor import run_agent
 
         chown_calls = []
@@ -388,8 +392,8 @@ class TestRunAgentWithPool:
                 agent_pool=pool,
             )
 
-        assert chown_calls == [], (
-            f"_set_dir_owner should not be called when agent user matches current user, got: {chown_calls}"
+        assert chown_calls == [current_user], (
+            f"_set_dir_owner should always be called when pool is active, got: {chown_calls}"
         )
 
 

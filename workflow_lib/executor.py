@@ -495,8 +495,11 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
                 dashboard.set_agent(task_id, agent_type, "running", agent_name=agent_cfg.name)
 
         # Transfer directory ownership to the agent's OS user so it can write freely.
-        if active_user and active_user != os.getenv("USER", ""):
-            _set_dir_owner(cwd, active_user, print)
+        # Always chown when a pool is active: a previous agent may have run as a
+        # different user, leaving files owned by them that this agent can't write.
+        if agent_pool is not None and active_user:
+            _log = (lambda msg: dashboard.log(msg)) if dashboard else (lambda msg: print(f"      {msg}"))
+            _set_dir_owner(cwd, active_user, _log)
 
         returncode = 1
         stderr_text = ""
@@ -559,8 +562,12 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
         err = f"[{agent_type}] FATAL: Agent process failed with exit code {returncode}"
         if dashboard:
             dashboard.log(err)
+            if stderr_text.strip():
+                dashboard.log(f"[{agent_type}] stderr: {stderr_text.strip()}")
         else:
             print(f"      {err}")
+            if stderr_text.strip():
+                print(f"      [{agent_type}] stderr: {stderr_text.strip()}")
         return False
 
     return False
@@ -689,6 +696,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
     success = False
     try:
         tmpdir = tempfile.mkdtemp(prefix=f"ai_{safe_task_id}_")
+        os.chmod(tmpdir, 0o755)  # Allow other OS users to traverse (needed for sudo -u <user>)
         _log(f"      Cloning repository to {tmpdir} on branch {branch_name}...")
         if dashboard:
             dashboard.set_agent(full_task_id, "Impl", "cloning", "")
@@ -841,9 +849,10 @@ def _set_dir_owner(path: str, user: str, _log: Any) -> None:
     if not user:
         return
     result = subprocess.run(
-        ["sudo", "chown", "-R", user, path],
+        ["sudo", "-n", "chown", "-R", user, path],
         capture_output=True,
         text=True,
+        timeout=30,
     )
     if result.returncode != 0:
         _log(f"      [!] Warning: failed to chown {path} to {user!r}: {result.stderr.strip()}")
@@ -940,6 +949,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
 
     # We clone into a new tmpdir to avoid messing with the developer's main working tree
     tmpdir = tempfile.mkdtemp(prefix=f"merge_{safe_name_part}_")
+    os.chmod(tmpdir, 0o755)  # Allow other OS users to traverse (needed for sudo -u <user>)
 
     _log(f"\n   => [Merge] Attempting to squash merge {task_id} into dev...")
     _log(f"      Cloning repository to {tmpdir}...")

@@ -9,6 +9,7 @@ and :mod:`workflow_lib.replan` via ``_make_runner()``.
 """
 
 import os
+import shlex
 import signal
 import subprocess
 import tempfile
@@ -133,17 +134,18 @@ class AIRunner:
         return os.environ.copy()
 
     def _wrap_cmd(self, cmd: List[str]) -> List[str]:
-        """Optionally prefix *cmd* with ``sudo -u <user> --set-home -- env PATH=... <cmd>``.
+        """Optionally prefix *cmd* with ``sudo su -l <user> -c '...'``.
 
         When :attr:`user` is set and differs from the current OS user, the
-        command is run as that user so that their home-directory config files
-        (API keys, CLI settings, etc.) are used.
+        command is run as that user via a login shell so that their full
+        environment (API keys, CLI settings, etc.) is initialised.
 
         :param cmd: Original command list.
-        :returns: Command list, possibly prefixed with ``sudo``.
+        :returns: Command list, possibly prefixed with ``sudo su``.
         """
         if self.user and self.user != os.getenv("USER", ""):
-            return ["sudo", "-u", self.user, "--set-home", "--", "env", f"PATH={os.environ.get('PATH', '')}"] + cmd
+            path = os.environ.get("PATH", "")
+            return ["sudo", "-H", "-u", self.user, "--", "bash", "-l", "-c", f"PATH={shlex.quote(path)} {shlex.join(cmd)}"]
         return cmd
 
     def _kill_process(self, proc: subprocess.Popen) -> None:  # type: ignore[type-arg]
