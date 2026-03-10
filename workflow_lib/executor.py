@@ -275,9 +275,6 @@ def run_ai_command(
     try:
         result = runner.run(cwd, prompt, image_paths=image_paths, on_line=output_line, timeout=hard_timeout)
         stderr_text = result.stderr or ""
-        if stderr_text:
-            for line in stderr_text.strip().splitlines():
-                output_line(f"[stderr] {line}")
         if quota_detected[0]:
             return QUOTA_RETURN_CODE, "quota exceeded"
         return result.returncode, stderr_text

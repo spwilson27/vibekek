@@ -192,6 +192,7 @@ class AIRunner:
             start_new_session=True,
         )
         stdout_lines: List[str] = []
+        stderr_lines: List[str] = []
 
         if use_stdin:
             assert proc.stdin is not None
@@ -209,8 +210,21 @@ class AIRunner:
                 if stripped.strip():
                     on_line(stripped)
 
+        def _read_stderr() -> None:
+            assert proc.stderr is not None
+            while True:
+                line = proc.stderr.readline()
+                if not line:
+                    break
+                stripped = line.rstrip("\n")
+                stderr_lines.append(stripped)
+                if stripped.strip():
+                    on_line(f"[stderr] {stripped}")
+
         reader = threading.Thread(target=_read_stdout, daemon=True)
+        stderr_reader = threading.Thread(target=_read_stderr, daemon=True)
         reader.start()
+        stderr_reader.start()
 
         try:
             reader.join(timeout=timeout)
@@ -220,20 +234,17 @@ class AIRunner:
             reader.join()
         if reader.is_alive():
             self._kill_process(proc)
-            stderr_raw = proc.stderr.read() if proc.stderr else ""
-            for line in stderr_raw.splitlines():
-                if line.strip():
-                    on_line(f"[stderr] {line}")
+            stderr_reader.join(timeout=5.0)
             raise subprocess.TimeoutExpired(cmd, timeout or 0)
 
-        stderr_raw = proc.stderr.read() if proc.stderr else ""
+        stderr_reader.join()
         proc.wait()
 
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=proc.returncode,
             stdout="\n".join(stdout_lines),
-            stderr=stderr_raw,
+            stderr="\n".join(stderr_lines),
         )
 
     def _run_streaming_json(
@@ -338,8 +349,23 @@ class AIRunner:
                 result_text.append(token_buf.strip())
                 on_line(token_buf.strip())
 
+        stderr_lines: List[str] = []
+
+        def _read_stderr() -> None:
+            assert proc.stderr is not None
+            while True:
+                line = proc.stderr.readline()
+                if not line:
+                    break
+                stripped = line.rstrip("\n")
+                stderr_lines.append(stripped)
+                if stripped.strip():
+                    on_line(f"[stderr] {stripped}")
+
         reader = threading.Thread(target=_read_stdout, daemon=True)
+        stderr_reader = threading.Thread(target=_read_stderr, daemon=True)
         reader.start()
+        stderr_reader.start()
 
         try:
             reader.join(timeout=timeout)
@@ -347,20 +373,17 @@ class AIRunner:
             reader.join()
         if reader.is_alive():
             self._kill_process(proc)
-            stderr_raw = proc.stderr.read() if proc.stderr else ""
-            for line in stderr_raw.splitlines():
-                if line.strip():
-                    on_line(f"[stderr] {line}")
+            stderr_reader.join(timeout=5.0)
             raise subprocess.TimeoutExpired(cmd, timeout or 0)
 
-        stderr_raw = proc.stderr.read() if proc.stderr else ""
+        stderr_reader.join()
         proc.wait()
 
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=proc.returncode,
             stdout="\n".join(result_text),
-            stderr=stderr_raw,
+            stderr="\n".join(stderr_lines),
         )
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:

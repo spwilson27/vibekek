@@ -392,18 +392,27 @@ class TestRunAiCommand:
         assert run_call.kwargs.get("on_line") is not None
 
     def test_stderr_logged_on_failure(self):
-        """When the agent process fails, stderr lines are forwarded via on_line."""
+        """When the agent process fails, stderr lines are forwarded via on_line.
+
+        With streaming stderr, the runner calls on_line for each stderr line
+        as it arrives; the executor sees it regardless of exit code.
+        """
         from workflow_lib.executor import run_ai_command
-        result = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="",
-            stderr="PermissionError: cannot write to workspace\nDetails: disk full",
-        )
         collected: list = []
+
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+            if on_line:
+                on_line("[stderr] PermissionError: cannot write to workspace")
+                on_line("[stderr] Details: disk full")
+            return subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="",
+                stderr="PermissionError: cannot write to workspace\nDetails: disk full",
+            )
 
         with patch('workflow_lib.executor.make_runner') as mock_make, \
              patch('workflow_lib.config.get_config_defaults', return_value={}):
             mock_runner = MagicMock()
-            mock_runner.run.return_value = result
+            mock_runner.run.side_effect = fake_run
             mock_make.return_value = mock_runner
 
             rc, _ = run_ai_command("prompt", "/tmp", on_line=collected.append)
@@ -413,18 +422,24 @@ class TestRunAiCommand:
         assert any("Details:" in line for line in collected)
 
     def test_stderr_logged_even_on_success(self):
-        """stderr lines are forwarded via on_line even when the agent succeeds."""
+        """stderr lines are forwarded via on_line even when the agent succeeds.
+
+        With streaming stderr, the runner calls on_line for each stderr line
+        as it arrives; the executor sees it in real time regardless of exit code.
+        """
         from workflow_lib.executor import run_ai_command
-        result = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="ok",
-            stderr="some warning",
-        )
         collected: list = []
+
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+            # Simulate the streaming stderr reader calling on_line.
+            if on_line:
+                on_line("[stderr] some warning")
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="some warning")
 
         with patch('workflow_lib.executor.make_runner') as mock_make, \
              patch('workflow_lib.config.get_config_defaults', return_value={}):
             mock_runner = MagicMock()
-            mock_runner.run.return_value = result
+            mock_runner.run.side_effect = fake_run
             mock_make.return_value = mock_runner
 
             rc, _ = run_ai_command("prompt", "/tmp", on_line=collected.append)

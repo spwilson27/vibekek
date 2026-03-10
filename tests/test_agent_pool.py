@@ -801,14 +801,22 @@ class TestExhaustedCapacityE2E:
         assert "quota" in msg
 
     def test_exhausted_capacity_pattern_triggers_quota_code_via_stderr(self):
-        """Quota message arriving only in stderr is still detected after our fix."""
+        """Quota message arriving only in stderr is still detected.
+
+        With streaming stderr, the runner calls on_line for each stderr line
+        as it arrives (rather than the executor post-processing result.stderr).
+        """
         import subprocess as sp
         from workflow_lib.executor import run_ai_command
 
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+            # Simulate the streaming stderr reader calling on_line for each line.
+            if on_line:
+                on_line(f"[stderr] {self.EXHAUSTED_MSG}")
+            return sp.CompletedProcess(args=[], returncode=1, stdout="", stderr=self.EXHAUSTED_MSG)
+
         mock_runner = MagicMock()
-        mock_runner.run.return_value = sp.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr=self.EXHAUSTED_MSG
-        )
+        mock_runner.run.side_effect = fake_run
 
         with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
              patch("workflow_lib.config.get_config_defaults", return_value={}):
