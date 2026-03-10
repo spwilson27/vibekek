@@ -206,7 +206,7 @@ class TestRunAiCommandQuotaDetection:
         mock_result = sp.CompletedProcess(args=[], returncode=returncode, stdout="\n".join(output_lines), stderr="")
 
         mock_runner = MagicMock()
-        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
             for line in output_lines:
                 if on_line:
                     on_line(line)
@@ -295,7 +295,7 @@ class TestRunAgentWithPool:
 
         call_count = [0]
 
-        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
             call_count[0] += 1
             if call_count[0] == 1:
                 # First call: emit quota line
@@ -785,7 +785,7 @@ class TestExhaustedCapacityE2E:
         import subprocess as sp
         from workflow_lib.executor import run_ai_command
 
-        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
             if on_line:
                 on_line(self.EXHAUSTED_MSG)
             return sp.CompletedProcess(args=[], returncode=1, stdout=self.EXHAUSTED_MSG, stderr="")
@@ -809,7 +809,7 @@ class TestExhaustedCapacityE2E:
         import subprocess as sp
         from workflow_lib.executor import run_ai_command
 
-        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
             # Simulate the streaming stderr reader calling on_line for each line.
             if on_line:
                 on_line(f"[stderr] {self.EXHAUSTED_MSG}")
@@ -834,7 +834,7 @@ class TestExhaustedCapacityE2E:
         import subprocess as sp
         from workflow_lib.executor import run_ai_command
 
-        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
             # Emit the quota message, then simulate the process hanging until killed.
             if on_line:
                 on_line(self.EXHAUSTED_MSG)
@@ -878,7 +878,7 @@ class TestExhaustedCapacityE2E:
         def fake_make_runner(backend, model=None, soft_timeout=None, user=None):
             mock_runner = MagicMock()
             if backend == "gemini":
-                def gemini_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+                def gemini_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
                     call_log.append("gemini")
                     if on_line:
                         on_line(self.EXHAUSTED_MSG)
@@ -886,7 +886,7 @@ class TestExhaustedCapacityE2E:
                     raise sp.TimeoutExpired(["gemini", "-y"], timeout or 60)
                 mock_runner.run.side_effect = gemini_run
             else:
-                def claude_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+                def claude_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
                     call_log.append("claude")
                     return sp.CompletedProcess(args=[], returncode=0, stdout="task complete", stderr="")
                 mock_runner.run.side_effect = claude_run
@@ -953,7 +953,7 @@ class TestTimeoutStderrReading:
 
         captured = {}
 
-        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
             captured["timeout"] = timeout
             return sp.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
 
@@ -977,7 +977,7 @@ class TestTimeoutStderrReading:
 
         captured = {}
 
-        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
             captured["timeout"] = timeout
             return sp.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
 
@@ -1080,7 +1080,7 @@ class TestTimeoutStderrReading:
         import subprocess as sp
         from workflow_lib.executor import run_ai_command
 
-        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
             # Simulate our runners.py fix: stderr is read and sent through on_line
             # before TimeoutExpired is raised.
             if on_line:
@@ -1101,3 +1101,134 @@ class TestTimeoutStderrReading:
             "and the process hangs until killed."
         )
         assert "quota" in msg
+
+
+# ---------------------------------------------------------------------------
+# E2E: quota detected mid-stream → process killed immediately
+# ---------------------------------------------------------------------------
+
+
+class TestQuotaKillsProcessImmediately:
+    """Verify that a process is terminated as soon as a quota pattern is detected.
+
+    These tests run a real subprocess so the kill-on-abort path in
+    _run_streaming / _run_streaming_json is exercised end-to-end.
+    """
+
+    QUOTA_LINE = "You have exhausted your capacity on this model."
+
+    def test_run_streaming_kills_on_quota_stdout(self):
+        """Process is killed immediately when quota pattern seen on stdout.
+
+        The script outputs the quota line, then sleeps for a very long time.
+        Without the abort-on-quota fix the test would hang for the full timeout.
+        With the fix it completes quickly (well under the 10s hard timeout).
+        """
+        import time
+        import subprocess as sp
+        from workflow_lib.runners import GeminiRunner
+
+        script = (
+            f"import sys, time; "
+            f"print({self.QUOTA_LINE!r}, flush=True); "
+            f"time.sleep(9999)"
+        )
+
+        emitted = []
+        runner = GeminiRunner(user=None)
+        abort_event = __import__("threading").Event()
+
+        def on_line(line):
+            emitted.append(line)
+            if "exhausted your capacity" in line.lower():
+                abort_event.set()
+
+        start = time.monotonic()
+        with patch.object(runner, "_wrap_cmd", side_effect=lambda cmd: cmd):
+            result = runner._run_streaming(
+                ["python3", "-c", script],
+                "",
+                "/tmp",
+                on_line,
+                timeout=10,
+                abort_event=abort_event,
+            )
+        elapsed = time.monotonic() - start
+
+        assert any("exhausted your capacity" in l.lower() for l in emitted)
+        assert elapsed < 5.0, (
+            f"Process should have been killed promptly on quota detection, "
+            f"but took {elapsed:.1f}s (expected < 5s)"
+        )
+
+    def test_run_streaming_kills_on_quota_stderr(self):
+        """Process is killed immediately when quota pattern seen on stderr."""
+        import time
+        import subprocess as sp
+        from workflow_lib.runners import GeminiRunner
+
+        script = (
+            f"import sys, time; "
+            f"sys.stderr.write({self.QUOTA_LINE!r} + '\\n'); "
+            f"sys.stderr.flush(); "
+            f"time.sleep(9999)"
+        )
+
+        emitted = []
+        runner = GeminiRunner(user=None)
+        abort_event = __import__("threading").Event()
+
+        def on_line(line):
+            emitted.append(line)
+            if "exhausted your capacity" in line.lower():
+                abort_event.set()
+
+        start = time.monotonic()
+        with patch.object(runner, "_wrap_cmd", side_effect=lambda cmd: cmd):
+            result = runner._run_streaming(
+                ["python3", "-c", script],
+                "",
+                "/tmp",
+                on_line,
+                timeout=10,
+                abort_event=abort_event,
+            )
+        elapsed = time.monotonic() - start
+
+        assert any("exhausted your capacity" in l.lower() for l in emitted)
+        assert elapsed < 5.0, (
+            f"Process should have been killed promptly on quota detection in stderr, "
+            f"but took {elapsed:.1f}s (expected < 5s)"
+        )
+
+    def test_run_ai_command_kills_process_on_quota_no_timeout_needed(self):
+        """run_ai_command kills the agent process when quota is detected, without waiting for timeout.
+
+        A process that emits a quota pattern and then hangs should be terminated
+        before the hard timeout expires.  The return code must be QUOTA_RETURN_CODE.
+        """
+        import time
+        import subprocess as sp
+        from workflow_lib.executor import run_ai_command
+        from workflow_lib.runners import GeminiRunner
+
+        # Real runner backed by a subprocess that emits quota line then hangs
+        script = (
+            f"import sys, time; "
+            f"print({self.QUOTA_LINE!r}, flush=True); "
+            f"time.sleep(9999)"
+        )
+
+        runner = GeminiRunner(user=None)
+        with patch.object(runner, "_wrap_cmd", side_effect=lambda cmd: cmd), \
+             patch.object(runner, "get_cmd", return_value=["python3", "-c", script]):
+            with patch("workflow_lib.executor.make_runner", return_value=runner), \
+                 patch("workflow_lib.config.get_config_defaults", return_value={"timeout": 30}):
+                start = time.monotonic()
+                rc, msg = run_ai_command("prompt", "/tmp", backend="gemini")
+                elapsed = time.monotonic() - start
+
+        assert rc == QUOTA_RETURN_CODE, f"Expected QUOTA_RETURN_CODE, got {rc}"
+        assert elapsed < 5.0, (
+            f"run_ai_command should kill on quota detection (took {elapsed:.1f}s, expected < 5s)"
+        )

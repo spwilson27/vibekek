@@ -160,6 +160,7 @@ class AIRunner:
         cwd: str,
         on_line: Callable[[str], None],
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run *cmd* with *prompt* on stdin, calling *on_line* for each output line.
 
@@ -175,6 +176,9 @@ class AIRunner:
         :param timeout: Maximum seconds to wait for the process. ``None`` means
             no limit. On timeout the process is killed and a
             :class:`subprocess.TimeoutExpired` is raised.
+        :param abort_event: Optional :class:`threading.Event`.  When set (e.g.
+            by the *on_line* callback on quota detection), the process is killed
+            and the method returns early without raising an exception.
         :returns: Completed process with combined stdout (streamed lines) and
             stderr captured separately.
         :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
@@ -209,6 +213,8 @@ class AIRunner:
                 stdout_lines.append(stripped)
                 if stripped.strip():
                     on_line(stripped)
+                if abort_event and abort_event.is_set():
+                    break
 
         def _read_stderr() -> None:
             assert proc.stderr is not None
@@ -220,24 +226,43 @@ class AIRunner:
                 stderr_lines.append(stripped)
                 if stripped.strip():
                     on_line(f"[stderr] {stripped}")
+                if abort_event and abort_event.is_set():
+                    break
 
         reader = threading.Thread(target=_read_stdout, daemon=True)
         stderr_reader = threading.Thread(target=_read_stderr, daemon=True)
         reader.start()
         stderr_reader.start()
 
+        deadline = time.monotonic() + (timeout if timeout is not None else float("inf"))
+        aborted = False
         try:
-            reader.join(timeout=timeout)
+            while reader.is_alive():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._kill_process(proc)
+                    stderr_reader.join(timeout=5.0)
+                    raise subprocess.TimeoutExpired(cmd, timeout or 0)
+                if abort_event and abort_event.is_set():
+                    self._kill_process(proc)
+                    stderr_reader.join(timeout=5.0)
+                    aborted = True
+                    break
+                reader.join(timeout=min(remaining, 1.0))
         except KeyboardInterrupt:
             # Let the subprocess finish naturally; the orchestrator's SIGINT
             # handler has already flagged a graceful shutdown.
             reader.join()
-        if reader.is_alive():
+
+        # abort_event may have been set while reader.join() was blocking —
+        # the reader exits cleanly but the process is still running.
+        if not aborted and abort_event and abort_event.is_set():
             self._kill_process(proc)
             stderr_reader.join(timeout=5.0)
-            raise subprocess.TimeoutExpired(cmd, timeout or 0)
+            aborted = True
 
-        stderr_reader.join()
+        if not aborted:
+            stderr_reader.join()
         proc.wait()
 
         return subprocess.CompletedProcess(
@@ -254,6 +279,7 @@ class AIRunner:
         on_line: Callable[[str], None],
         timeout: Optional[int] = None,
         prompt: str = "",
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run *cmd* and parse its stream-json output, calling *on_line* for
         each meaningful extracted line.
@@ -263,6 +289,8 @@ class AIRunner:
 
         :param prompt: Optional text written to the process stdin.  If empty,
             stdin is connected to ``/dev/null``.
+        :param abort_event: Optional :class:`threading.Event`.  When set, the
+            process is killed and the method returns early.
         :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
         """
         use_stdin = bool(prompt)
@@ -343,6 +371,8 @@ class AIRunner:
                     for sub in parsed.splitlines():
                         if sub.strip():
                             on_line(sub)
+                if abort_event and abort_event.is_set():
+                    break
 
             # Flush any trailing token buffer
             if token_buf.strip():
@@ -361,22 +391,41 @@ class AIRunner:
                 stderr_lines.append(stripped)
                 if stripped.strip():
                     on_line(f"[stderr] {stripped}")
+                if abort_event and abort_event.is_set():
+                    break
 
         reader = threading.Thread(target=_read_stdout, daemon=True)
         stderr_reader = threading.Thread(target=_read_stderr, daemon=True)
         reader.start()
         stderr_reader.start()
 
+        deadline = time.monotonic() + (timeout if timeout is not None else float("inf"))
+        aborted = False
         try:
-            reader.join(timeout=timeout)
+            while reader.is_alive():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._kill_process(proc)
+                    stderr_reader.join(timeout=5.0)
+                    raise subprocess.TimeoutExpired(cmd, timeout or 0)
+                if abort_event and abort_event.is_set():
+                    self._kill_process(proc)
+                    stderr_reader.join(timeout=5.0)
+                    aborted = True
+                    break
+                reader.join(timeout=min(remaining, 1.0))
         except KeyboardInterrupt:
             reader.join()
-        if reader.is_alive():
+
+        # abort_event may have been set while reader.join() was blocking —
+        # the reader exits cleanly but the process is still running.
+        if not aborted and abort_event and abort_event.is_set():
             self._kill_process(proc)
             stderr_reader.join(timeout=5.0)
-            raise subprocess.TimeoutExpired(cmd, timeout or 0)
+            aborted = True
 
-        stderr_reader.join()
+        if not aborted:
+            stderr_reader.join()
         proc.wait()
 
         return subprocess.CompletedProcess(
@@ -397,6 +446,7 @@ class AIRunner:
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Invoke the AI CLI and return its completed process result.
 
@@ -408,6 +458,8 @@ class AIRunner:
         :param on_line: Optional streaming callback invoked once per output line.
         :param timeout: Maximum seconds to wait for the AI process.
             ``None`` means no limit.
+        :param abort_event: Optional :class:`threading.Event`.  When set (e.g.
+            on quota detection), the subprocess is killed immediately.
         :raises NotImplementedError: Always — subclasses must override this.
         :returns: The completed subprocess result.
         """
@@ -460,9 +512,10 @@ class SessionResumableRunner(AIRunner):
         cwd: str,
         on_line: Callable[[str], None],
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run a single session.  Subclasses override for JSON parsing etc."""
-        return self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout)
+        return self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout, abort_event=abort_event)
 
     def _run_with_soft_timeout(
         self,
@@ -472,18 +525,21 @@ class SessionResumableRunner(AIRunner):
         on_line: Callable[[str], None],
         session_id: str,
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run with soft timeout.  If it fires, kill and resume."""
         backend_name = self.__class__.__name__.replace("Runner", "").lower()
         try:
-            return self._run_session(cmd, prompt, cwd, on_line, timeout=self.soft_timeout)
+            return self._run_session(cmd, prompt, cwd, on_line, timeout=self.soft_timeout, abort_event=abort_event)
         except subprocess.TimeoutExpired:
+            if abort_event and abort_event.is_set():
+                return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="quota exceeded")
             on_line(f"[soft-timeout] Interrupting {backend_name} session to resume with finish-up prompt...")
             resume_cmd, resume_prompt = self._build_resume_cmd_and_prompt(session_id)
             hard_timeout = timeout or self.RESUME_HARD_TIMEOUT
             on_line(f"[soft-timeout] Resuming session {session_id} with {hard_timeout}s to finish...")
             try:
-                return self._run_session(resume_cmd, resume_prompt, cwd, on_line, timeout=hard_timeout)
+                return self._run_session(resume_cmd, resume_prompt, cwd, on_line, timeout=hard_timeout, abort_event=abort_event)
             except subprocess.TimeoutExpired:
                 on_line(f"[soft-timeout] Resume session exceeded {hard_timeout}s hard limit, killed.")
                 return subprocess.CompletedProcess(
@@ -510,6 +566,7 @@ class GeminiRunner(AIRunner):
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``gemini -y`` with *full_prompt* on stdin.
 
@@ -524,7 +581,7 @@ class GeminiRunner(AIRunner):
             prompt = f"{prompt}\n\n{refs}"
         cmd = self.get_cmd(image_paths)
         if on_line is not None:
-            return self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout)
+            return self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout, abort_event=abort_event)
         return subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
 
 
@@ -550,6 +607,7 @@ class ClaudeRunner(AIRunner):
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``claude -p --dangerously-skip-permissions --output-format stream-json``.
 
@@ -561,7 +619,7 @@ class ClaudeRunner(AIRunner):
         """
         cmd = self.get_cmd(image_paths)
         if on_line is not None:
-            return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=full_prompt)
+            return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=full_prompt, abort_event=abort_event)
         # Non-streaming fallback: parse JSONL after completion
         result = subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
         parsed_lines: List[str] = []
@@ -599,6 +657,7 @@ class OpencodeRunner(AIRunner):
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``opencode run`` with *full_prompt* on stdin.
 
@@ -606,7 +665,7 @@ class OpencodeRunner(AIRunner):
         """
         cmd = self.get_cmd(image_paths)
         if on_line is not None:
-            return self._run_streaming(cmd, full_prompt, cwd, on_line, timeout=timeout)
+            return self._run_streaming(cmd, full_prompt, cwd, on_line, timeout=timeout, abort_event=abort_event)
         return subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
 
 
@@ -629,6 +688,7 @@ class ClineRunner(AIRunner):
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``cline --yolo`` with *full_prompt* as the prompt argument.
 
@@ -637,7 +697,7 @@ class ClineRunner(AIRunner):
         cmd = self.get_cmd(image_paths)
         cmd.append(full_prompt)
         if on_line is not None:
-            return self._run_streaming(cmd, "", cwd, on_line, timeout=timeout)
+            return self._run_streaming(cmd, "", cwd, on_line, timeout=timeout, abort_event=abort_event)
         return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
 
 
@@ -660,6 +720,7 @@ class AiderRunner(AIRunner):
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``aider --yes-always --no-auto-commits --message <prompt>``.
 
@@ -668,7 +729,7 @@ class AiderRunner(AIRunner):
         cmd = self.get_cmd(image_paths)
         cmd += ["--message", full_prompt]
         if on_line is not None:
-            return self._run_streaming(cmd, "", cwd, on_line, timeout=timeout)
+            return self._run_streaming(cmd, "", cwd, on_line, timeout=timeout, abort_event=abort_event)
         return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
 
 
@@ -724,9 +785,10 @@ class QwenRunner(SessionResumableRunner):
         cwd: str,
         on_line: Callable[[str], None],
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Override to use JSONL-parsing streaming instead of plain text."""
-        return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=prompt)
+        return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=prompt, abort_event=abort_event)
 
     def run(
         self,
@@ -735,6 +797,7 @@ class QwenRunner(SessionResumableRunner):
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``qwen -y --output-format stream-json`` and parse the output.
 
@@ -749,9 +812,9 @@ class QwenRunner(SessionResumableRunner):
         cmd = self.get_cmd(image_paths, session_id=session_id)
 
         if on_line is not None and self.soft_timeout and session_id:
-            return self._run_with_soft_timeout(cmd, full_prompt, cwd, on_line, session_id, timeout)
+            return self._run_with_soft_timeout(cmd, full_prompt, cwd, on_line, session_id, timeout, abort_event=abort_event)
         if on_line is not None:
-            return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=full_prompt)
+            return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=full_prompt, abort_event=abort_event)
 
         # Non-streaming fallback
         result = subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
@@ -789,6 +852,7 @@ class CodexRunner(AIRunner):
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``codex exec --full-auto`` with *full_prompt* as the prompt argument.
 
@@ -797,7 +861,7 @@ class CodexRunner(AIRunner):
         cmd = self.get_cmd(image_paths)
         cmd.append(full_prompt)
         if on_line is not None:
-            return self._run_streaming(cmd, "", cwd, on_line, timeout=timeout)
+            return self._run_streaming(cmd, "", cwd, on_line, timeout=timeout, abort_event=abort_event)
         return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
 
 
@@ -822,6 +886,7 @@ class CopilotRunner(AIRunner):
         image_paths: Optional[List[str]] = None,
         on_line: Optional[Callable[[str], None]] = None,
         timeout: Optional[int] = None,
+        abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run the Copilot CLI with *full_prompt* written to a temp file.
 
@@ -848,7 +913,7 @@ class CopilotRunner(AIRunner):
             for cmd in candidates:
                 try:
                     if on_line is not None:
-                        last_result = self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout)
+                        last_result = self._run_streaming(cmd, prompt, cwd, on_line, timeout=timeout, abort_event=abort_event)
                     else:
                         last_result = subprocess.run(
                             cmd, input=prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env()

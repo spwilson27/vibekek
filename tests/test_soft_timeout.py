@@ -134,7 +134,7 @@ class TestRunWithSoftTimeout:
                 ["qwen", "-y"], "", "/tmp", lines.append, "sess-1"
             )
         assert result.returncode == 0
-        mock_run.assert_called_once_with(["qwen", "-y"], "", "/tmp", lines.append, timeout=300)
+        mock_run.assert_called_once_with(["qwen", "-y"], "", "/tmp", lines.append, timeout=300, abort_event=None)
 
     def test_soft_timeout_triggers_resume(self):
         """When soft timeout fires, kills and resumes."""
@@ -142,7 +142,7 @@ class TestRunWithSoftTimeout:
         resume_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="resumed", stderr="")
         lines = []
 
-        def side_effect(cmd, prompt, cwd, on_line, timeout=None):
+        def side_effect(cmd, prompt, cwd, on_line, timeout=None, abort_event=None):
             if timeout == 10:
                 raise subprocess.TimeoutExpired(cmd, 10)
             return resume_result
@@ -161,7 +161,7 @@ class TestRunWithSoftTimeout:
         r = QwenRunner(soft_timeout=10)
         lines = []
 
-        def side_effect(cmd, prompt, cwd, on_line, timeout=None):
+        def side_effect(cmd, prompt, cwd, on_line, timeout=None, abort_event=None):
             raise subprocess.TimeoutExpired(cmd, timeout or 0)
 
         with patch.object(r, '_run_session', side_effect=side_effect), \
@@ -179,7 +179,7 @@ class TestRunWithSoftTimeout:
         resume_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
 
         calls = []
-        def side_effect(cmd, prompt, cwd, on_line, timeout=None):
+        def side_effect(cmd, prompt, cwd, on_line, timeout=None, abort_event=None):
             calls.append(timeout)
             if len(calls) == 1:
                 raise subprocess.TimeoutExpired(cmd, 10)
@@ -199,7 +199,7 @@ class TestRunWithSoftTimeout:
         resume_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
 
         calls = []
-        def side_effect(cmd, prompt, cwd, on_line, timeout=None):
+        def side_effect(cmd, prompt, cwd, on_line, timeout=None, abort_event=None):
             calls.append(timeout)
             if len(calls) == 1:
                 raise subprocess.TimeoutExpired(cmd, 10)
@@ -400,7 +400,7 @@ class TestRunAiCommand:
         from workflow_lib.executor import run_ai_command
         collected: list = []
 
-        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
             if on_line:
                 on_line("[stderr] PermissionError: cannot write to workspace")
                 on_line("[stderr] Details: disk full")
@@ -430,7 +430,7 @@ class TestRunAiCommand:
         from workflow_lib.executor import run_ai_command
         collected: list = []
 
-        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
             # Simulate the streaming stderr reader calling on_line.
             if on_line:
                 on_line("[stderr] some warning")

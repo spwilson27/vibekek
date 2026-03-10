@@ -261,11 +261,13 @@ def run_ai_command(
 
     quota_detected = [False]
     quota_patterns_lower = [p.lower() for p in QUOTA_PATTERNS]
+    abort_event = threading.Event()
 
     def output_line(line: str) -> None:
         line_lower = line.lower()
         if any(p in line_lower for p in quota_patterns_lower):
             quota_detected[0] = True
+            abort_event.set()
         if on_line:
             on_line(line)
         else:
@@ -273,7 +275,7 @@ def run_ai_command(
             sys.stdout.flush()
 
     try:
-        result = runner.run(cwd, prompt, image_paths=image_paths, on_line=output_line, timeout=hard_timeout)
+        result = runner.run(cwd, prompt, image_paths=image_paths, on_line=output_line, timeout=hard_timeout, abort_event=abort_event)
         stderr_text = result.stderr or ""
         if quota_detected[0]:
             return QUOTA_RETURN_CODE, "quota exceeded"
