@@ -359,6 +359,46 @@ class TestProcessTask:
         mock_copytree.assert_called_once()
         mock_copy2.assert_called_once()
 
+    def test_reclaim_ownership_called_before_presubmit(self):
+        """_reclaim_dir_ownership must be called before the presubmit subprocess.
+
+        Without this, files written by an alternate-user agent are still owned
+        by that user, causing git and presubmit commands (run as the current
+        user) to fail with permission errors.  This test fails if the chown
+        call is removed or moved after the presubmit.
+        """
+        call_order = []
+
+        def fake_reclaim(path, _log):
+            call_order.append("reclaim")
+
+        def mock_run_side_effect(*args, **kwargs):
+            cmd = args[0] if args else []
+            if isinstance(cmd, list) and cmd and cmd[0] == "./do":
+                call_order.append("presubmit")
+            return MagicMock(returncode=0, stdout="M file.py", stderr="")
+
+        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("subprocess.run", side_effect=mock_run_side_effect), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor._reclaim_dir_ownership", side_effect=fake_reclaim), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: T"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("os.path.isdir", return_value=False), \
+             patch("os.path.exists", return_value=False), \
+             patch("shutil.rmtree"):
+            result = process_task("/root", "phase_1/task.md", "./do presubmit")
+
+        assert result is True
+        assert "reclaim" in call_order, "_reclaim_dir_ownership was never called"
+        assert "presubmit" in call_order, "presubmit was never called"
+        reclaim_idx = call_order.index("reclaim")
+        presubmit_idx = call_order.index("presubmit")
+        assert reclaim_idx < presubmit_idx, (
+            f"Expected _reclaim_dir_ownership BEFORE presubmit, got order: {call_order}"
+        )
+
     def test_presubmit_called_with_start_new_session(self):
         """subprocess.run for presubmit must use start_new_session=True.
 

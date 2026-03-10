@@ -320,6 +320,78 @@ class TestRunAgentWithPool:
         # "a" should be quota-suppressed
         assert "a" in pool._quota_expiry
 
+    def test_dir_chowned_to_agent_user_before_running(self):
+        """_set_dir_owner must be called with the agent's user BEFORE run_ai_command.
+
+        Without this, the alternate-user agent cannot write into the working
+        directory (which was cloned as the current user and is still owned by them).
+        This test fails if the pre-agent chown is removed.
+        """
+        import subprocess as sp
+        from workflow_lib.executor import run_agent
+
+        call_order = []
+
+        def fake_set_dir_owner(path, user, _log):
+            call_order.append(("chown", user))
+
+        def fake_run_ai_command(prompt, cwd, **kwargs):
+            call_order.append(("run", kwargs.get("user")))
+            return (0, "")
+
+        pool = AgentPoolManager([_cfg(name="agent1", user="altuser")])
+
+        with patch("workflow_lib.executor._set_dir_owner", side_effect=fake_set_dir_owner), \
+             patch("workflow_lib.executor.run_ai_command", side_effect=fake_run_ai_command), \
+             patch("workflow_lib.executor.get_project_images", return_value=[]), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}), \
+             patch("builtins.open", mock_open(read_data="hello {task_name}")):
+            result = run_agent(
+                "Impl", "implement_task.md",
+                {"task_name": "t", "phase_filename": "p"},
+                "/tmp/workdir",
+                agent_pool=pool,
+            )
+
+        assert result is True
+        # chown to agent user must appear before the run call
+        assert ("chown", "altuser") in call_order, "Expected _set_dir_owner called with agent user"
+        chown_idx = call_order.index(("chown", "altuser"))
+        run_idx = next(i for i, e in enumerate(call_order) if e[0] == "run")
+        assert chown_idx < run_idx, (
+            "Expected dir chown to agent user BEFORE run_ai_command, "
+            f"but got order: {call_order}"
+        )
+
+    def test_no_chown_when_same_user(self):
+        """_set_dir_owner must NOT be called when the agent runs as the current user."""
+        import subprocess as sp
+        from workflow_lib.executor import run_agent
+
+        chown_calls = []
+
+        def fake_set_dir_owner(path, user, _log):
+            chown_calls.append(user)
+
+        current_user = os.getenv("USER", "currentuser")
+        pool = AgentPoolManager([_cfg(name="agent1", user=current_user)])
+
+        with patch("workflow_lib.executor._set_dir_owner", side_effect=fake_set_dir_owner), \
+             patch("workflow_lib.executor.run_ai_command", return_value=(0, "")), \
+             patch("workflow_lib.executor.get_project_images", return_value=[]), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}), \
+             patch("builtins.open", mock_open(read_data="hello {task_name}")):
+            run_agent(
+                "Impl", "implement_task.md",
+                {"task_name": "t", "phase_filename": "p"},
+                "/tmp/workdir",
+                agent_pool=pool,
+            )
+
+        assert chown_calls == [], (
+            f"_set_dir_owner should not be called when agent user matches current user, got: {chown_calls}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # config: get_agent_pool_configs

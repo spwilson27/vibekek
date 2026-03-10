@@ -494,6 +494,10 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
             if dashboard and task_id:
                 dashboard.set_agent(task_id, agent_type, "running", agent_name=agent_cfg.name)
 
+        # Transfer directory ownership to the agent's OS user so it can write freely.
+        if active_user and active_user != os.getenv("USER", ""):
+            _set_dir_owner(cwd, active_user, print)
+
         returncode = 1
         stderr_text = ""
         try:
@@ -741,6 +745,10 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
                 dashboard.set_agent(full_task_id, "Review", "failed", "Review agent failed")
             return False
 
+        # Reclaim ownership of files written by alternate-user agents before
+        # running presubmit and git commands as the current user.
+        _reclaim_dir_ownership(tmpdir, _log)
+
         # 3. Verification Loop
         for attempt in range(1, max_retries + 1):
             _log(f"      [Verification] Running presubmit (Attempt {attempt}/{max_retries})...")
@@ -818,6 +826,35 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
             _log(f"      [!] Task failed. Leaving clone {tmpdir} and branch {branch_name} for investigation.")
             if dashboard:
                 dashboard.set_agent(full_task_id, "failed", "failed", "Task failed")
+
+
+def _set_dir_owner(path: str, user: str, _log: Any) -> None:
+    """Recursively ``chown`` *path* to *user* via ``sudo``.
+
+    Used in two directions:
+    - Before spawning an agent: transfer ownership to the agent's OS user so
+      it can freely write inside its working directory.
+    - After all agents finish: reclaim ownership for the current user so that
+      git and presubmit commands (which run as the current user) can access
+      the files.
+    """
+    if not user:
+        return
+    result = subprocess.run(
+        ["sudo", "chown", "-R", user, path],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _log(f"      [!] Warning: failed to chown {path} to {user!r}: {result.stderr.strip()}")
+
+
+def _reclaim_dir_ownership(tmpdir: str, _log: Any) -> None:
+    """Reclaim ownership of *tmpdir* for the current OS user.
+
+    Convenience wrapper around :func:`_set_dir_owner` using ``$USER``.
+    """
+    _set_dir_owner(tmpdir, os.getenv("USER", ""), _log)
 
 
 def _commit_state_in_clone(tmpdir: str, workflow_state: Optional[Dict], _log: Any) -> None:
@@ -1021,7 +1058,9 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                 if not run_agent("Merge", "merge_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=task_id, model=model, agent_pool=agent_pool):
                     _log(f"      [!] Merge agent failed to cleanly exit.")
                     continue
-                    
+
+                _reclaim_dir_ownership(tmpdir, _log)
+
                 # The agent claims it's done. Let's verify.
                 _log(f"      [Merge] Verifying agent's merge...")
                 cmd_list = presubmit_cmd.split()
