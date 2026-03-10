@@ -396,7 +396,7 @@ class TestRunAiCommand:
         from workflow_lib.executor import run_ai_command
         result = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="",
-            stderr="TerminalQuotaError: quota exhausted\nDetails: reset in 17h",
+            stderr="PermissionError: cannot write to workspace\nDetails: disk full",
         )
         collected: list = []
 
@@ -409,7 +409,7 @@ class TestRunAiCommand:
             rc, _ = run_ai_command("prompt", "/tmp", on_line=collected.append)
 
         assert rc == 1
-        assert any("TerminalQuotaError" in line for line in collected)
+        assert any("PermissionError" in line for line in collected)
         assert any("Details:" in line for line in collected)
 
     def test_stderr_not_logged_on_success(self):

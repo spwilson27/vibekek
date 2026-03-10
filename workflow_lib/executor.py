@@ -273,14 +273,16 @@ def run_ai_command(
 
     try:
         result = runner.run(cwd, prompt, image_paths=image_paths, on_line=output_line)
-        if quota_detected[0]:
-            return QUOTA_RETURN_CODE, "quota exceeded"
         stderr_text = result.stderr or ""
-        if result.returncode != 0 and stderr_text:
+        if stderr_text:
             for line in stderr_text.strip().splitlines():
                 output_line(f"[stderr] {line}")
+        if quota_detected[0]:
+            return QUOTA_RETURN_CODE, "quota exceeded"
         return result.returncode, stderr_text
     except subprocess.TimeoutExpired:
+        if quota_detected[0]:
+            return QUOTA_RETURN_CODE, "quota exceeded"
         return 1, "timeout"
     except FileNotFoundError:
         return 1, "command not found"

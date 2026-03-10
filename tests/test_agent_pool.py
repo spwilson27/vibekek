@@ -746,3 +746,166 @@ class TestConfigValidation:
 
 def test_valid_steps_contains_expected_values():
     assert VALID_STEPS == {"develop", "review", "merge", "all"}
+
+
+# ---------------------------------------------------------------------------
+# E2E: Gemini "exhausted capacity" message → process killed → pool rotated
+# ---------------------------------------------------------------------------
+
+class TestExhaustedCapacityE2E:
+    """End-to-end tests for the exhausted-capacity quota handling path.
+
+    These tests verify the full chain:
+      1. Agent outputs Gemini's "exhausted your capacity" message.
+      2. The agent process hangs (simulated via TimeoutExpired) and is killed.
+      3. QUOTA_RETURN_CODE is returned (not the generic timeout code).
+      4. The agent pool marks the exhausted pool entry as suppressed.
+      5. run_agent retries with the next available pool entry.
+      6. The task ultimately succeeds.
+    """
+
+    EXHAUSTED_MSG = (
+        "You have exhausted your capacity on this model. "
+        "Your quota will reset after 14h27m41s."
+    )
+
+    def _two_pool(self):
+        """Return a pool with gemini (priority 1) and claude (priority 2)."""
+        return AgentPoolManager([
+            AgentConfig("gemini-pool", "gemini", "u", parallel=1, priority=1, quota_time=3600),
+            AgentConfig("claude-pool", "claude", "u", parallel=1, priority=2, quota_time=3600),
+        ])
+
+    # ------------------------------------------------------------------
+    # run_ai_command level
+    # ------------------------------------------------------------------
+
+    def test_exhausted_capacity_pattern_triggers_quota_code_via_stdout(self):
+        """The new 'exhausted your capacity' pattern is detected in stdout."""
+        import subprocess as sp
+        from workflow_lib.executor import run_ai_command
+
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+            if on_line:
+                on_line(self.EXHAUSTED_MSG)
+            return sp.CompletedProcess(args=[], returncode=1, stdout=self.EXHAUSTED_MSG, stderr="")
+
+        mock_runner = MagicMock()
+        mock_runner.run.side_effect = fake_run
+
+        with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
+            rc, msg = run_ai_command("prompt", "/tmp", backend="gemini")
+
+        assert rc == QUOTA_RETURN_CODE
+        assert "quota" in msg
+
+    def test_exhausted_capacity_pattern_triggers_quota_code_via_stderr(self):
+        """Quota message arriving only in stderr is still detected after our fix."""
+        import subprocess as sp
+        from workflow_lib.executor import run_ai_command
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = sp.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr=self.EXHAUSTED_MSG
+        )
+
+        with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
+            rc, _ = run_ai_command("prompt", "/tmp", backend="gemini")
+
+        assert rc == QUOTA_RETURN_CODE
+
+    def test_hanging_agent_killed_returns_quota_code_not_timeout(self):
+        """When the agent outputs a quota message then hangs, kill returns QUOTA_RETURN_CODE.
+
+        Before the fix, TimeoutExpired was caught and returned (1, 'timeout'),
+        which bypassed quota rotation.  The fix checks quota_detected inside
+        the TimeoutExpired handler so pool rotation is triggered correctly.
+        """
+        import subprocess as sp
+        from workflow_lib.executor import run_ai_command
+
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+            # Emit the quota message, then simulate the process hanging until killed.
+            if on_line:
+                on_line(self.EXHAUSTED_MSG)
+            raise sp.TimeoutExpired(["gemini", "-y"], timeout or 60)
+
+        mock_runner = MagicMock()
+        mock_runner.run.side_effect = fake_run
+
+        with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
+            rc, msg = run_ai_command("prompt", "/tmp", backend="gemini")
+
+        assert rc == QUOTA_RETURN_CODE, (
+            f"Expected QUOTA_RETURN_CODE ({QUOTA_RETURN_CODE}), got {rc}. "
+            "A hanging agent that emitted a quota message must not return the "
+            "generic timeout code — pool rotation would silently fail."
+        )
+        assert "quota" in msg
+
+    # ------------------------------------------------------------------
+    # run_agent level (full pool rotation)
+    # ------------------------------------------------------------------
+
+    def test_hanging_gemini_agent_killed_and_pool_rotated_to_claude(self):
+        """Full e2e: hanging Gemini agent is killed, pool rotates to Claude, task succeeds.
+
+        Scenario:
+          - Pool A (gemini, priority 1): outputs exhausted-capacity message, then hangs.
+          - Pool B (claude, priority 2): succeeds cleanly.
+        Expected outcome:
+          - run_agent returns True (success via pool B).
+          - gemini-pool is quota-suppressed in the pool.
+          - claude-pool is NOT suppressed.
+          - Backends were called in order: gemini first, then claude.
+        """
+        import subprocess as sp
+        from workflow_lib.executor import run_agent
+
+        call_log: list = []
+
+        def fake_make_runner(backend, model=None, soft_timeout=None, user=None):
+            mock_runner = MagicMock()
+            if backend == "gemini":
+                def gemini_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+                    call_log.append("gemini")
+                    if on_line:
+                        on_line(self.EXHAUSTED_MSG)
+                    # Simulate: process printed quota error then hung until killed.
+                    raise sp.TimeoutExpired(["gemini", "-y"], timeout or 60)
+                mock_runner.run.side_effect = gemini_run
+            else:
+                def claude_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+                    call_log.append("claude")
+                    return sp.CompletedProcess(args=[], returncode=0, stdout="task complete", stderr="")
+                mock_runner.run.side_effect = claude_run
+            return mock_runner
+
+        pool = self._two_pool()
+
+        with patch("workflow_lib.executor.make_runner", side_effect=fake_make_runner), \
+             patch("workflow_lib.executor.get_project_images", return_value=[]), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}), \
+             patch("workflow_lib.executor._set_dir_owner"), \
+             patch("builtins.open", mock_open(read_data="implement {task_name}")):
+            result = run_agent(
+                "Implementation",
+                "implement_task.md",
+                {"task_name": "test-task", "phase_filename": "phase_1"},
+                "/tmp",
+                agent_pool=pool,
+            )
+
+        assert result is True, "Task should succeed after rotating from exhausted gemini to claude"
+        assert call_log == ["gemini", "claude"], (
+            f"Expected gemini called first then claude, got: {call_log}"
+        )
+        assert "gemini-pool" in pool._quota_expiry, (
+            "gemini-pool should be quota-suppressed after exhausted-capacity timeout"
+        )
+        assert "claude-pool" not in pool._quota_expiry, (
+            "claude-pool should not be suppressed after a successful run"
+        )

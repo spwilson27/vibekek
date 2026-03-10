@@ -38,6 +38,7 @@ QUOTA_PATTERNS: List[str] = [
     "rateLimitExceeded",
     "usage limit reached",
     "too many requests",
+    "exhausted your capacity",
     "429",
 ]
 
