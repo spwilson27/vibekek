@@ -33,6 +33,7 @@ QUOTA_PATTERNS: List[str] = [
     "usage limit reached",
     "No capacity available for model",
     "exhausted your capacity",
+    "ModelNotFoundError: Requested entity was not found",
 ]
 
 
