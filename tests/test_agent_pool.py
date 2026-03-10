@@ -461,10 +461,10 @@ class TestRunnerWrapCmd:
         r = GeminiRunner(user="otheruser")
         cmd = ["gemini", "-y"]
         wrapped = r._wrap_cmd(cmd)
-        assert wrapped[:4] == ["sudo", "-u", "otheruser", "--set-home"]
+        assert wrapped[:4] == ["sudo", "-H", "-u", "otheruser"]
         assert "--" in wrapped
-        assert "env" in wrapped
-        assert "gemini" in wrapped
+        assert "bash" in wrapped
+        assert any("gemini" in part for part in wrapped)
 
     def test_wrap_cmd_env_path_allows_finding_binary_outside_sudo_secure_path(self):
         """Integration test: verify env PATH=... in sudo prefix makes binaries findable.
@@ -909,3 +909,187 @@ class TestExhaustedCapacityE2E:
         assert "claude-pool" not in pool._quota_expiry, (
             "claude-pool should not be suppressed after a successful run"
         )
+
+
+# ---------------------------------------------------------------------------
+# Timeout config forwarding + stderr-before-TimeoutExpired fixes
+# ---------------------------------------------------------------------------
+
+class TestTimeoutStderrReading:
+    """Guard the two-part fix for hanging retry agents.
+
+    Before the fix:
+      * ``run_ai_command`` always called ``runner.run(timeout=None)`` regardless
+        of the ``timeout`` key in ``.workflow.jsonc``, so processes hung forever.
+      * ``_run_streaming`` / ``_run_streaming_json`` killed a timed-out process
+        and immediately raised ``TimeoutExpired`` WITHOUT reading stderr, so any
+        quota message in stderr was never passed to ``on_line`` and quota
+        detection was skipped.
+
+    After the fix:
+      * The ``timeout`` config value is forwarded to ``runner.run()``.
+      * Both ``_run_streaming`` and ``_run_streaming_json`` read stderr and call
+        ``on_line`` for every non-empty line BEFORE raising ``TimeoutExpired``.
+    """
+
+    QUOTA_LINE = "You have exhausted your capacity on this model. Your quota will reset after 14h27m41s."
+
+    # ------------------------------------------------------------------
+    # Part 1: config timeout forwarding
+    # ------------------------------------------------------------------
+
+    def test_config_timeout_forwarded_to_runner_run(self):
+        """run_ai_command must forward config 'timeout' to runner.run()."""
+        import subprocess as sp
+        from workflow_lib.executor import run_ai_command
+
+        captured = {}
+
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+            captured["timeout"] = timeout
+            return sp.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
+
+        mock_runner = MagicMock()
+        mock_runner.run.side_effect = fake_run
+
+        with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={"timeout": 300}):
+            run_ai_command("prompt", "/tmp", backend="gemini")
+
+        assert captured["timeout"] == 300, (
+            f"Expected timeout=300 forwarded from config to runner.run(), "
+            f"got {captured['timeout']!r}. "
+            "Without this, agents run with timeout=None and can hang forever."
+        )
+
+    def test_config_timeout_none_when_not_configured(self):
+        """When config has no 'timeout' key, runner.run() receives timeout=None (no regression)."""
+        import subprocess as sp
+        from workflow_lib.executor import run_ai_command
+
+        captured = {}
+
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+            captured["timeout"] = timeout
+            return sp.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
+
+        mock_runner = MagicMock()
+        mock_runner.run.side_effect = fake_run
+
+        with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
+            run_ai_command("prompt", "/tmp", backend="gemini")
+
+        assert captured["timeout"] is None
+
+    # ------------------------------------------------------------------
+    # Part 2: stderr read before TimeoutExpired in runners.py
+    # ------------------------------------------------------------------
+
+    def test_run_streaming_reads_stderr_through_on_line_before_timeout_raised(self):
+        """_run_streaming passes stderr lines through on_line before raising TimeoutExpired.
+
+        Regression guard: before the fix, stderr was only read after a normal
+        (non-timed-out) process exit, so quota messages in stderr were silently
+        discarded when the process was killed due to timeout.
+        """
+        import subprocess as sp
+        from workflow_lib.runners import GeminiRunner
+
+        # Script: write quota message to stderr immediately, then hang on stdout
+        script = (
+            "import sys, time; "
+            f"sys.stderr.write({self.QUOTA_LINE!r} + '\\n'); "
+            "sys.stderr.flush(); "
+            "time.sleep(9999)"
+        )
+
+        emitted = []
+        runner = GeminiRunner(user=None)
+
+        with patch.object(runner, "_wrap_cmd", side_effect=lambda cmd: cmd):
+            try:
+                runner._run_streaming(
+                    ["python3", "-c", script],
+                    "",  # prompt
+                    "/tmp",
+                    emitted.append,
+                    timeout=1,
+                )
+            except sp.TimeoutExpired:
+                pass
+
+        assert any("exhausted your capacity" in line for line in emitted), (
+            f"Expected quota message from stderr in on_line output before TimeoutExpired, "
+            f"got: {emitted}. "
+            "Stderr must be read before raising TimeoutExpired so quota detection works."
+        )
+
+    def test_run_streaming_json_reads_stderr_through_on_line_before_timeout_raised(self):
+        """_run_streaming_json passes stderr lines through on_line before raising TimeoutExpired."""
+        import subprocess as sp
+        from workflow_lib.runners import ClaudeRunner
+
+        script = (
+            "import sys, time; "
+            f"sys.stderr.write({self.QUOTA_LINE!r} + '\\n'); "
+            "sys.stderr.flush(); "
+            "time.sleep(9999)"
+        )
+
+        emitted = []
+        runner = ClaudeRunner(user=None)
+
+        with patch.object(runner, "_wrap_cmd", side_effect=lambda cmd: cmd):
+            try:
+                runner._run_streaming_json(
+                    ["python3", "-c", script],
+                    "/tmp",
+                    on_line=emitted.append,
+                    timeout=1,
+                )
+            except sp.TimeoutExpired:
+                pass
+
+        assert any("exhausted your capacity" in line for line in emitted), (
+            f"Expected quota message from stderr in on_line output before TimeoutExpired, "
+            f"got: {emitted}. "
+            "Stderr must be read before raising TimeoutExpired so quota detection works."
+        )
+
+    def test_e2e_stderr_quota_on_timeout_triggers_pool_rotation(self):
+        """Full e2e: quota message emitted via stderr of hung process → pool rotation.
+
+        This combines both fixes:
+          1. Config timeout is passed to runner.run() (so the process IS killed).
+          2. stderr is read before TimeoutExpired (so quota IS detected).
+          3. QUOTA_RETURN_CODE is returned (so pool rotation IS triggered).
+
+        This is the specific scenario that was broken: a retry agent hangs, emits
+        its quota error only to stderr, gets killed by the timeout, but previously
+        the quota was never detected and the task silently failed instead of rotating.
+        """
+        import subprocess as sp
+        from workflow_lib.executor import run_ai_command
+
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None):
+            # Simulate our runners.py fix: stderr is read and sent through on_line
+            # before TimeoutExpired is raised.
+            if on_line:
+                on_line(f"[stderr] {self.QUOTA_LINE}")
+            raise sp.TimeoutExpired(["gemini", "-y"], timeout or 60)
+
+        mock_runner = MagicMock()
+        mock_runner.run.side_effect = fake_run
+
+        with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={"timeout": 60}):
+            rc, msg = run_ai_command("prompt", "/tmp", backend="gemini")
+
+        assert rc == QUOTA_RETURN_CODE, (
+            f"Expected QUOTA_RETURN_CODE ({QUOTA_RETURN_CODE}) when stderr contains "
+            f"quota message and process times out, got {rc}. "
+            "Pool rotation must be triggered even when the quota message arrives via stderr "
+            "and the process hangs until killed."
+        )
+        assert "quota" in msg

@@ -220,6 +220,10 @@ class AIRunner:
             reader.join()
         if reader.is_alive():
             self._kill_process(proc)
+            stderr_raw = proc.stderr.read() if proc.stderr else ""
+            for line in stderr_raw.splitlines():
+                if line.strip():
+                    on_line(f"[stderr] {line}")
             raise subprocess.TimeoutExpired(cmd, timeout or 0)
 
         stderr_raw = proc.stderr.read() if proc.stderr else ""
@@ -343,6 +347,10 @@ class AIRunner:
             reader.join()
         if reader.is_alive():
             self._kill_process(proc)
+            stderr_raw = proc.stderr.read() if proc.stderr else ""
+            for line in stderr_raw.splitlines():
+                if line.strip():
+                    on_line(f"[stderr] {line}")
             raise subprocess.TimeoutExpired(cmd, timeout or 0)
 
         stderr_raw = proc.stderr.read() if proc.stderr else ""

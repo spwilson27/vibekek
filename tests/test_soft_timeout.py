@@ -412,8 +412,8 @@ class TestRunAiCommand:
         assert any("PermissionError" in line for line in collected)
         assert any("Details:" in line for line in collected)
 
-    def test_stderr_not_logged_on_success(self):
-        """When the agent succeeds, stderr is not forwarded even if present."""
+    def test_stderr_logged_even_on_success(self):
+        """stderr lines are forwarded via on_line even when the agent succeeds."""
         from workflow_lib.executor import run_ai_command
         result = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="ok",
@@ -430,7 +430,7 @@ class TestRunAiCommand:
             rc, _ = run_ai_command("prompt", "/tmp", on_line=collected.append)
 
         assert rc == 0
-        assert not collected
+        assert any("[stderr] some warning" in line for line in collected)
 
 
 # ---------------------------------------------------------------------------

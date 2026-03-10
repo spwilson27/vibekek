@@ -255,6 +255,7 @@ def run_ai_command(
     from .config import get_config_defaults
     cfg = get_config_defaults()
     soft_timeout = cfg.get("soft_timeout")
+    hard_timeout = cfg.get("timeout")
 
     runner = make_runner(backend, model=model, soft_timeout=soft_timeout, user=user)
 
@@ -272,7 +273,7 @@ def run_ai_command(
             sys.stdout.flush()
 
     try:
-        result = runner.run(cwd, prompt, image_paths=image_paths, on_line=output_line)
+        result = runner.run(cwd, prompt, image_paths=image_paths, on_line=output_line, timeout=hard_timeout)
         stderr_text = result.stderr or ""
         if stderr_text:
             for line in stderr_text.strip().splitlines():
@@ -482,6 +483,9 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
 
         if agent_pool is not None:
             step = _step_for_agent_type(agent_type)
+            if attempt > 1 and dashboard and task_id:
+                dashboard.set_agent(task_id, agent_type, "waiting",
+                                    f"Waiting for available agent (attempt {attempt})...", agent_name="")
             agent_cfg = agent_pool.acquire(timeout=300.0, step=step)
             if agent_cfg is None:
                 err = f"[{agent_type}] FATAL: No agent available for step '{step}' after waiting (all quota-exhausted, at capacity, or none configured)"
@@ -494,7 +498,10 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
             active_model = agent_cfg.model or model
             active_user = agent_cfg.user
             if dashboard and task_id:
-                dashboard.set_agent(task_id, agent_type, "running", agent_name=agent_cfg.name)
+                start_msg = f"Retry attempt {attempt} → {agent_cfg.name}" if attempt > 1 else ""
+                dashboard.set_agent(task_id, agent_type, "running", start_msg, agent_name=agent_cfg.name)
+            if attempt > 1 and dashboard:
+                dashboard.log(f"{prefix}[retry] Attempt {attempt}/{max_capacity_retries} starting with {agent_cfg.name} ({active_backend})")
 
         # Transfer directory ownership to the agent's OS user so it can write freely.
         # Always chown when a pool is active: a previous agent may have run as a

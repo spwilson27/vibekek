@@ -268,6 +268,7 @@ class TestProcessTask:
         err = subprocess.CalledProcessError(1, "git")
         err.stderr = b"error"
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", side_effect=err):
             result = process_task("/root", "phase_1/task.md", "./do presubmit")
         assert result is False
@@ -275,6 +276,7 @@ class TestProcessTask:
     def test_success(self):
         mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="M file.py", stderr=""))
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", mock_run), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value="# Task: My Task"), \
@@ -290,6 +292,7 @@ class TestProcessTask:
         """Verify git submodule update --init --recursive is called after cloning."""
         mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="M file.py", stderr=""))
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", mock_run), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value="# Task: My Task"), \
@@ -308,6 +311,7 @@ class TestProcessTask:
     def test_implementation_agent_fails(self):
         mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", mock_run), \
              patch("workflow_lib.executor.run_agent", return_value=False), \
              patch("workflow_lib.executor.get_task_details", return_value=""), \
@@ -330,6 +334,7 @@ class TestProcessTask:
             return MagicMock(returncode=0, stdout="M file.py", stderr="")
 
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", side_effect=mock_run_side_effect), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value=""), \
@@ -345,6 +350,7 @@ class TestProcessTask:
         """With serena=True: cache is copied and .mcp.json is copied."""
         mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="M f", stderr=""))
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", mock_run), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value=""), \
@@ -379,6 +385,7 @@ class TestProcessTask:
             return MagicMock(returncode=0, stdout="M file.py", stderr="")
 
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", side_effect=mock_run_side_effect), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor._reclaim_dir_ownership", side_effect=fake_reclaim), \
@@ -414,6 +421,7 @@ class TestProcessTask:
             return MagicMock(returncode=0, stdout="M file.py", stderr="")
 
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", side_effect=mock_run_side_effect), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value="# Task: T"), \
@@ -747,6 +755,7 @@ class TestProcessTaskWithDashboard:
     def _base_patches(self):
         return [
             patch("tempfile.mkdtemp", return_value="/tmp/wt"),
+            patch("os.chmod"),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="M file.py", stderr="")),
             patch("workflow_lib.executor.run_agent", return_value=True),
             patch("workflow_lib.executor.get_task_details", return_value="# Task: My Task"),
@@ -760,6 +769,7 @@ class TestProcessTaskWithDashboard:
     def test_success_with_dashboard(self):
         dash = MagicMock()
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="M file.py", stderr="")), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value="# Task: My Task"), \
@@ -778,6 +788,7 @@ class TestProcessTaskWithDashboard:
         err = subprocess.CalledProcessError(1, "git")
         err.stderr = b"error"
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", side_effect=err):
             result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
         assert result is False
@@ -786,6 +797,7 @@ class TestProcessTaskWithDashboard:
     def test_impl_agent_fail_with_dashboard(self):
         dash = MagicMock()
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
              patch("workflow_lib.executor.run_agent", return_value=False), \
              patch("workflow_lib.executor.get_task_details", return_value=""), \
@@ -804,6 +816,7 @@ class TestProcessTaskWithDashboard:
             call_count[0] += 1
             return call_count[0] != 2  # fail on 2nd call (Review)
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
              patch("workflow_lib.executor.run_agent", side_effect=agent_side), \
              patch("workflow_lib.executor.get_task_details", return_value=""), \
@@ -818,6 +831,7 @@ class TestProcessTaskWithDashboard:
     def test_presubmit_fail_all_retries_with_dashboard(self):
         dash = MagicMock()
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="fail", stderr="")), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value=""), \
@@ -842,6 +856,7 @@ class TestProcessTaskWithDashboard:
                 return MagicMock(returncode=rc, stdout="out", stderr="")
             return MagicMock(returncode=0, stdout="M f", stderr="")
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
+             patch("os.chmod"), \
              patch("subprocess.run", side_effect=run_side), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value=""), \
@@ -4283,6 +4298,7 @@ class TestSoftInterrupt:
         stack.enter_context(patch('workflow_lib.executor.get_memory_context', return_value="mem"))
         stack.enter_context(patch('subprocess.run', return_value=MagicMock(returncode=0, stdout="", stderr="")))
         stack.enter_context(patch('tempfile.mkdtemp', return_value="/tmp/fake"))
+        stack.enter_context(patch('os.chmod'))
         stack.enter_context(patch('shutil.rmtree'))
         return stack
 
@@ -4447,6 +4463,7 @@ class TestSoftInterrupt:
              patch('workflow_lib.executor.get_memory_context', return_value="mem"), \
              patch('subprocess.run', side_effect=fake_subprocess_run), \
              patch('tempfile.mkdtemp', return_value="/tmp/fake"), \
+             patch('os.chmod'), \
              patch('shutil.rmtree'):
             result = self._mod.process_task(
                 "/root", "phase_1/task", "./presubmit",
@@ -4478,6 +4495,7 @@ class TestSoftInterrupt:
              patch('workflow_lib.executor.get_memory_context', return_value="mem"), \
              patch('subprocess.run', side_effect=fake_subprocess_run), \
              patch('tempfile.mkdtemp', return_value="/tmp/fake"), \
+             patch('os.chmod'), \
              patch('shutil.rmtree'), \
              patch('builtins.open', mock_open(read_data="prompt {task_name}")):
             result = self._mod.process_task(
@@ -4501,7 +4519,8 @@ class TestSoftInterrupt:
              patch('workflow_lib.executor.get_project_context', return_value="ctx"), \
              patch('workflow_lib.executor.get_gitlab_remote_url', return_value="http://gitlab/repo"), \
              patch('subprocess.run', return_value=MagicMock(returncode=0, stdout="", stderr="")), \
-             patch('tempfile.mkdtemp', return_value="/tmp/merge_fake"):
+             patch('tempfile.mkdtemp', return_value="/tmp/merge_fake"), \
+             patch('os.chmod'):
             result = self._mod.merge_task(
                 "/root", "phase_1/task", "./presubmit", dashboard=dash,
             )
@@ -4538,7 +4557,8 @@ class TestSoftInterrupt:
              patch('workflow_lib.executor.get_project_context', return_value="ctx"), \
              patch('workflow_lib.executor.get_gitlab_remote_url', return_value="http://gitlab/repo"), \
              patch('subprocess.run', side_effect=fake_subprocess_run), \
-             patch('tempfile.mkdtemp', return_value="/tmp/merge_fake"):
+             patch('tempfile.mkdtemp', return_value="/tmp/merge_fake"), \
+             patch('os.chmod'):
             result = self._mod.merge_task(
                 "/root", "phase_1/task", "./presubmit",
                 max_retries=3, dashboard=dash,
