@@ -67,6 +67,9 @@ PROMPT_NAMES = [
     "fix_requirements.md",
     "merge_task.md",
     "requirements.md",
+    "feature_discuss.md",
+    "feature_execute.md",
+    "feature_spec.md",
 ]
 
 STUB_PROMPT = "Write {target_path} based on {description_ctx}."

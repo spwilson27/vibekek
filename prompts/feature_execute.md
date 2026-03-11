@@ -40,7 +40,7 @@ Integrate this feature into the existing project plan. Perform the following ste
 - Break the feature into atomic, TDD-suitable tasks
 - Each task MUST reference the new requirement IDs
 - Each task MUST have proper `depends_on` metadata
-- Use sequential numbering starting from `{next_task_num:02d}`
+- Use sequential numbering starting from `{next_task_num}`
 - Follow the standard task format:
 
 ```markdown

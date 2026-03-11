@@ -59,6 +59,7 @@ class AgentConfig:
     parallel: int
     priority: int
     quota_time: int
+    spawn_rate: float = 0.0
     model: Optional[str] = None
     steps: List[str] = field(default_factory=lambda: ["all"])
     cargo_target_dir: Optional[str] = None
@@ -83,6 +84,8 @@ class AgentPoolManager:
         self._active: Dict[str, int] = {c.name: 0 for c in configs}
         # Maps agent name -> time.time() value after which quota has lifted.
         self._quota_expiry: Dict[str, float] = {}
+        # Maps agent name -> time.time() value of the last spawn.
+        self._last_spawn: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -110,12 +113,27 @@ class AgentPoolManager:
                 agent = self._pick(step)
                 if agent is not None:
                     self._active[agent.name] += 1
+                    self._last_spawn[agent.name] = time.time()
                     return agent
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return None
-                # Wake up every few seconds to re-check quota expiries.
-                self._lock.wait(timeout=min(remaining, 5.0))
+                
+                # Calculate wait time for the next available agent slot
+                now = time.time()
+                next_wakeup = now + 5.0
+                for cfg in self._configs:
+                    if "all" not in cfg.steps and step not in cfg.steps:
+                        continue
+                    if self._active[cfg.name] < cfg.parallel:
+                        qe = self._quota_expiry.get(cfg.name, 0)
+                        sr = self._last_spawn.get(cfg.name, 0) + cfg.spawn_rate if cfg.spawn_rate > 0.0 else 0
+                        wait_until = max(qe, sr)
+                        if wait_until > now:
+                            next_wakeup = min(next_wakeup, wait_until)
+                
+                wait_time = max(0.1, next_wakeup - now)
+                self._lock.wait(timeout=min(remaining, wait_time))
 
     def release(self, agent: AgentConfig, quota_exhausted: bool = False) -> None:
         """Release a previously acquired agent slot.
@@ -168,6 +186,8 @@ class AgentPoolManager:
                 continue
             if now < self._quota_expiry.get(cfg.name, 0):
                 continue  # quota suppressed
+            if cfg.spawn_rate > 0.0 and now < self._last_spawn.get(cfg.name, 0) + cfg.spawn_rate:
+                continue  # spawn rate cooldown
             if self._active[cfg.name] < cfg.parallel:
                 return cfg
         return None

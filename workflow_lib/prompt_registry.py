@@ -64,6 +64,11 @@ PROMPT_PLACEHOLDERS = {
     "fix_requirements.md": {"description_ctx", "existing_tasks_content", "next_task_num", "phase_filename", "shared_components_ctx", "sub_epic_name", "target_dir", "unmapped_reqs_list"},
     "merge_task.md": {"description_ctx", "branches_list"},
     "requirements.md": {"description_ctx"},
+    
+    # Feature addition
+    "feature_discuss.md": {"description_ctx", "discussion_history", "feature_brief", "phases_ctx", "requirements_ctx", "shared_components_ctx"},
+    "feature_spec.md": {"description_ctx", "discussion_history", "feature_brief", "requirements_ctx", "shared_components_ctx", "spec_output_path"},
+    "feature_execute.md": {"description_ctx", "feature_spec", "phases_ctx", "requirements_ctx", "shared_components_ctx", "phase_id", "sub_epic", "next_task_num"},
 }
 
 

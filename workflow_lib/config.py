@@ -183,6 +183,7 @@ def get_agent_pool_configs() -> List[Any]:
             parallel=int(entry.get("parallel", 1)),
             priority=int(entry.get("priority", 1)),
             quota_time=int(entry.get("quota-time", 60)),
+            spawn_rate=float(entry.get("spawn_rate", 0.0)),
             model=entry.get("model") or None,
             steps=steps,
             cargo_target_dir=entry.get("cargo-target-dir") or None,

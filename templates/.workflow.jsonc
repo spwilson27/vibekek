@@ -58,6 +58,8 @@
   //                          by available capacity.  Default: 1.
   //   quota-time  (optional) Seconds to suppress this agent after a quota-exceeded
   //                          message is detected in its output.  Default: 60.
+  //   spawn_rate  (optional) Seconds to wait between spawning new agents from this pool.
+  //                          Default: 0.0.
   //   model            (optional) Model name forwarded to the CLI via --model.
   //                               Leave unset to use the CLI's own default.
   //   cargo-target-dir (optional) Absolute path for the Cargo build cache
@@ -81,6 +83,7 @@
   //     "parallel":   3,
   //     "priority":   1,
   //     "quota-time": 60,
+  //     "spawn_rate": 0.5,
   //     "steps":      ["develop", "merge"]
   //   },
   //   {
@@ -91,6 +94,7 @@
   //     "parallel":   5,
   //     "priority":   1,
   //     "quota-time": 60,
+  //     "spawn_rate": 2.0,
   //     "steps":      ["review"]
   //   },
   //   {
@@ -100,6 +104,7 @@
   //     "parallel":   2,
   //     "priority":   2,
   //     "quota-time": 120,
+  //     "spawn_rate": 1.0,
   //     "steps":      ["all"]
   //   }
   // ]
