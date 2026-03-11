@@ -112,9 +112,28 @@ class AgentPoolManager:
             while True:
                 agent = self._pick(step)
                 if agent is not None:
+                    now = time.time()
+                    last = self._last_spawn.get(agent.name, 0)
+                    
+                    if agent.spawn_rate > 0.0 and last > 0:
+                        target = last + agent.spawn_rate
+                        if now < target:
+                            # We want this agent, but need to wait for its spawn_rate cooldown.
+                            # We wait inside the lock (which unlocks while sleeping) so that 
+                            # if quota is exhausted during our wait, we are woken up via notify_all()
+                            # and will loop again to potentially pick a different agent.
+                            wait_for_spawn = target - now
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                return None
+                            self._lock.wait(timeout=min(remaining, wait_for_spawn))
+                            continue # Re-evaluate everything (including quota) after waking up
+                    
+                    # Ready to spawn
                     self._active[agent.name] += 1
                     self._last_spawn[agent.name] = time.time()
                     return agent
+                    
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return None
@@ -127,10 +146,8 @@ class AgentPoolManager:
                         continue
                     if self._active[cfg.name] < cfg.parallel:
                         qe = self._quota_expiry.get(cfg.name, 0)
-                        sr = self._last_spawn.get(cfg.name, 0) + cfg.spawn_rate if cfg.spawn_rate > 0.0 else 0
-                        wait_until = max(qe, sr)
-                        if wait_until > now:
-                            next_wakeup = min(next_wakeup, wait_until)
+                        if qe > now:
+                            next_wakeup = min(next_wakeup, qe)
                 
                 wait_time = max(0.1, next_wakeup - now)
                 self._lock.wait(timeout=min(remaining, wait_time))
@@ -186,8 +203,6 @@ class AgentPoolManager:
                 continue
             if now < self._quota_expiry.get(cfg.name, 0):
                 continue  # quota suppressed
-            if cfg.spawn_rate > 0.0 and now < self._last_spawn.get(cfg.name, 0) + cfg.spawn_rate:
-                continue  # spawn rate cooldown
             if self._active[cfg.name] < cfg.parallel:
                 return cfg
         return None

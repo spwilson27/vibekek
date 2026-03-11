@@ -473,7 +473,8 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
     max_capacity_retries = 5
     base_delay = 30  # seconds
 
-    for attempt in range(1, max_capacity_retries + 1):
+    attempt = 1
+    while attempt <= max_capacity_retries:
         # Resolve backend/user/model from pool (if active) or fixed backend.
         agent_cfg = None
         active_backend = backend
@@ -546,12 +547,22 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
 
         # Quota exceeded: retry immediately with a different agent (pool handles rotation).
         if returncode == QUOTA_RETURN_CODE:
-            if attempt < max_capacity_retries:
-                retry_msg = f"[{agent_type}] Quota exceeded on {agent_cfg.name if agent_cfg else active_backend} (attempt {attempt}/{max_capacity_retries}). Retrying with next agent..."
+            if agent_pool is not None:
+                retry_msg = f"[{agent_type}] Quota exceeded on {agent_cfg.name if agent_cfg else active_backend}. Retrying with next available agent..."
                 if dashboard:
                     dashboard.log(f"{prefix}{retry_msg}")
                 else:
                     print(f"      {retry_msg}")
+                # We do not increment attempt when using a pool, as it can rotate infinitely.
+                continue
+
+            if attempt < max_capacity_retries:
+                retry_msg = f"[{agent_type}] Quota exceeded on {active_backend} (attempt {attempt}/{max_capacity_retries}). Retrying..."
+                if dashboard:
+                    dashboard.log(f"{prefix}{retry_msg}")
+                else:
+                    print(f"      {retry_msg}")
+                attempt += 1
                 continue
             err = f"[{agent_type}] FATAL: All agents quota-exhausted after {max_capacity_retries} attempts"
             if dashboard:
@@ -578,6 +589,7 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
                 else:
                     print(f"      {retry_msg}")
                 time.sleep(delay)
+                attempt += 1
                 continue
 
         err = f"[{agent_type}] FATAL: Agent process failed with exit code {returncode}"
