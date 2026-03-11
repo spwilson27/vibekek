@@ -27,6 +27,8 @@ Command summary
 +-------------------+----------------------------------------------------------+
 | cmd_add           | AI-generate a new task file and rebuild the DAG.         |
 +-------------------+----------------------------------------------------------+
+| cmd_add_feature   | Discuss a feature brief, produce spec, integrate plan.   |
++-------------------+----------------------------------------------------------+
 | cmd_modify_req    | Add, remove, or edit requirements interactively.         |
 +-------------------+----------------------------------------------------------+
 | cmd_regen_dag     | Rebuild the dependency DAG for one phase.                |
@@ -1474,6 +1476,308 @@ def _run_verify(mode: str) -> None:
             print(f"  FAIL  {mode}")
             if res.stdout.strip():
                 print(res.stdout.strip())
+
+
+# ---------------------------------------------------------------------------
+# Add Feature
+# ---------------------------------------------------------------------------
+
+
+def _load_requirements_ctx() -> str:
+    """Load requirements.md content, or empty string if missing."""
+    req_file = os.path.join(ROOT_DIR, "requirements.md")
+    if os.path.exists(req_file):
+        with open(req_file, "r", encoding="utf-8") as f:
+            return f.read()
+    return "(no requirements.md found)"
+
+
+def _load_phases_ctx() -> str:
+    """Load all phase documents as context."""
+    phases_dir = os.path.join(ROOT_DIR, "docs", "plan", "phases")
+    if not os.path.isdir(phases_dir):
+        return "(no phases found)"
+    content = ""
+    for md in sorted(os.listdir(phases_dir)):
+        if md.endswith(".md"):
+            with open(os.path.join(phases_dir, md), "r", encoding="utf-8") as f:
+                content += f"### {md}\n{f.read()}\n\n"
+    return content or "(no phases found)"
+
+
+def cmd_add_feature(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
+    """Interactive feature addition: discuss a feature brief, produce a spec,
+    then integrate it into the project plan.
+
+    **Stage 1 — Template**: When called without ``--brief``, prints the feature
+    brief template to stdout so the user can fill it in and save to a file.
+
+    **Stage 2 — Discuss**: When called with ``--brief <file>``, runs an
+    interactive discussion loop where an AI agent reviews the brief, asks
+    questions, and raises concerns.  The user responds until satisfied, then
+    the agent produces a formal feature spec.
+
+    **Stage 3 — Execute**: When the user confirms (or calls with ``--spec``
+    directly), runs an automatic workflow that consumes the spec to update
+    requirements, create tasks, build DAGs, and update documentation.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``brief`` (Optional[str]) — path to the filled-in feature brief.
+        - ``spec`` (Optional[str]) — path to a pre-existing spec (skip discuss).
+        - ``phase_id`` (Optional[str]) — target phase for task generation.
+        - ``sub_epic`` (Optional[str]) — target sub-epic name.
+        - ``dry_run`` (bool) — preview mode.
+        - ``backend`` (str) — AI backend to use.
+    :type args: argparse.Namespace
+    """
+    brief_path = getattr(args, "brief", None)
+    spec_path = getattr(args, "spec", None)
+
+    # Stage 1: No brief provided — print template
+    if not brief_path and not spec_path:
+        template_file = os.path.join(TOOLS_DIR, "prompts", "feature_brief_template.md")
+        with open(template_file, "r", encoding="utf-8") as f:
+            print(f.read())
+        print("\n---")
+        print("Save the above template to a file, fill it in, then re-run:")
+        print("  workflow.py add-feature --brief <your_brief.md>")
+        return
+
+    backend = args.backend
+    runner = _make_runner(backend, model=getattr(args, "model", None))
+    ctx = ProjectContext(ROOT_DIR, runner=runner)
+
+    requirements_ctx = _load_requirements_ctx()
+    phases_ctx = _load_phases_ctx()
+    shared_components_ctx = ctx.load_shared_components()
+
+    # Stage 2: Discuss the brief and produce a spec
+    if brief_path and not spec_path:
+        if not os.path.exists(brief_path):
+            print(f"Error: Brief file not found: {brief_path}")
+            sys.exit(1)
+
+        with open(brief_path, "r", encoding="utf-8") as f:
+            feature_brief = f.read()
+
+        discussion_history = "(none — this is the first round)"
+        discussion_log = []
+        round_num = 0
+
+        print("=" * 60)
+        print("FEATURE DISCUSSION")
+        print("=" * 60)
+        print("The AI agent will review your feature brief and ask questions.")
+        print("Respond to refine the feature. When satisfied, type 'done' to")
+        print("generate the formal spec, or 'quit' to abort.\n")
+
+        while True:
+            round_num += 1
+            print(f"\n--- Round {round_num} ---\n")
+
+            discuss_tmpl = ctx.load_prompt("feature_discuss.md")
+            prompt = ctx.format_prompt(discuss_tmpl,
+                description_ctx=ctx.description_ctx,
+                shared_components_ctx=shared_components_ctx,
+                requirements_ctx=requirements_ctx,
+                phases_ctx=phases_ctx,
+                feature_brief=feature_brief,
+                discussion_history=discussion_history,
+            )
+
+            # Stream agent output live so the user sees it in real-time.
+            streamed_lines: list = []
+            def _on_line(line: str) -> None:
+                print(line)
+                streamed_lines.append(line)
+
+            before = ctx.get_workspace_snapshot()
+            effective_timeout = ctx.agent_timeout
+            result = ctx.runner.run(ctx.root_dir, prompt, ctx.image_paths,
+                                    on_line=_on_line, timeout=effective_timeout)
+
+            if result.returncode != 0:
+                print(f"\n[!] Error during discussion round {round_num}.")
+                print(result.stderr)
+                sys.exit(1)
+
+            # Use streamed output if available, otherwise fall back to stdout
+            agent_response = "\n".join(streamed_lines) if streamed_lines else (result.stdout or "").strip()
+            if not streamed_lines and agent_response:
+                print(agent_response)
+            discussion_log.append(f"## Agent (Round {round_num})\n{agent_response}")
+
+            print(f"\n{'=' * 60}")
+            user_input = input("\nYour response (or 'done'/'quit'): ").strip()
+
+            if user_input.lower() == "quit":
+                print("Aborted.")
+                return
+            if user_input.lower() == "done":
+                break
+
+            discussion_log.append(f"## User (Round {round_num})\n{user_input}")
+            discussion_history = "\n\n".join(discussion_log)
+
+        # Generate the spec
+        print("\n" + "=" * 60)
+        print("GENERATING FEATURE SPEC")
+        print("=" * 60 + "\n")
+
+        # Determine spec output path
+        features_dir = os.path.join(ROOT_DIR, "docs", "plan", "features")
+        os.makedirs(features_dir, exist_ok=True)
+
+        brief_basename = os.path.splitext(os.path.basename(brief_path))[0]
+        spec_filename = f"spec_{brief_basename}.md"
+        spec_output = os.path.join(features_dir, spec_filename)
+
+        spec_tmpl = ctx.load_prompt("feature_spec.md")
+        prompt = ctx.format_prompt(spec_tmpl,
+            description_ctx=ctx.description_ctx,
+            shared_components_ctx=shared_components_ctx,
+            requirements_ctx=requirements_ctx,
+            feature_brief=feature_brief,
+            discussion_history="\n\n".join(discussion_log),
+            spec_output_path=spec_output,
+        )
+
+        if args.dry_run:
+            print(f"[dry-run] Would generate spec at: {spec_output}")
+            return
+
+        result = ctx.run_ai(prompt, allowed_files=[spec_output], sandbox=False)
+
+        if result.returncode != 0 or not os.path.exists(spec_output):
+            print(f"\n[!] Error generating spec.")
+            if result.returncode != 0:
+                print(result.stderr)
+            else:
+                print(f"Expected file not created: {spec_output}")
+            sys.exit(1)
+
+        print(f"\nSpec created: {spec_output}")
+        spec_path = spec_output
+
+        # Prompt user to continue to execution
+        print(f"\n{'=' * 60}")
+        print("SPEC READY — Review it, then press Enter to integrate into")
+        print("the project plan, or Ctrl-C to stop here.")
+        print(f"{'=' * 60}")
+        try:
+            input("\nPress Enter to continue...")
+        except (KeyboardInterrupt, EOFError):
+            print("\nStopped. You can re-run with:")
+            print(f"  workflow.py add-feature --spec {spec_path} --phase <phase_id> --sub-epic <name>")
+            return
+
+    # Stage 3: Execute — integrate spec into plan
+    if not spec_path:
+        print("Error: No spec path available.")
+        sys.exit(1)
+
+    if not os.path.exists(spec_path):
+        print(f"Error: Spec file not found: {spec_path}")
+        sys.exit(1)
+
+    phase_id = getattr(args, "phase_id", None)
+    sub_epic = getattr(args, "sub_epic", None)
+
+    if not phase_id or not sub_epic:
+        print("\nTo integrate the spec, provide --phase and --sub-epic:")
+        print(f"  workflow.py add-feature --spec {spec_path} --phase <phase_id> --sub-epic <name>")
+        # Try to interactively ask
+        if not phase_id:
+            phases_dir = os.path.join(ROOT_DIR, "docs", "plan", "phases")
+            if os.path.isdir(phases_dir):
+                available = sorted(f.replace(".md", "") for f in os.listdir(phases_dir) if f.endswith(".md"))
+                if available:
+                    print(f"\nAvailable phases: {', '.join(available)}")
+            phase_id = input("Target phase (e.g., phase_1): ").strip()
+            if not phase_id:
+                print("Aborted — no phase specified.")
+                return
+        if not sub_epic:
+            sub_epic = input("Sub-epic name (e.g., my_feature): ").strip()
+            if not sub_epic:
+                print("Aborted — no sub-epic specified.")
+                return
+
+    if args.dry_run:
+        print(f"[dry-run] Would integrate spec into {phase_id}/{sub_epic}")
+        return
+
+    with open(spec_path, "r", encoding="utf-8") as f:
+        feature_spec = f.read()
+
+    phase_dir = os.path.join(get_tasks_dir(), phase_id)
+    se_dir = os.path.join(phase_dir, sub_epic)
+    os.makedirs(se_dir, exist_ok=True)
+
+    # Determine next task number
+    existing = sorted([f for f in os.listdir(se_dir) if f.endswith(".md")]) if os.path.isdir(se_dir) else []
+    next_task_num = len(existing) + 1
+
+    print("\n" + "=" * 60)
+    print("INTEGRATING FEATURE INTO PLAN")
+    print("=" * 60 + "\n")
+
+    exec_tmpl = ctx.load_prompt("feature_execute.md")
+    prompt = ctx.format_prompt(exec_tmpl,
+        description_ctx=ctx.description_ctx,
+        shared_components_ctx=shared_components_ctx,
+        requirements_ctx=requirements_ctx,
+        phases_ctx=phases_ctx,
+        feature_spec=feature_spec,
+        phase_id=phase_id,
+        sub_epic=sub_epic,
+        next_task_num=str(next_task_num),
+    )
+
+    # Allow writes to: sub-epic dir, requirements.md, phase doc, shared_components
+    req_file = os.path.join(ROOT_DIR, "requirements.md")
+    phase_doc = os.path.join(ROOT_DIR, "docs", "plan", "phases", f"{phase_id}.md")
+    shared_comp = os.path.join(ROOT_DIR, "docs", "plan", "shared_components.md")
+    allowed_files = [
+        se_dir + os.sep,
+        req_file,
+        phase_doc,
+        shared_comp,
+    ]
+
+    result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+
+    if result.returncode != 0:
+        print(f"\n[!] Error integrating feature.")
+        print(result.stdout)
+        print(result.stderr)
+        sys.exit(1)
+
+    # Count created tasks
+    new_files = sorted(set(
+        f for f in os.listdir(se_dir) if f.endswith(".md")
+    ) - set(existing)) if os.path.isdir(se_dir) else []
+
+    if new_files:
+        print(f"\nCreated {len(new_files)} task(s):")
+        for nf in new_files:
+            print(f"  docs/plan/tasks/{phase_id}/{sub_epic}/{nf}")
+    else:
+        print("Warning: No new task files were created by the agent.")
+
+    # Rebuild DAG
+    print("\nRebuilding DAG...")
+    _rebuild_phase_dag(phase_dir, ctx)
+
+    # Log action
+    rp_state = load_replan_state()
+    log_action(rp_state, "add-feature", f"{phase_id}/{sub_epic}",
+               f"Integrated feature from spec: {spec_path}")
+    save_replan_state(rp_state)
+
+    print(f"\nFeature integrated into {phase_id}/{sub_epic}.")
+    print("Run 'workflow.py validate' to verify plan consistency.")
 
 
 # ---------------------------------------------------------------------------

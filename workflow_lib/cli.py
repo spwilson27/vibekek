@@ -35,6 +35,9 @@ Available commands
 ``add``
     AI-generate a new task in a specific phase/sub-epic.
 
+``add-feature``
+    Discuss a feature brief with AI, produce a spec, then integrate into plan.
+
 ``modify-req``
     Add, remove, or edit requirements interactively.
 
@@ -65,7 +68,7 @@ from typing import Optional
 from .constants import TOOLS_DIR, ROOT_DIR
 from .orchestrator import Orchestrator
 from .context import ProjectContext
-from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade, cmd_fixup
+from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_add_feature, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade, cmd_fixup
 from .executor import execute_dag, Logger, signal_handler
 from .dashboard import make_dashboard, _DashboardStream
 from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs
@@ -331,6 +334,14 @@ def main() -> None:
     p_add.add_argument("--desc", required=True, help="Description of the task to generate")
     p_add.add_argument("--dry-run", action="store_true")
 
+    p_add_feat = sub.add_parser("add-feature", parents=[shared],
+        help="Discuss a feature brief with AI, produce a spec, then integrate into plan")
+    p_add_feat.add_argument("--brief", help="Path to a filled-in feature brief file")
+    p_add_feat.add_argument("--spec", help="Path to existing spec (skip discussion, go straight to execution)")
+    p_add_feat.add_argument("--phase", dest="phase_id", help="Target phase (e.g., phase_1)")
+    p_add_feat.add_argument("--sub-epic", dest="sub_epic", help="Target sub-epic name")
+    p_add_feat.add_argument("--dry-run", action="store_true")
+
     p_mod_req = sub.add_parser("modify-req", parents=[shared], help="Modify requirements.md")
     mg = p_mod_req.add_mutually_exclusive_group(required=True)
     mg.add_argument("--add", dest="add_req", metavar="DESC", help="Add a requirement (opens editor)")
@@ -391,6 +402,7 @@ def main() -> None:
         "unblock": cmd_unblock,
         "remove": cmd_remove,
         "add": cmd_add,
+        "add-feature": cmd_add_feature,
         "modify-req": cmd_modify_req,
         "regen-dag": cmd_regen_dag,
         "regen-tasks": cmd_regen_tasks,
