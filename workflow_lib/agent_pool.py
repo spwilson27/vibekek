@@ -61,6 +61,7 @@ class AgentConfig:
     quota_time: int
     model: Optional[str] = None
     steps: List[str] = field(default_factory=lambda: ["all"])
+    cargo_target_dir: Optional[str] = None
 
 
 class AgentPoolManager:

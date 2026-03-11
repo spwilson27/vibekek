@@ -58,8 +58,14 @@
   //                          by available capacity.  Default: 1.
   //   quota-time  (optional) Seconds to suppress this agent after a quota-exceeded
   //                          message is detected in its output.  Default: 60.
-  //   model       (optional) Model name forwarded to the CLI via --model.
-  //                          Leave unset to use the CLI's own default.
+  //   model            (optional) Model name forwarded to the CLI via --model.
+  //                               Leave unset to use the CLI's own default.
+  //   cargo-target-dir (optional) Absolute path for the Cargo build cache
+  //                               (sets target-dir in .cargo/config.toml before
+  //                               each agent invocation).  Use per-user paths
+  //                               (e.g. "/tmp/axel-build-sub") to prevent
+  //                               cross-user permission conflicts when different
+  //                               agents run as different OS users.
   //   steps       (optional) List of workflow steps this agent may handle.
   //                          Allowed values: "develop", "review", "merge", "all".
   //                          "all" (the default) matches every step.  Use a

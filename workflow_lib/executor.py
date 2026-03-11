@@ -505,9 +505,16 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
         # Transfer directory ownership to the agent's OS user so it can write freely.
         # Always chown when a pool is active: a previous agent may have run as a
         # different user, leaving files owned by them that this agent can't write.
+        # Also chown the cargo target-dir so the agent can build without needing
+        # to modify .cargo/config.toml to point at a different path.
         if agent_pool is not None and active_user:
             _log = (lambda msg: dashboard.log(msg)) if dashboard else (lambda msg: print(f"      {msg}"))
+            if agent_cfg is not None and agent_cfg.cargo_target_dir:
+                _set_cargo_target_dir(cwd, agent_cfg.cargo_target_dir, _log)
             _set_dir_owner(cwd, active_user, _log)
+            cargo_target = _get_cargo_target_dir(cwd)
+            if cargo_target and os.path.exists(cargo_target):
+                _set_dir_owner(cargo_target, active_user, _log)
 
         returncode = 1
         stderr_text = ""
@@ -866,12 +873,68 @@ def _set_dir_owner(path: str, user: str, _log: Any) -> None:
         _log(f"      [!] Warning: failed to chown {path} to {user!r}: {result.stderr.strip()}")
 
 
-def _reclaim_dir_ownership(tmpdir: str, _log: Any) -> None:
-    """Reclaim ownership of *tmpdir* for the current OS user.
+def _set_cargo_target_dir(cwd: str, target_dir: str, _log: Any) -> None:
+    """Overwrite the ``target-dir`` in *cwd*/.cargo/config.toml with *target_dir*.
 
-    Convenience wrapper around :func:`_set_dir_owner` using ``$USER``.
+    Only modifies the file when it already contains a ``target-dir`` line so
+    that projects without a cargo target-dir override are left untouched.
     """
-    _set_dir_owner(tmpdir, os.getenv("USER", ""), _log)
+    config_path = os.path.join(cwd, ".cargo", "config.toml")
+    if not os.path.exists(config_path):
+        return
+    try:
+        with open(config_path) as f:
+            content = f.read()
+        new_content = re.sub(
+            r'(^\s*target-dir\s*=\s*)"[^"]*"',
+            f'\\1"{target_dir}"',
+            content,
+            flags=re.MULTILINE,
+        )
+        if new_content != content:
+            with open(config_path, "w") as f:
+                f.write(new_content)
+            _log(f"      [cargo] Set target-dir → {target_dir}")
+    except OSError as e:
+        _log(f"      [!] Warning: failed to update cargo target-dir in {config_path}: {e}")
+
+
+def _get_cargo_target_dir(cwd: str) -> Optional[str]:
+    """Return the absolute ``target-dir`` from *cwd*/.cargo/config.toml, or ``None``.
+
+    Only returns a value when the path is absolute (relative target dirs stay
+    inside the worktree and are covered by the normal worktree chown).
+    """
+    config_path = os.path.join(cwd, ".cargo", "config.toml")
+    if not os.path.exists(config_path):
+        return None
+    try:
+        with open(config_path) as f:
+            content = f.read()
+        m = re.search(r'^\s*target-dir\s*=\s*"([^"]+)"', content, re.MULTILINE)
+        if m:
+            path = m.group(1)
+            if os.path.isabs(path):
+                return path
+    except OSError:
+        pass
+    return None
+
+
+def _reclaim_dir_ownership(tmpdir: str, _log: Any) -> None:
+    """Reclaim ownership of *tmpdir* (and its cargo target-dir) for the current OS user.
+
+    Chowns both the worktree clone and any absolute ``target-dir`` referenced
+    in ``.cargo/config.toml`` so that git and presubmit commands running as
+    the current user can write to build artifacts left by an alternate-user
+    agent.
+    """
+    current_user = os.getenv("USER", "")
+    _set_dir_owner(tmpdir, current_user, _log)
+    cargo_target = _get_cargo_target_dir(tmpdir)
+    if cargo_target and os.path.exists(cargo_target):
+        _log(f"      [chown] Reclaiming cargo target-dir {cargo_target} for {current_user!r}")
+        _set_dir_owner(cargo_target, current_user, _log)
 
 
 def _commit_state_in_clone(tmpdir: str, workflow_state: Optional[Dict], _log: Any) -> None:

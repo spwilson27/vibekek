@@ -185,6 +185,7 @@ def get_agent_pool_configs() -> List[Any]:
             quota_time=int(entry.get("quota-time", 60)),
             model=entry.get("model") or None,
             steps=steps,
+            cargo_target_dir=entry.get("cargo-target-dir") or None,
         ))
     return configs
 
