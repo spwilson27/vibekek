@@ -592,6 +592,14 @@ class ClaudeRunner(AIRunner):
     and captures stdout/stderr.
     """
 
+    def _env(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        # Trigger auto-compaction at 75% context capacity (default is 95%) so
+        # large tool results (e.g. verbose Rust build output) don't cause a
+        # sudden spike past the model's token limit before compaction fires.
+        env.setdefault("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "75")
+        return env
+
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
         cmd = ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose"]
         if self.model:
