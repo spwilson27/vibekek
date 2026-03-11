@@ -485,14 +485,20 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
             if attempt > 1 and dashboard and task_id:
                 dashboard.set_agent(task_id, agent_type, "waiting",
                                     f"Waiting for available agent (attempt {attempt})...", agent_name="")
-            agent_cfg = agent_pool.acquire(timeout=300.0, step=step)
-            if agent_cfg is None:
-                err = f"[{agent_type}] FATAL: No agent available for step '{step}' after waiting (all quota-exhausted, at capacity, or none configured)"
+            while True:
+                agent_cfg = agent_pool.acquire(timeout=300.0, step=step)
+                if agent_cfg is not None:
+                    break
+                # All agents for this step are quota-suppressed or at capacity.
+                # Log a visible waiting status and keep polling — do not treat
+                # this as fatal, as quota windows will eventually expire and
+                # running agents will eventually finish and free their slots.
+                wait_msg = f"[{agent_type}] All agents for step '{step}' are busy or quota-suppressed — waiting for a slot..."
                 if dashboard:
-                    dashboard.log(err)
-                else:
-                    print(f"      {err}")
-                return False
+                    dashboard.log(f"{prefix}{wait_msg}")
+                    if task_id:
+                        dashboard.set_agent(task_id, agent_type, "waiting",
+                                            "Waiting for available agent slot...", agent_name="")
             active_backend = agent_cfg.backend
             active_model = agent_cfg.model or model
             active_user = agent_cfg.user
