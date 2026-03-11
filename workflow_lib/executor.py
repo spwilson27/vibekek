@@ -658,7 +658,7 @@ def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.L
 
 
 
-def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None) -> bool:
+def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False) -> bool:
     """Run the full implementation lifecycle for one task.
 
     Steps performed:
@@ -673,7 +673,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
     6. Commit changes if the presubmit passes.
 
     The clone is removed on success.  On failure it is left in place so the
-    developer can inspect or manually fix the state.
+    developer can inspect or manually fix the state (unless cleanup=True is passed).
 
     :param root_dir: Absolute path to the project root git repository.
     :type root_dir: str
@@ -693,6 +693,9 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
         copy ``.mcp.json`` so the Claude CLI can discover the Serena MCP
         server.  Defaults to ``False``.
     :type serena: bool
+    :param cleanup: When ``True``, remove the temporary clone even on failure.
+        Defaults to ``False``.
+    :type cleanup: bool
     :returns: ``True`` if the task was implemented, verified, and committed
         successfully; ``False`` otherwise.
     :rtype: bool
@@ -857,10 +860,16 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
         return False
 
     finally:
-        if success:
+        # Reclaim ownership of files written by alternate-user agents so they
+        # can be deleted (or inspected) by the current user.
+        if tmpdir:
+            _reclaim_dir_ownership(tmpdir, _log)
+
+        if success or (cleanup and tmpdir):
             # Cleanup clone
-            _log(f"      Cleaning up clone {tmpdir}...")
-            shutil.rmtree(tmpdir, ignore_errors=True)
+            if tmpdir:
+                _log(f"      Cleaning up clone {tmpdir}...")
+                shutil.rmtree(tmpdir, ignore_errors=True)
             if dashboard:
                 dashboard.remove_agent(full_task_id)
         else:
@@ -980,7 +989,7 @@ def _commit_state_in_clone(tmpdir: str, workflow_state: Optional[Dict], _log: An
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, workflow_state: Optional[Dict] = None, agent_pool: Optional[AgentPoolManager] = None) -> bool:
+def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, workflow_state: Optional[Dict] = None, agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False) -> bool:
     """Squash-merge a task branch into ``dev`` via a temporary clone and verify.
 
     Steps performed:
@@ -1016,6 +1025,9 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
         cache rebuild so subsequent tasks have an up-to-date code index.
         Defaults to ``False``.
     :type serena: bool
+    :param cleanup: When ``True``, remove the temporary clone even on failure.
+        Defaults to ``False``.
+    :type cleanup: bool
     :returns: ``True`` if the branch was successfully merged into ``dev`` and
         the presubmit passed; ``False`` otherwise.
     :rtype: bool
@@ -1037,21 +1049,22 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
         commit_msg = f"{phase_part}:{name_part}: {match.group(1).strip()}"
 
     # We clone into a new tmpdir to avoid messing with the developer's main working tree
-    tmpdir = tempfile.mkdtemp(prefix=f"merge_{safe_name_part}_")
-    os.chmod(tmpdir, 0o755)  # Allow other OS users to traverse (needed for sudo -u <user>)
-
-    _log(f"\n   => [Merge] Attempting to squash merge {task_id} into dev...")
-    _log(f"      Cloning repository to {tmpdir}...")
-    
-    # Clone from remote_url (GitHub/GitLab) if provided, otherwise fall back to root_dir
-    clone_src = remote_url or root_dir
-    subprocess.run(["git", "clone", clone_src, tmpdir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    subprocess.run(["git", "checkout", dev_branch], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
+    tmpdir = ""
     push_succeeded = False
     try:
+        tmpdir = tempfile.mkdtemp(prefix=f"merge_{safe_name_part}_")
+        os.chmod(tmpdir, 0o755)  # Allow other OS users to traverse (needed for sudo -u <user>)
+
+        _log(f"\n   => [Merge] Attempting to squash merge {task_id} into dev...")
+        _log(f"      Cloning repository to {tmpdir}...")
+        
+        # Clone from remote_url (GitHub/GitLab) if provided, otherwise fall back to root_dir
+        clone_src = remote_url or root_dir
+        subprocess.run(["git", "clone", clone_src, tmpdir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        subprocess.run(["git", "checkout", dev_branch], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
         context = {
             "phase_filename": phase_part,
             "task_name": name_part,
@@ -1184,9 +1197,18 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
     finally:
         if push_succeeded and serena and cache_lock is not None:
             rebuild_serena_cache(tmpdir, root_dir, cache_lock, dashboard=dashboard)
-        # Cleanup clone
-        _log(f"      Cleaning up merge clone {tmpdir}...")
-        subprocess.run(["rm", "-rf", tmpdir])
+        
+        # Reclaim ownership before cleanup (or investigation)
+        if tmpdir:
+            _reclaim_dir_ownership(tmpdir, _log)
+
+        if push_succeeded or (cleanup and tmpdir):
+            # Cleanup clone
+            if tmpdir:
+                _log(f"      Cleaning up merge clone {tmpdir}...")
+                shutil.rmtree(tmpdir, ignore_errors=True)
+        else:
+            _log(f"      [!] Merge failed. Leaving clone {tmpdir} for investigation.")
 
 
 def load_blocked_tasks() -> set:  # type: ignore[type-arg]
@@ -1266,7 +1288,7 @@ def get_ready_tasks(master_dag: Dict[str, List[str]], completed_tasks: List[str]
     return ready
 
 
-def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str = "gemini", log_file: Any = None, model: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None) -> None:
+def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str = "gemini", log_file: Any = None, model: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False) -> None:
     """Orchestrate parallel task execution according to the dependency DAG.
 
     Runs a scheduling loop inside a :class:`~concurrent.futures.ThreadPoolExecutor`
@@ -1305,6 +1327,8 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
     :param backend: AI backend for implementation and merge agents.  Defaults
         to ``"gemini"``.
     :type backend: str
+    :param cleanup: When ``True``, remove temporary clones on failure.
+    :type cleanup: bool
     :raises SystemExit: When one or more tasks fail.
     """
     serena_enabled = get_serena_enabled()
@@ -1322,12 +1346,12 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
     with make_dashboard(log_file=log_file) as dashboard:
         _active_dashboard = dashboard
         try:
-            _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, serena_enabled, cache_lock, dashboard, model=model, dev_branch=dev_branch, agent_pool=agent_pool)
+            _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, serena_enabled, cache_lock, dashboard, model=model, dev_branch=dev_branch, agent_pool=agent_pool, cleanup=cleanup)
         finally:
             _active_dashboard = None
 
 
-def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str, serena_enabled: bool, cache_lock: threading.Lock, dashboard: Any, model: Optional[str] = None, dev_branch: str = "dev", agent_pool: Optional[AgentPoolManager] = None) -> None:
+def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str, serena_enabled: bool, cache_lock: threading.Lock, dashboard: Any, model: Optional[str] = None, dev_branch: str = "dev", agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False) -> None:
     """Inner DAG execution loop run inside the dashboard context manager."""
     pivot_remote = get_pivot_remote()
     try:
@@ -1385,7 +1409,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                 with state_lock:
                     active_tasks.add(task_id)
 
-                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, agent_pool=agent_pool)
+                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, agent_pool=agent_pool, cleanup=cleanup)
                 future_to_task[future] = task_id
 
             # If no tasks are running and (none are ready or shutdown requested), we are done/deadlocked
@@ -1437,7 +1461,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                             }
 
                         # Trigger DAG Merge Workflow immediately
-                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, workflow_state=pending_state, agent_pool=agent_pool):
+                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, workflow_state=pending_state, agent_pool=agent_pool, cleanup=cleanup):
                             dashboard.set_agent(task_id, "Merge", "done", "Merged successfully")
                             with state_lock:
                                 state["completed_tasks"].append(task_id)

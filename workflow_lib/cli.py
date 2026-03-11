@@ -272,7 +272,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     original_stderr = sys.stderr
     sys.stderr = Logger(original_stderr, log_stream, lock)
     try:
-        execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, effective_backend, log_file=log_stream, model=args.model, agent_pool=agent_pool)
+        execute_dag(ROOT_DIR, master_dag, state, args.jobs, args.presubmit_cmd, effective_backend, log_file=log_stream, model=args.model, agent_pool=agent_pool, cleanup=args.cleanup)
     finally:
         sys.stderr = original_stderr
 
@@ -310,6 +310,7 @@ def main() -> None:
     p_run = sub.add_parser("run", parents=[shared], help="Parallel development workflow orchestrator")
     p_run.add_argument("--jobs", type=int, default=1, help="Number of parallel implementation agents")
     p_run.add_argument("--presubmit-cmd", type=str, default="./do presubmit", help="Command to evaluate correctness")
+    p_run.add_argument("--cleanup", action="store_true", help="Remove temporary clones even on failure")
 
     # replan commands
     sub.add_parser("status", parents=[shared], help="Show plan and execution status")

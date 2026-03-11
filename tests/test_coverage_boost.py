@@ -267,9 +267,13 @@ class TestProcessTask:
     def test_clone_fails(self):
         err = subprocess.CalledProcessError(1, "git")
         err.stderr = b"error"
+        def _fake_run(cmd, **kwargs):
+            if "clone" in cmd:
+                raise err
+            return MagicMock(returncode=0, stdout="", stderr=b"")
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("os.chmod"), \
-             patch("subprocess.run", side_effect=err):
+             patch("subprocess.run", side_effect=_fake_run):
             result = process_task("/root", "phase_1/task.md", "./do presubmit")
         assert result is False
 
@@ -787,9 +791,13 @@ class TestProcessTaskWithDashboard:
         dash = MagicMock()
         err = subprocess.CalledProcessError(1, "git")
         err.stderr = b"error"
+        def _fake_run(cmd, **kwargs):
+            if "clone" in cmd:
+                raise err
+            return MagicMock(returncode=0, stdout="", stderr=b"")
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("os.chmod"), \
-             patch("subprocess.run", side_effect=err):
+             patch("subprocess.run", side_effect=_fake_run):
             result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
         assert result is False
         dash.set_agent.assert_any_call("phase_1/task.md", "Impl", "failed", "Clone failed")
