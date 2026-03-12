@@ -41,6 +41,7 @@ PROMPT_NAMES = [
     "spec_ui_ux_architecture.md",
     "spec_ui_ux_design.md",
     "spec_risks_mitigation.md",
+    "spec_performance_spec.md",
     "spec_project_roadmap.md",
     "flesh_out.md",
     "summarize_doc.md",

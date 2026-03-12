@@ -62,5 +62,6 @@ DOCS = [
     {"id": "6_ui_ux_architecture", "type": "spec", "name": "UI/UX Architecture", "desc": "Create a UI/UX Architecture document.", "prompt_file": "spec_ui_ux_architecture.md"},
     {"id": "7_ui_ux_design", "type": "spec", "name": "UI/UX Design", "desc": "Create a UI/UX Design document.", "prompt_file": "spec_ui_ux_design.md"},
     {"id": "8_risks_mitigation", "type": "spec", "name": "Risks and Mitigation", "desc": "Create a Risks and Mitigation document.", "prompt_file": "spec_risks_mitigation.md"},
+    {"id": "8b_performance_spec", "type": "spec", "name": "Performance Specification", "desc": "Create a Performance Specification defining SLOs, latency/throughput targets, and testing strategy.", "prompt_file": "spec_performance_spec.md"},
     {"id": "9_project_roadmap", "type": "spec", "name": "Project Roadmap", "desc": "Create a Project Roadmap.", "prompt_file": "spec_project_roadmap.md"},
 ]

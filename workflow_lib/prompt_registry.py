@@ -18,6 +18,7 @@ PROMPT_PLACEHOLDERS = {
     "spec_ui_ux_architecture.md": {"document_name", "document_description", "target_path"},
     "spec_ui_ux_design.md": {"document_name", "document_description", "target_path"},
     "spec_risks_mitigation.md": {"document_name", "document_description", "target_path"},
+    "spec_performance_spec.md": {"document_name", "document_description", "target_path"},
     "spec_project_roadmap.md": {"document_name", "document_description", "target_path"},
     "research_market.md": {"document_name", "document_description", "target_path"},
     "research_competitive_analysis.md": {"document_name", "document_description", "target_path"},
