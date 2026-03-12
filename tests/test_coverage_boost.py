@@ -2779,23 +2779,6 @@ class TestPhase6BInner:
 
 
 class TestPhase6CCoverage:
-    def test_no_tasks_content_inner(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "cross review tmpl"
-        exists_calls = [0]
-
-        def exists_side(p):
-            exists_calls[0] += 1
-            if "cross_phase_review_summary" in p:
-                return False
-            return True
-
-        with patch("os.path.exists", side_effect=exists_side), \
-             patch("os.listdir", side_effect=lambda p: ["phase_1"] if "tasks" in p and "phase_1" not in p else []), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p):
-            # no md files -> tasks_content is empty -> return early
-            Phase6CCrossPhaseReview(pass_num=1).execute(ctx)
-
     def test_full_success_inner(self):
         ctx = _mock_ctx_for_phases()
         ctx.load_prompt.return_value = "cross review tmpl"
@@ -2830,22 +2813,6 @@ class TestPhase6CCoverage:
 
 
 class TestPhase6DCoverage:
-    def test_no_tasks_content_inner(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "reorder tmpl"
-        exists_calls = [0]
-
-        def exists_side(p):
-            exists_calls[0] += 1
-            if "reorder_tasks_summary" in p:
-                return False
-            return True
-
-        with patch("os.path.exists", side_effect=exists_side), \
-             patch("os.listdir", side_effect=lambda p: ["phase_1"] if "tasks" in p and "phase_1" not in p else []), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p):
-            Phase6DReorderTasks(pass_num=1).execute(ctx)
-
     def test_full_success_inner(self):
         ctx = _mock_ctx_for_phases()
         ctx.load_prompt.return_value = "reorder tmpl"

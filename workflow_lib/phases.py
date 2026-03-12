@@ -54,103 +54,8 @@ import re
 import threading
 from typing import List, Dict, Any, Optional
 
-from .config import get_context_limit
 from .constants import TOOLS_DIR, DOCS, parse_requirements
 from .context import ProjectContext
-
-
-# ---------------------------------------------------------------------------
-# Helpers for gathering task file previews within a word budget
-# ---------------------------------------------------------------------------
-
-def _collect_task_files(tasks_dir: str, phase_dirs: List[str]) -> List[Dict[str, Any]]:
-    """Return a list of dicts with 'task_id' and 'lines' for every .md task file."""
-    tasks = []
-    for phase_id in sorted(phase_dirs):
-        phase_dir_path = os.path.join(tasks_dir, phase_id)
-        sub_epics = [d for d in os.listdir(phase_dir_path)
-                     if os.path.isdir(os.path.join(phase_dir_path, d))]
-        for sub_epic in sorted(sub_epics):
-            sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-            if not os.path.isdir(sub_epic_dir):
-                continue
-            md_files = [f for f in os.listdir(sub_epic_dir) if f.endswith(".md")]
-            for md_file in sorted(md_files):
-                task_id = f"{phase_id}/{sub_epic}/{md_file}"
-                task_path = os.path.join(sub_epic_dir, md_file)
-                with open(task_path, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-                tasks.append({"task_id": task_id, "lines": lines})
-    return tasks
-
-
-def _build_tasks_content(
-    tasks_dir: str,
-    phase_dirs: List[str],
-    max_words: Optional[int] = None,
-    extra_words: int = 0,
-) -> str:
-    """Build a prompt-embeddable summary of all tasks, dynamically truncated
-    so the total word count stays under *max_words*.
-
-    *max_words* defaults to the ``context_limit`` setting from
-    ``.workflow.jsonc`` (126 000 when unconfigured).
-
-    *extra_words* reserves space for the rest of the prompt (template text,
-    description context, etc.) that will be added around this content.
-    """
-    if max_words is None:
-        max_words = get_context_limit()
-    tasks = _collect_task_files(tasks_dir, phase_dirs)
-    if not tasks:
-        return ""
-
-    # Per-task overhead (header + file path + trailing newlines) is small;
-    # estimate ~15 words per task for headers.
-    header_words = len(tasks) * 15
-    available_words = max_words - header_words - extra_words
-
-    # Binary-search for the best lines-per-task that fits the budget.
-    # Start with "all lines" and shrink if needed.
-    max_lines_any = max(len(t["lines"]) for t in tasks)
-
-    def _word_count_at(limit: int) -> int:
-        total = 0
-        for t in tasks:
-            preview = t["lines"][:limit]
-            total += sum(len(line.split()) for line in preview)
-        return total
-
-    if _word_count_at(max_lines_any) <= available_words:
-        lines_per_task = max_lines_any
-    else:
-        lo, hi = 1, max_lines_any
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if _word_count_at(mid) <= available_words:
-                lo = mid
-            else:
-                hi = mid - 1
-        lines_per_task = lo
-
-    total_words = _word_count_at(lines_per_task) + header_words
-    print(f"   -> Task content: {len(tasks)} files, {lines_per_task} lines/task, ~{total_words} words")
-
-    # Build the content string
-    parts: List[str] = []
-    for t in tasks:
-        task_id = t["task_id"]
-        lines = t["lines"]
-        preview = lines[:lines_per_task]
-        part = f"### Task ID: {task_id}\n"
-        part += f"    File: docs/plan/tasks/{task_id}\n"
-        part += "\n".join([f"    {line.rstrip()}" for line in preview])
-        if len(lines) > lines_per_task:
-            part += (f"\n    ... ({len(lines) - lines_per_task} more lines "
-                     f"— use file tools to read full content)\n")
-        parts.append(part)
-
-    return "\n\n".join(parts) + "\n"
 
 
 class BasePhase:
@@ -1284,7 +1189,6 @@ class Phase6CCrossPhaseReview(BasePhase):
             print("\n[!] Error: No phase directories found in tasks/.")
             sys.exit(1)
 
-        review_prompt_tmpl = ctx.load_prompt("cross_phase_review.md")
         review_summary_path = os.path.join(tasks_dir, f"cross_phase_review_summary_pass_{self.pass_num}.md")
 
         if os.path.exists(review_summary_path):
@@ -1293,28 +1197,24 @@ class Phase6CCrossPhaseReview(BasePhase):
              ctx.save_state()
              return
 
-        # Reserve space for the prompt template and description context
-        extra = len(review_prompt_tmpl.split()) + len(ctx.description_ctx.split())
-        tasks_content = _build_tasks_content(tasks_dir, phase_dirs, extra_words=extra)
-        if not tasks_content:
-            return
-
         print(f"   -> Performing global cross-phase review...")
 
         before_count = ctx.count_task_files(tasks_dir)
 
         summary_filename = f"cross_phase_review_summary_pass_{self.pass_num}.md"
-        prompt = ctx.format_prompt(
-            review_prompt_tmpl,
-            description_ctx=ctx.description_ctx,
-            tasks_content=tasks_content,
-            summary_filename=summary_filename
-        )
-
         allowed_files = [tasks_dir + os.sep]
 
         for attempt in range(1, 4):
-            result = ctx.run_gemini(prompt, allowed_files=allowed_files, sandbox=False)
+            result = ctx.run_gemini(
+                "cross_phase_review.md",
+                allowed_files=allowed_files,
+                sandbox=False,
+                context_files={
+                    "description_ctx": ctx.input_dir,
+                    "tasks_content": [os.path.join(tasks_dir, p) for p in phase_dirs],
+                },
+                params={"summary_filename": summary_filename},
+            )
 
             if result.returncode == 0 and os.path.exists(review_summary_path):
                 after_count = ctx.count_task_files(tasks_dir)
@@ -1380,33 +1280,29 @@ class Phase6DReorderTasks(BasePhase):
             print("\n[!] Error: No phase directories found in tasks/.")
             sys.exit(1)
 
-        reorder_prompt_tmpl = ctx.load_prompt("reorder_tasks.md")
         reorder_summary_path = os.path.join(tasks_dir, f"reorder_tasks_summary_pass_{self.pass_num}.md")
-        
+
         if os.path.exists(reorder_summary_path):
              print(f"   -> Skipping Task Reordering (already reordered).")
              ctx.state[state_key] = True
              ctx.save_state()
              return
 
-        extra = len(reorder_prompt_tmpl.split()) + len(ctx.description_ctx.split())
-        tasks_content = _build_tasks_content(tasks_dir, phase_dirs, extra_words=extra)
-        if not tasks_content:
-            return
-
         print(f"   -> Performing global task reordering...")
-        
-        prompt = ctx.format_prompt(
-            reorder_prompt_tmpl,
-            description_ctx=ctx.description_ctx,
-            tasks_content=tasks_content,
-            pass_num=self.pass_num
-        )
 
         allowed_files = [tasks_dir + os.sep]
-        
+
         for attempt in range(1, 4):
-            result = ctx.run_gemini(prompt, allowed_files=allowed_files, sandbox=False)
+            result = ctx.run_gemini(
+                "reorder_tasks.md",
+                allowed_files=allowed_files,
+                sandbox=False,
+                context_files={
+                    "description_ctx": ctx.input_dir,
+                    "tasks_content": [os.path.join(tasks_dir, p) for p in phase_dirs],
+                },
+                params={"pass_num": self.pass_num},
+            )
             
             if result.returncode == 0 and os.path.exists(reorder_summary_path):
                 ctx.stage_changes([tasks_dir])
@@ -1646,8 +1542,6 @@ class Phase7ADAGGeneration(BasePhase):
             print("\n[!] Error: No phase directories found in tasks/.")
             sys.exit(1)
 
-        dag_prompt_tmpl = ctx.load_prompt("dag_tasks.md")
-
         def process_phase_dag(phase_id):
             phase_dir_path = os.path.join(tasks_dir, phase_id)
             dag_file_path = os.path.join(phase_dir_path, "dag.json")
@@ -1690,34 +1584,24 @@ class Phase7ADAGGeneration(BasePhase):
             # Fall back to AI inference
             print(f"   -> Some tasks in {phase_id} lack depends_on metadata. Falling back to AI DAG inference...")
 
-            # Gather tasks
             sub_epics = [d for d in os.listdir(phase_dir_path) if os.path.isdir(os.path.join(phase_dir_path, d))]
             if not sub_epics:
                 return True
 
-            tasks_content = ""
-            for sub_epic in sorted(sub_epics):
-                sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-                md_files = [f for f in os.listdir(sub_epic_dir) if f.endswith(".md")]
-
-                for md_file in sorted(md_files):
-                     task_id = f"{sub_epic}/{md_file}"
-                     tasks_content += f"### Task ID: {task_id}\n"
-                     with open(os.path.join(sub_epic_dir, md_file), "r", encoding="utf-8") as f:
-                          content = f.read()
-                          tasks_content += "\n".join([f"    {line}" for line in content.split("\n")]) + "\n\n"
-
-            prompt = ctx.format_prompt(
-                dag_prompt_tmpl,
-                phase_filename=phase_id,
-                target_path=f"docs/plan/tasks/{phase_id}/dag.json",
-                description_ctx=ctx.description_ctx,
-                tasks_content=tasks_content
-            )
-            allowed_files = [dag_file_path]
-
             for attempt in range(1, 4):
-                result = ctx.run_gemini(prompt, allowed_files=allowed_files, sandbox=False)
+                result = ctx.run_gemini(
+                    "dag_tasks.md",
+                    allowed_files=[dag_file_path],
+                    sandbox=False,
+                    context_files={
+                        "description_ctx": ctx.input_dir,
+                        "tasks_content": phase_dir_path,
+                    },
+                    params={
+                        "phase_filename": phase_id,
+                        "target_path": f"docs/plan/tasks/{phase_id}/dag.json",
+                    },
+                )
 
                 if result.returncode == 0 and os.path.exists(dag_file_path):
                     # Validate AI-generated DAG against disk

@@ -14,11 +14,97 @@ import subprocess
 import sys
 import json
 import re
-from typing import Any, Callable, List, Dict, Optional
+from typing import Any, Callable, List, Dict, Optional, Union
 
 from .constants import TOOLS_DIR, INPUT_DIR, GEN_STATE_FILE, DOCS
 from .config import get_context_limit
 from .runners import AIRunner, GeminiRunner, IMAGE_EXTENSIONS
+
+
+def build_context_block(
+    entries: List[Dict[str, Any]],
+    word_budget: int,
+    label: str = "",
+) -> str:
+    """Format a list of file entries into a budget-bounded context string.
+
+    Applies :func:`fit_lines_to_budget` to find the maximum lines-per-file
+    that keeps the total word count within *word_budget*, then renders each
+    entry as ``### {rel}\\n{content}``, appending a truncation hint when lines
+    are omitted.
+
+    :param entries: File entries, each a dict with ``"rel"`` (project-root-
+        relative path) and ``"lines"`` (list of text lines).
+    :type entries: list[dict]
+    :param word_budget: Maximum total words for the formatted block.
+    :type word_budget: int
+    :param label: Optional label used in the progress log line.
+    :type label: str
+    :returns: Formatted, truncated context string, or ``""`` when *entries*
+        is empty.
+    :rtype: str
+    """
+    if not entries:
+        return ""
+    # ~15 words overhead per file (header line, path hint, newlines)
+    header_words = len(entries) * 15
+    lines_limit = fit_lines_to_budget(
+        [e["lines"] for e in entries], max(word_budget - header_words, 1)
+    )
+    total = sum(
+        len(line.split()) for e in entries for line in e["lines"][:lines_limit]
+    ) + header_words
+    desc = f"[{label}] " if label else ""
+    print(f"   -> Context {desc}{len(entries)} file(s), "
+          f"{lines_limit} lines/file, ~{total} words")
+
+    parts = []
+    for e in entries:
+        preview = "".join(e["lines"][:lines_limit]).rstrip()
+        trunc = ""
+        if len(e["lines"]) > lines_limit:
+            trunc = (f"\n... ({len(e['lines']) - lines_limit} more lines"
+                     f" — read full content from: {e['rel']})\n")
+        parts.append(f"### {e['rel']}\n{preview}{trunc}")
+    return "\n\n".join(parts)
+
+
+def fit_lines_to_budget(entries_lines: List[List[str]], word_budget: int) -> int:
+    """Return the maximum lines-per-entry such that total word count ≤ *word_budget*.
+
+    Uses a binary search over the uniform line limit applied to all entries,
+    matching each entry's lines from the start.  All entries are truncated to
+    the same limit so no single entry dominates the budget.
+
+    :param entries_lines: Each element is the list of lines for one document or
+        file.  Empty entries are allowed and contribute zero words.
+    :type entries_lines: list[list[str]]
+    :param word_budget: Maximum total words across all entries.
+    :type word_budget: int
+    :returns: The largest per-entry line limit that keeps the total within
+        *word_budget*, or ``0`` when *entries_lines* is empty.
+    :rtype: int
+    """
+    if not entries_lines:
+        return 0
+    max_lines = max((len(e) for e in entries_lines), default=0)
+    if max_lines == 0:
+        return 0
+
+    def _count(limit: int) -> int:
+        return sum(len(line.split()) for e in entries_lines for line in e[:limit])
+
+    if _count(max_lines) <= word_budget:
+        return max_lines
+
+    lo, hi = 1, max_lines
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _count(mid) <= word_budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
 
 
 class ProjectContext:
@@ -183,6 +269,75 @@ class ProjectContext:
                 return f.read()
         return ""
 
+    def build_context_strings(
+        self,
+        context_files: Dict[str, Union[str, List[str]]],
+        extra_words: int = 0,
+    ) -> Dict[str, str]:
+        """Load files for each context placeholder and apply budget-aware truncation.
+
+        The total word budget across all context groups is
+        ``context_limit - extra_words``, split equally across groups.  Within
+        each group a binary search finds the maximum lines-per-file that fits
+        the share, matching the pattern used by :func:`~phases._build_tasks_content`.
+
+        Each value in *context_files* may be:
+
+        * A single file path — read directly.
+        * A directory path — all ``.md``, ``.txt``, and ``.json`` files
+          found via :func:`os.walk` (sorted).
+        * A list of any mix of the above.
+
+        :param context_files: Mapping of template placeholder name to the
+            path(s) whose content should fill it.
+        :type context_files: dict[str, str | list[str]]
+        :param extra_words: Words already consumed by the template text and
+            small static params — subtracted from the total budget before
+            distributing across groups.
+        :type extra_words: int
+        :returns: Mapping of placeholder name to formatted, truncated content
+            ready for :meth:`format_prompt`.
+        :rtype: dict[str, str]
+        """
+        max_words = get_context_limit()
+        available = max(max_words - extra_words, 0)
+
+        # Collect file entries per group
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for key, paths in context_files.items():
+            if isinstance(paths, str):
+                paths = [paths]
+            entries: List[Dict[str, Any]] = []
+            for path in paths:
+                if os.path.isfile(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        entries.append({
+                            "rel": os.path.relpath(path, self.root_dir),
+                            "lines": f.readlines(),
+                        })
+                elif os.path.isdir(path):
+                    for dirpath, _, filenames in os.walk(path):
+                        for fname in sorted(filenames):
+                            if fname.endswith((".md", ".txt", ".json")):
+                                fp = os.path.join(dirpath, fname)
+                                with open(fp, "r", encoding="utf-8") as f:
+                                    entries.append({
+                                        "rel": os.path.relpath(fp, self.root_dir),
+                                        "lines": f.readlines(),
+                                    })
+            groups[key] = entries
+
+        nonempty_count = sum(1 for v in groups.values() if v)
+        if nonempty_count == 0:
+            return {k: "" for k in context_files}
+
+        per_group = max(available // nonempty_count, 1)
+
+        return {
+            key: build_context_block(entries, per_group, label=key)
+            for key, entries in groups.items()
+        }
+
     def load_prompt(self, filename: str) -> str:
         """Load a prompt template by filename from the prompts directory.
 
@@ -338,29 +493,14 @@ class ProjectContext:
         header_words = len(entries) * 20  # XML tags, name attr, etc.
         available_words = max(max_words - extra_words - header_words, 0)
 
-        max_lines_any = max(len(e[1]) for e in entries)
-
-        def _word_count_at(limit: int) -> int:
-            total = 0
-            for _, lines, _, _ in entries:
-                for line in lines[:limit]:
-                    total += len(line.split())
-            return total
-
-        # Binary search for the max lines-per-doc that fits the budget
-        if _word_count_at(max_lines_any) <= available_words:
-            lines_per_doc = max_lines_any
-        else:
-            lo, hi = 1, max_lines_any
-            while lo < hi:
-                mid = (lo + hi + 1) // 2
-                if _word_count_at(mid) <= available_words:
-                    lo = mid
-                else:
-                    hi = mid - 1
-            lines_per_doc = lo
-
-        total_words = _word_count_at(lines_per_doc) + header_words
+        lines_per_doc = fit_lines_to_budget(
+            [e[1] for e in entries], available_words
+        )
+        total_words = sum(
+            len(line.split())
+            for _, lines, _, _ in entries
+            for line in lines[:lines_per_doc]
+        ) + header_words
         print(f"   -> Accumulated context: {len(entries)} docs, "
               f"{lines_per_doc} lines/doc, ~{total_words} words")
 
@@ -515,6 +655,9 @@ class ProjectContext:
         allowed_files: Optional[List[str]] = None,
         sandbox: bool = True,
         timeout: Optional[int] = None,
+        *,
+        context_files: Optional[Dict[str, Union[str, List[str]]]] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Invoke the configured AI runner and optionally enforce sandbox rules.
 
@@ -522,7 +665,14 @@ class ProjectContext:
         provided) verifies that only the declared paths were touched and strips
         any ``<thinking>`` tags from them.
 
-        :param full_prompt: Fully rendered prompt string passed to the runner.
+        When *context_files* or *params* is provided, *full_prompt* is treated
+        as a prompt **template filename** (loaded via :meth:`load_prompt`).
+        Context files are read from disk and truncated to fit within
+        ``context_limit`` via :meth:`build_context_strings`, then substituted
+        into the template together with any small static *params*.
+
+        :param full_prompt: Fully rendered prompt string, **or** a prompt
+            template filename when *context_files* / *params* are given.
         :type full_prompt: str
         :param allowed_files: Paths the AI is permitted to create or modify.
             Pass ``None`` to skip both sandbox verification and tag stripping.
@@ -534,9 +684,24 @@ class ProjectContext:
         :param timeout: Maximum seconds to wait for the AI process.
             ``None`` means no limit.
         :type timeout: int or None
+        :param context_files: Mapping of template placeholder name to file or
+            directory path(s) whose content should fill that placeholder.
+            Content is automatically truncated to respect ``context_limit``.
+        :type context_files: dict[str, str | list[str]] or None
+        :param params: Small static template values (e.g. file paths, phase
+            IDs) that do not require truncation.
+        :type params: dict[str, Any] or None
         :returns: The completed process result from the underlying runner.
         :rtype: subprocess.CompletedProcess
         """
+        if context_files is not None or params is not None:
+            tmpl = self.load_prompt(full_prompt)
+            # Reserve words for template boilerplate and small static params
+            extra = len(tmpl.split()) + sum(
+                len(str(v).split()) for v in (params or {}).values()
+            )
+            ctx_strs = self.build_context_strings(context_files or {}, extra_words=extra)
+            full_prompt = self.format_prompt(tmpl, **(params or {}), **ctx_strs)
         before = self.get_workspace_snapshot()
         on_line: Optional[Callable[[str], None]] = None
         if self.dashboard is not None:
@@ -600,10 +765,17 @@ class ProjectContext:
         allowed_files: Optional[List[str]] = None,
         sandbox: bool = True,
         timeout: Optional[int] = None,
+        *,
+        context_files: Optional[Dict[str, Union[str, List[str]]]] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Alias for :meth:`run_ai` retained for backwards compatibility.
 
-        :param full_prompt: Fully rendered prompt string.
+        Accepts the same *context_files* and *params* keyword arguments as
+        :meth:`run_ai`.
+
+        :param full_prompt: Fully rendered prompt string, or template filename
+            when *context_files* / *params* are given.
         :type full_prompt: str
         :param allowed_files: Paths the AI is permitted to touch.
         :type allowed_files: list[str] or None
@@ -611,10 +783,15 @@ class ProjectContext:
         :type sandbox: bool
         :param timeout: Maximum seconds to wait for the AI process.
         :type timeout: int or None
+        :param context_files: See :meth:`run_ai`.
+        :param params: See :meth:`run_ai`.
         :returns: The completed process result.
         :rtype: subprocess.CompletedProcess
         """
-        return self.run_ai(full_prompt, allowed_files, sandbox, timeout=timeout)
+        return self.run_ai(
+            full_prompt, allowed_files, sandbox, timeout=timeout,
+            context_files=context_files, params=params,
+        )
 
     def count_task_files(self, directory: str) -> int:
         count = 0
