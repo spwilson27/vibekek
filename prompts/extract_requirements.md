@@ -19,7 +19,7 @@ Before generating the final document, plan your approach:
 2. Identify every atomic requirement (functional, technical, UX, security, etc.).
 3. If the requirement lacks an ID tagged as `[REQ-...]`, plan exactly what tag to give it.
 4. CRITICAL: To prevent ID collisions across different documents, you MUST prepend the short document ID to EVERY requirement tag you create. For example, if extracting from '1_prd', the tag MUST be `[1_PRD-REQ-...]`. DO NOT generate generic `[REQ-...]` tags.
-5. Plan to edit the source doc ('{document_path}') to append the prefixed tag to the requirement.
+5. CRITICAL: If a requirement in the source doc already has a non-prefixed shorthand ID (e.g. `[ROAD-BR-001]`, `[UI-DES-001]`, `[SEC-MCP-001]`), you MUST **replace** that shorthand ID with the new canonical prefixed ID (e.g. `[9_PROJECT_ROADMAP-REQ-145]`) in both the source doc and the extracted file. Do NOT keep both IDs. The extracted requirements file must contain ONLY canonical `[{PREFIX}-REQ-NNN]` IDs — no shorthand aliases.
 6. List all tagged requirements clearly and unambiguously directly into '{target_path}'.
 7. Do not summarize; be exhaustive for this specific document.
 8. After creating and updating the files, execute the validation check bidirectional script and iterate if it reports errors.

@@ -4,8 +4,8 @@ import re
 import sys
 import json
 
-# Regex to match requirements like [REQ-123], [TAS-001], [REQ-SEC-001], [1_PRD-REQ-001]
-REQ_REGEX = re.compile(r"\[([A-Z0-9_]+-[A-Z0-9\-_]+)\]")
+# Regex to match requirements like [REQ-123], [TAS-001], [REQ-SEC-001], [1_PRD-REQ-001], [MCP-REQ-1.01]
+REQ_REGEX = re.compile(r"\[([A-Z0-9_]+-[A-Z0-9\._-]+)\]")
 
 def parse_requirements(file_path):
     """Extracts all requirement IDs from a given file."""
@@ -437,8 +437,8 @@ def verify_req_format(file_path):
     all_ids = set(REQ_REGEX.findall(content))
     # Standard format: alphanumeric segments separated by hyphens, with optional
     # numeric prefix (e.g. 1_PRD-REQ-001), letter suffixes (MCP-001A),
-    # and non-numeric terminal segments (ROAD-POST-MVP, ROAD-P3)
-    standard_format = re.compile(r'^[A-Z0-9][A-Z0-9_]*(?:-[A-Z0-9][A-Z0-9_]*)*$')
+    # and non-numeric terminal segments (ROAD-POST-MVP, ROAD-P3, MCP-REQ-1.01)
+    standard_format = re.compile(r'^[A-Z0-9][A-Z0-9_]*(?:-[A-Z0-9\._][A-Z0-9\._-]*)*$')
 
     non_standard = []
     for req_id in sorted(all_ids):
