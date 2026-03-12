@@ -71,7 +71,7 @@ from .context import ProjectContext
 from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_add_feature, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade, cmd_fixup
 from .executor import execute_dag, Logger, signal_handler
 from .dashboard import make_dashboard, _DashboardStream
-from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs
+from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override
 from .agent_pool import AgentPoolManager
 from .state import load_workflow_state, load_dags, get_tasks_dir, restore_state_from_branch
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner, QwenRunner, VALID_BACKENDS
@@ -290,6 +290,7 @@ def main() -> None:
     shared.add_argument("--backend", choices=sorted(VALID_BACKENDS), default=None, help="AI CLI backend to use (default: gemini)")
     shared.add_argument("--model", default=None, help="Model name to pass through to the AI CLI (e.g. 'claude-sonnet-4-5-20250514')")
     shared.add_argument("--ignore-sandbox", action="store_true", default=None, help="Disable sandbox violation checks")
+    shared.add_argument("--context-limit", type=int, default=None, dest="context_limit", help="Override context limit in words (default: 126000)")
 
     parser = argparse.ArgumentParser(description="AI Project Planning and Execution Workflow")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -392,6 +393,9 @@ def main() -> None:
             continue
         if getattr(args, key, None) is None:
             setattr(args, key, cfg_defaults.get(key, hardcoded))
+
+    if getattr(args, "context_limit", None) is not None:
+        set_context_limit_override(args.context_limit)
 
     commands = {
         "setup": cmd_setup,
