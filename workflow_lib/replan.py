@@ -1159,13 +1159,17 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 def _fix_dag_references(dry_run: bool = False, ctx: Optional[ProjectContext] = None) -> int:
     """Fix broken task references in DAG files.
 
-    Handles three categories of broken references:
+    Handles four categories of broken references, and also generates missing
+    DAG files for phases that have tasks but no ``dag.json``:
 
     1. **Relative ``../`` prefixes** — e.g. ``../14_foo/bar.md`` when the task
        lives in the same phase.  Fixed by stripping the ``../`` prefix.
     2. **Redundant phase prefixes** — e.g. ``phase_2/02_css/foo.md`` appearing
        in ``phase_2/dag.json``.  Fixed by stripping the ``phase_N/`` prefix.
-    3. **Cross-phase references** — e.g. ``phase_1/foo/bar.md`` in
+    3. **Full project-relative prefixes** — e.g.
+       ``docs/plan/tasks/phase_3/foo.md`` in ``phase_3/dag.json``.  Fixed by
+       stripping the ``docs/plan/tasks/phase_N/`` prefix.
+    4. **Cross-phase references** — e.g. ``phase_1/foo/bar.md`` in
        ``phase_3/dag.json``.  Removed entirely since DAGs are per-phase.
 
     :param dry_run: If ``True``, print what would change without writing.
@@ -1186,6 +1190,25 @@ def _fix_dag_references(dry_run: bool = False, ctx: Optional[ProjectContext] = N
                 df = os.path.join(path, "dag.json")
             if os.path.exists(df):
                 yield name, path, df
+
+    # Pass 0: generate missing DAGs for phases that have task sub-epics but
+    # no dag.json / dag_reviewed.json at all.
+    for name in sorted(os.listdir(tasks_dir)):
+        path = os.path.join(tasks_dir, name)
+        if not os.path.isdir(path) or not name.startswith("phase_"):
+            continue
+        if os.path.exists(os.path.join(path, "dag_reviewed.json")) or \
+                os.path.exists(os.path.join(path, "dag.json")):
+            continue
+        has_tasks = any(
+            os.path.isdir(os.path.join(path, d))
+            for d in os.listdir(path)
+        )
+        if has_tasks:
+            print(f"  Generating missing DAG for {name}...")
+            if not dry_run:
+                _rebuild_phase_dag(path, ctx=ctx)
+            total_fixes += 1
 
     # Pass 1: rebuild DAGs for phases with orphan tasks (tasks on disk but
     # not in the DAG).  This must happen before reference fixing because
@@ -1291,6 +1314,16 @@ def _fix_single_dag_ref(
         if os.path.exists(os.path.join(phase_path, candidate)):
             return candidate
 
+    # Strip full project-relative path prefix
+    # (e.g. docs/plan/tasks/phase_3/foo in phase_3's DAG)
+    tasks_prefix = f"docs/plan/tasks/{phase_dir_name}/"
+    if ref.startswith(tasks_prefix):
+        candidate = ref[len(tasks_prefix):]
+        if os.path.exists(os.path.join(phase_path, candidate)):
+            return candidate
+        # Cross-phase full path — remove it
+        return None
+
     # Cross-phase reference (starts with phase_N/ but different phase)
     if re.match(r"^phase_\d+/", ref):
         return None
@@ -1362,29 +1395,20 @@ def _rebuild_phase_dag(phase_dir: str, ctx: Optional[ProjectContext]) -> None:
         return
     print(f"Some tasks lack depends_on metadata. Using AI to generate DAG for {phase_id}...")
 
-    dag_prompt_tmpl = ctx.load_prompt("dag_tasks.md")
-
-    tasks_content = ""
-    sub_epics = [d for d in os.listdir(phase_dir) if os.path.isdir(os.path.join(phase_dir, d))]
-    for sub_epic in sorted(sub_epics):
-        se_dir = os.path.join(phase_dir, sub_epic)
-        for md in sorted(os.listdir(se_dir)):
-            if md.endswith(".md"):
-                task_id = f"{sub_epic}/{md}"
-                tasks_content += f"### Task ID: {task_id}\n"
-                with open(os.path.join(se_dir, md), "r", encoding="utf-8") as f:
-                    content = f.read()
-                    tasks_content += "\n".join(f"    {line}" for line in content.split("\n")) + "\n\n"
-
-    prompt = ctx.format_prompt(dag_prompt_tmpl,
-        phase_filename=phase_id,
-        target_path=f"docs/plan/tasks/{phase_id}/dag.json",
-        description_ctx=ctx.description_ctx,
-        tasks_content=tasks_content,
-    )
-
     for attempt in range(1, 4):
-        result = ctx.run_ai(prompt, allowed_files=[dag_file], sandbox=False)
+        result = ctx.run_ai(
+            "dag_tasks.md",
+            allowed_files=[dag_file],
+            sandbox=False,
+            context_files={
+                "description_ctx": ctx.input_dir,
+                "tasks_content": phase_dir,
+            },
+            params={
+                "phase_filename": phase_id,
+                "target_path": f"docs/plan/tasks/{phase_id}/dag.json",
+            },
+        )
 
         if result.returncode == 0 and os.path.exists(dag_file):
             try:
