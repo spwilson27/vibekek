@@ -42,9 +42,9 @@ The verification script is `./do presubmit`. It runs formatting, linting, buildi
 
 # Instructions
 
-You are operating inside of a clean, isolated `git clone` of the repository. The previous implementation agent has written code but it may be flawed, un-idiomatic, or failing presubmit.
+You are operating inside of a clean, isolated `git clone` of the task branch. The implementation agent has already committed its work — `HEAD` is the implementation commit. Use `git show` or `git diff HEAD~1` to see exactly what was changed before diving into any files.
 
-1.  **Analyze the Codebase:** Review the code touched by the implementation agent inside this clone against the task requirements.
+1.  **Analyze the Implementation Diff:** Run `git show` (or `git diff HEAD~1 -- <file>`) to review the exact changes the implementation agent made against the task requirements.
 2.  **Refactor and Fix:**
     - Improve the code quality, making it more robust and idiomatic.
     - Add or improve any missing inline documentation or docstrings.
