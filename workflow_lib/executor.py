@@ -429,6 +429,11 @@ def run_ai_command(
         runner._container_env_file = container_env_file
 
     quota_detected = [False]
+    # Tracks whether a quota pattern was seen but suppressed because the CLI
+    # was handling the retry itself.  If the process still exits non-zero after
+    # all its internal retries, we treat it as a quota failure so run_agent can
+    # rotate to a different agent.
+    quota_seen_transient = [False]
     quota_patterns_lower = [p.lower() for p in QUOTA_PATTERNS]
     quota_transient_lower = [p.lower() for p in QUOTA_TRANSIENT_PATTERNS]
     abort_event = threading.Event()
@@ -452,6 +457,7 @@ def run_ai_command(
         if any(p in line_lower for p in quota_patterns_lower):
             # Suppress abort if the CLI signalled a retry on this or a recent line.
             if _transient_lines_remaining[0] > 0:
+                quota_seen_transient[0] = True  # quota seen; CLI is handling it internally
                 pass  # let the CLI recover on its own
             else:
                 # Parse the advertised reset time.  If it's within the agent's
@@ -472,9 +478,13 @@ def run_ai_command(
         stderr_text = result.stderr or ""
         if quota_detected[0]:
             return QUOTA_RETURN_CODE, "quota exceeded"
+        # The CLI handled quota retries internally but ultimately gave up (non-zero exit).
+        # Treat this as a quota failure so run_agent can rotate to a different agent.
+        if quota_seen_transient[0] and result.returncode != 0:
+            return QUOTA_RETURN_CODE, "quota exceeded (CLI retries exhausted)"
         return result.returncode, stderr_text
     except subprocess.TimeoutExpired:
-        if quota_detected[0]:
+        if quota_detected[0] or quota_seen_transient[0]:
             return QUOTA_RETURN_CODE, "quota exceeded"
         return 1, "timeout"
     except FileNotFoundError:

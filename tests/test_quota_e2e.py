@@ -149,6 +149,45 @@ class TestTransientQuota:
         assert rc != QUOTA_RETURN_CODE
 
 
+
+    def test_transient_quota_then_nonzero_exit_returns_quota_code(self):
+        """CLI handles quota retries internally but ultimately exits non-zero.
+        Should be treated as a quota failure so run_agent can rotate to another agent."""
+        line = (
+            "[stderr] Attempt 1 failed: You have exhausted your capacity on this model. "
+            "Your quota will reset after 1s.. Retrying after 5003ms..."
+        )
+        mock_runner = MagicMock()
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
+            if on_line:
+                on_line(line)
+            # CLI gave up after internal retries — exits non-zero
+            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="exhausted")
+        mock_runner.run.side_effect = fake_run
+        with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
+            rc, _ = run_ai_command("prompt", "/tmp", spawn_rate=0.0)
+        assert rc == QUOTA_RETURN_CODE, (
+            "Expected QUOTA_RETURN_CODE when CLI exhausts its internal quota retries and exits non-zero"
+        )
+
+    def test_transient_quota_then_zero_exit_is_not_quota(self):
+        """CLI handles quota retries internally and exits 0 (success). Not a quota failure."""
+        line = (
+            "[stderr] Attempt 1 failed: You have exhausted your capacity on this model. "
+            "Your quota will reset after 1s.. Retrying after 5003ms..."
+        )
+        mock_runner = MagicMock()
+        def fake_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):
+            if on_line:
+                on_line(line)
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        mock_runner.run.side_effect = fake_run
+        with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
+            rc, _ = run_ai_command("prompt", "/tmp", spawn_rate=0.0)
+        assert rc != QUOTA_RETURN_CODE
+
 # ---------------------------------------------------------------------------
 # Reset-time within spawn window — should NOT kill
 # ---------------------------------------------------------------------------
