@@ -13,6 +13,7 @@ next available agent.
 """
 
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,55 @@ QUOTA_PATTERNS: List[str] = [
     "exhausted your capacity",
     "ModelNotFoundError: Requested entity was not found",
 ]
+
+# Substrings (case-insensitive) that indicate the CLI is already handling
+# the quota error by retrying internally.  When a QUOTA_PATTERNS match also
+# contains one of these, the abort is suppressed — we let the CLI recover.
+QUOTA_TRANSIENT_PATTERNS: List[str] = [
+    "retrying after",
+    "retry after",
+    "will retry",
+]
+
+# Regex that matches "reset after <duration>" in a quota message.
+# Duration tokens: 12h, 30m, 45s, or combinations like 1h30m.
+_RESET_AFTER_RE = re.compile(
+    r"reset\s+after\s+((?:\d+\s*h\s*)?(?:\d+\s*m\s*)?(?:\d+\s*s)?)",
+    re.IGNORECASE,
+)
+_DURATION_TOKEN_RE = re.compile(r"(\d+)\s*([hms])", re.IGNORECASE)
+
+
+def parse_quota_reset_seconds(line: str) -> Optional[float]:
+    """Return the quota reset duration in seconds parsed from *line*, or ``None``.
+
+    Recognises patterns like::
+
+        Your quota will reset after 12h.
+        Your quota will reset after 30m.
+        Your quota will reset after 0s.
+        Your quota will reset after 1h30m.
+
+    :param line: A single output line from an AI CLI.
+    :returns: Total seconds as a float, or ``None`` if no reset time is found.
+    """
+    m = _RESET_AFTER_RE.search(line)
+    if not m:
+        return None
+    duration_str = m.group(1).strip()
+    tokens = _DURATION_TOKEN_RE.findall(duration_str)
+    if not tokens:
+        return None
+    total = 0.0
+    for num, unit in tokens:
+        n = int(num)
+        if unit.lower() == "h":
+            total += n * 3600
+        elif unit.lower() == "m":
+            total += n * 60
+        else:
+            total += n
+    return total
 
 
 @dataclass

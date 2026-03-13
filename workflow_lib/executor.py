@@ -47,7 +47,7 @@ from .state import save_workflow_state, load_dags, get_tasks_dir
 from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config
 from .discord import notify_failure
 from .dashboard import make_dashboard
-from .agent_pool import AgentPoolManager, QUOTA_RETURN_CODE, QUOTA_PATTERNS
+from .agent_pool import AgentPoolManager, QUOTA_RETURN_CODE, QUOTA_PATTERNS, QUOTA_TRANSIENT_PATTERNS, parse_quota_reset_seconds
 
 shutdown_requested = False
 _active_dashboard: Any = None
@@ -362,6 +362,7 @@ def run_ai_command(
     user: Optional[str] = None,
     container_name: Optional[str] = None,
     container_env_file: str = "",
+    spawn_rate: float = 0.0,
 ) -> tuple:  # type: ignore[type-arg]
     """Launch an AI CLI process and stream its output.
 
@@ -384,6 +385,10 @@ def run_ai_command(
     :param container_name: Optional name of a running Docker container.
         When set, the CLI is routed into the container via ``docker exec``.
     :param container_env_file: Path to the env-file for ``docker exec --env-file``.
+    :param spawn_rate: Agent spawn-rate in seconds (from :attr:`AgentConfig.spawn_rate`).
+        When a quota message advertises a reset time ≤ this value the process is
+        *not* killed — the CLI will recover before the next task would be spawned
+        anyway.  Defaults to ``0.0`` (only suppress if reset is instantaneous).
     :returns: Tuple of (return_code, stderr_text).
     """
     from .config import get_config_defaults
@@ -397,11 +402,21 @@ def run_ai_command(
 
     quota_detected = [False]
     quota_patterns_lower = [p.lower() for p in QUOTA_PATTERNS]
+    quota_transient_lower = [p.lower() for p in QUOTA_TRANSIENT_PATTERNS]
     abort_event = threading.Event()
 
     def output_line(line: str) -> None:
         line_lower = line.lower()
         if any(p in line_lower for p in quota_patterns_lower):
+            # Check if the CLI is already retrying (e.g. "Retrying after 5306ms").
+            if any(t in line_lower for t in quota_transient_lower):
+                return  # let the CLI recover on its own
+            # Parse the advertised reset time.  If it's within the agent's
+            # spawn window (spawn_rate), the quota will lift before we'd start
+            # the next task anyway — no point killing and rotating.
+            reset_secs = parse_quota_reset_seconds(line)
+            if reset_secs is not None and reset_secs <= spawn_rate:
+                return  # short reset, wait it out
             quota_detected[0] = True
             abort_event.set()
         if on_line:
@@ -754,6 +769,7 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
                 model=active_model, user=active_user,
                 container_name=container_name,
                 container_env_file=container_env_file,
+                spawn_rate=agent_cfg.spawn_rate if agent_cfg is not None else 0.0,
             )
         finally:
             if agent_pool is not None and agent_cfg is not None:

@@ -1254,3 +1254,45 @@ def test_agent_pool_spawn_rate_cooldown():
     assert (t1 - t0) < 0.1
     assert (t2 - t1) >= 0.15 # should be ~0.2
     assert (t3 - t2) >= 0.15 # should be ~0.2
+
+
+# ---------------------------------------------------------------------------
+# parse_quota_reset_seconds
+# ---------------------------------------------------------------------------
+
+class TestParseQuotaResetSeconds:
+    from workflow_lib.agent_pool import parse_quota_reset_seconds
+
+    def test_seconds(self):
+        from workflow_lib.agent_pool import parse_quota_reset_seconds
+        assert parse_quota_reset_seconds("Your quota will reset after 0s.") == 0.0
+        assert parse_quota_reset_seconds("Your quota will reset after 45s.") == 45.0
+
+    def test_minutes(self):
+        from workflow_lib.agent_pool import parse_quota_reset_seconds
+        assert parse_quota_reset_seconds("Your quota will reset after 30m.") == 1800.0
+
+    def test_hours(self):
+        from workflow_lib.agent_pool import parse_quota_reset_seconds
+        assert parse_quota_reset_seconds("Your quota will reset after 12h.") == 43200.0
+
+    def test_compound(self):
+        from workflow_lib.agent_pool import parse_quota_reset_seconds
+        assert parse_quota_reset_seconds("reset after 1h30m") == 5400.0
+        assert parse_quota_reset_seconds("reset after 2h30m15s") == 9015.0
+
+    def test_no_match(self):
+        from workflow_lib.agent_pool import parse_quota_reset_seconds
+        assert parse_quota_reset_seconds("You have exhausted your capacity on this model.") is None
+        assert parse_quota_reset_seconds("RESOURCE_EXHAUSTED") is None
+
+    def test_embedded_in_stderr_line(self):
+        from workflow_lib.agent_pool import parse_quota_reset_seconds
+        line = "[stderr] Attempt 1 failed: You have exhausted your capacity on this model. Your quota will reset after 0s.. Retrying after 5306ms..."
+        assert parse_quota_reset_seconds(line) == 0.0
+
+    def test_12h_exceeds_typical_spawn_rate(self):
+        from workflow_lib.agent_pool import parse_quota_reset_seconds
+        secs = parse_quota_reset_seconds("Your quota will reset after 12h.")
+        assert secs == 43200.0
+        assert secs > 120  # clearly exceeds any reasonable spawn_rate
