@@ -49,6 +49,7 @@ You are operating inside of a clean, isolated `git clone` of the task branch. Th
     - Improve the code quality, making it more robust and idiomatic.
     - Add or improve any missing inline documentation or docstrings.
     - Check `.gitignore` to ensure they didn't commit extraneous binaries or generated files by accident, and fix it if necessary.
+    - **Verify defensive assertions:** Check that every function asserts its contract (preconditions/postconditions). Add missing assertions, especially at module boundaries, after deserialization, and where object state is uncertain. Remove any assertions that duplicate static type checks the compiler already enforces.
 3.  **Ensure Presubmit Passes:**
     - Run `./do presubmit`.
     - If it fails, fix the code or the tests until it passes perfectly.

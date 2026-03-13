@@ -33,6 +33,7 @@ You are operating inside of a clean, isolated `git clone` of the repository, cur
 3.  **Ensure Presubmit Passes:**
     - Run `./do presubmit`.
     - If the merged code breaks tests or the build, fix the code until it passes perfectly.
+    - When fixing merge conflicts or broken code, add debug assertions at integration points where merged code from different branches interacts — assert that data passed between merged components meets the expected contract.
     - **CRITICAL:** `dev` MUST pass `./do presubmit` before you end your turn.
 
 # CONSTRAINTS

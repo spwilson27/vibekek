@@ -50,6 +50,7 @@ You are operating inside of a clean, isolated `git clone` of the repository, che
 3.  **Implement Feature:**
     - Write the actual feature code.
     - Use best practices, clear naming, and robust error handling.
+    - **Defensive programming:** Every function should `assert` its contract — validate preconditions on inputs and postconditions on outputs using debug assertions (e.g., `debug_assert!`, `Debug.Assert`, `console.assert` depending on language). When you are uncertain about the state or type of an object (e.g., after deserialization, external API calls, complex transformations), add an assertion to verify your assumption.
 4.  **Verify (Presubmit):**
     - Run `./do presubmit`. 
     - If it fails, fix the issues until it passes cleanly.
