@@ -648,8 +648,9 @@ class TestProcessTaskWithDocker:
                                   backend="gemini", docker_config=docker_cfg, cleanup=True)
 
         assert result is True
-        mock_start.assert_called_once()
-        mock_stop.assert_called_once()
+        # Staged architecture: each stage starts and stops its own container (3 stages total)
+        assert mock_start.call_count == 3
+        assert mock_stop.call_count == 3
 
     def test_process_task_clone_failure_returns_false(self, tmp_path):
         """If git clone inside container fails, process_task returns False."""
@@ -719,7 +720,7 @@ class TestProcessTaskWithDocker:
                                   backend="gemini", docker_config=docker_cfg, cleanup=True)
 
         assert result is True  # force-with-lease succeeded
-        assert push_count[0] == 1  # initial push was rejected
+        assert push_count[0] == 3  # one initial push rejected per stage (impl, review, validate)
 
     def test_process_task_docker_presubmit_uses_docker_exec(self, tmp_path):
         """Presubmit is run via _docker_exec (not subprocess.run) when docker is configured."""

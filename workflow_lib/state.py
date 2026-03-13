@@ -72,7 +72,7 @@ def load_workflow_state() -> Dict[str, Any]:
         and ``merged_tasks`` (list).
     :rtype: dict
     """
-    state: Dict[str, Any] = {"completed_tasks": [], "merged_tasks": []}
+    state: Dict[str, Any] = {"completed_tasks": [], "merged_tasks": [], "task_stages": {}}
     if os.path.exists(WORKFLOW_STATE_FILE):
         with open(WORKFLOW_STATE_FILE, "r", encoding="utf-8") as f:
             try:

@@ -1734,14 +1734,15 @@ class TestProcessTaskPushesBranch:
                                   backend="gemini", max_retries=3)
 
         assert result is True
-        # Verify git push was called with the correct task branch name
-        assert len(push_calls) == 1, (
-            f"Expected exactly 1 push call, got {len(push_calls)}"
+        # Verify git push was called with the correct task branch name.
+        # Staged architecture: impl, review, and validate each push once.
+        assert len(push_calls) == 3, (
+            f"Expected exactly 3 push calls (one per stage), got {len(push_calls)}"
         )
-        push_cmd = push_calls[0]
-        assert push_cmd == ["git", "push", "origin", "ai-phase-sub_01_a"], (
-            f"Push called with unexpected args: {push_cmd}"
-        )
+        for push_cmd in push_calls:
+            assert push_cmd == ["git", "push", "origin", "ai-phase-sub_01_a"], (
+                f"Push called with unexpected args: {push_cmd}"
+            )
 
     def test_task_fails_if_push_fails(self, tmp_path):
         """process_task returns False when the branch push fails."""

@@ -51,10 +51,14 @@ class TestProcessTaskCleanup:
                                   backend="gemini", max_retries=1, cleanup=False)
             
             assert result is False
-            assert len(created_dirs) == 1
-            assert os.path.exists(created_dirs[0]), "Temp dir should NOT be cleaned up on failure when cleanup=False"
+            # Staged architecture: 3 tmpdirs (impl, review, validate), only the
+            # failing stage's dir is retained when cleanup=False.
+            assert len(created_dirs) == 3
+            assert not os.path.exists(created_dirs[0]), "Impl dir should be cleaned (stage succeeded)"
+            assert not os.path.exists(created_dirs[1]), "Review dir should be cleaned (stage succeeded)"
+            assert os.path.exists(created_dirs[2]), "Validate dir should NOT be cleaned when cleanup=False"
             # Manually clean it up so we don't leak locally during tests
-            shutil.rmtree(created_dirs[0], ignore_errors=True)
+            shutil.rmtree(created_dirs[2], ignore_errors=True)
 
     def test_process_task_cleanup_true_on_failure(self, tmp_path):
         """Test process_task removes temp dir on failure when cleanup=True."""
@@ -87,8 +91,10 @@ class TestProcessTaskCleanup:
                                   backend="gemini", max_retries=1, cleanup=True)
             
             assert result is False
-            assert len(created_dirs) == 1
-            assert not os.path.exists(created_dirs[0]), "Temp dir SHOULD be cleaned up on failure when cleanup=True"
+            # Staged architecture: 3 tmpdirs (impl, review, validate), all cleaned when cleanup=True.
+            assert len(created_dirs) == 3
+            for d in created_dirs:
+                assert not os.path.exists(d), f"Temp dir {d} SHOULD be cleaned up on failure when cleanup=True"
 
 
 class TestMergeTaskCleanup:

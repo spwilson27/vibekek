@@ -906,7 +906,7 @@ class TestProcessTaskWithDashboard:
              patch("subprocess.run", side_effect=_fake_run):
             result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
         assert result is False
-        dash.set_agent.assert_any_call("phase_1/task.md", "Impl", "failed", "Clone failed")
+        dash.set_agent.assert_any_call("phase_1/task.md", "Impl", "failed", "Clone/checkout failed: error")
 
     def test_impl_agent_fail_with_dashboard(self):
         dash = MagicMock()
@@ -944,15 +944,20 @@ class TestProcessTaskWithDashboard:
 
     def test_presubmit_fail_all_retries_with_dashboard(self):
         dash = MagicMock()
+        def _only_fail_presubmit(cmd, **kwargs):
+            if isinstance(cmd, list) and "./do" in cmd:
+                return MagicMock(returncode=1, stdout="fail", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("os.chmod"), \
-             patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="fail", stderr="")), \
+             patch("subprocess.run", side_effect=_only_fail_presubmit), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value=""), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
              patch("os.path.isdir", return_value=False), \
-             patch("os.path.exists", return_value=False):
+             patch("os.path.exists", return_value=False), \
+             patch("shutil.rmtree"):
             result = process_task("/root", "phase_1/task.md", "./do presubmit",
                                   max_retries=1, dashboard=dash)
         assert result is False

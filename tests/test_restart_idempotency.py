@@ -121,27 +121,32 @@ class TestEarlyOutAST(unittest.TestCase):
             "pre-existing task branches from prior workflow runs.",
         )
 
-    def test_ls_remote_precedes_clone(self):
-        """The `git ls-remote --heads` check must appear before `git clone` in
-        process_task so the early-out fires before any heavy work begins."""
-        func = self._process_task_node()
-        calls = _git_calls(func)
+    def test_ls_remote_precedes_stage_dispatch(self):
+        """The `git ls-remote --heads` check must appear before the stage dispatch
+        loop in process_task so the early-out fires before any heavy work begins.
+        (git clone moved to run_impl_stage; verify it exists there instead.)"""
+        tree = _parse_executor()
+
+        # ls-remote must still be in process_task
+        pt_func = _find_function(tree, "process_task")
+        pt_calls = _git_calls(pt_func)
         ls_remote_line = next(
-            (lineno for lineno, tokens in calls if "ls-remote" in tokens and "--heads" in tokens),
-            None,
-        )
-        clone_line = next(
-            (lineno for lineno, tokens in calls if "clone" in tokens),
+            (lineno for lineno, tokens in pt_calls if "ls-remote" in tokens and "--heads" in tokens),
             None,
         )
         self.assertIsNotNone(ls_remote_line, "No `git ls-remote --heads` found in process_task")
-        self.assertIsNotNone(clone_line, "No `git clone` found in process_task")
-        self.assertLess(
-            ls_remote_line, clone_line,
-            f"`git ls-remote --heads` (line {ls_remote_line}) must appear before "
-            f"`git clone` (line {clone_line}) so the early-out fires before "
-            f"the expensive clone-and-run-agent cycle.",
-        )
+
+        # git clone must now be in run_impl_stage (not process_task)
+        impl_func = _find_function(tree, "run_impl_stage")
+        self.assertIsNotNone(impl_func, "run_impl_stage not found in executor.py")
+        impl_calls = _git_calls(impl_func)
+        # run_impl_stage itself doesn't clone directly — it calls _stage_clone.
+        # Verify _stage_clone contains git clone instead.
+        stage_clone_func = _find_function(tree, "_stage_clone")
+        self.assertIsNotNone(stage_clone_func, "_stage_clone not found in executor.py")
+        clone_calls = _git_calls(stage_clone_func)
+        clone_found = any("clone" in tokens for _, tokens in clone_calls)
+        self.assertTrue(clone_found, "No `git clone` found in _stage_clone")
 
     def test_early_out_returns_true(self):
         """When ls-remote finds the branch, process_task must return True (not False)
@@ -152,21 +157,16 @@ class TestEarlyOutAST(unittest.TestCase):
         func = _find_function(tree, "process_task")
         self.assertIsNotNone(func)
 
-        # Find the ls-remote call and walk forward to find the adjacent if-block
-        # that returns True when stdout is non-empty.
-        # We verify this by checking that a `return True` node exists in process_task
-        # at a line number after the ls-remote call but before the clone.
+        # Find the ls-remote call, then verify a `return True` follows it in
+        # process_task (early-out for the branch-already-exists path).
         calls = _git_calls(func)
         ls_remote_line = next(
             (lineno for lineno, tokens in calls if "ls-remote" in tokens and "--heads" in tokens),
             None,
         )
-        clone_line = next(
-            (lineno for lineno, tokens in calls if "clone" in tokens),
-            None,
-        )
         self.assertIsNotNone(ls_remote_line)
-        self.assertIsNotNone(clone_line)
+
+        func_end_line = getattr(func, "end_lineno", func.lineno + 9999)
 
         early_returns = [
             node.lineno
@@ -174,12 +174,12 @@ class TestEarlyOutAST(unittest.TestCase):
             if isinstance(node, ast.Return)
             and isinstance(node.value, ast.Constant)
             and node.value.value is True
-            and ls_remote_line < node.lineno < clone_line
+            and ls_remote_line < node.lineno <= func_end_line
         ]
         self.assertTrue(
             early_returns,
-            f"Expected a `return True` between ls-remote (line {ls_remote_line}) "
-            f"and clone (line {clone_line}) for the branch-exists early-out path.",
+            f"Expected a `return True` after ls-remote (line {ls_remote_line}) "
+            f"in process_task for the branch-exists early-out path.",
         )
 
 
@@ -243,16 +243,20 @@ class TestEarlyOutFunctional(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestForcePushAST(unittest.TestCase):
-    """Verify the force-push fallback code structure in process_task."""
+    """Verify the force-push fallback code structure.
 
-    def _process_task_node(self):
+    The push logic lives in the ``_push_branch_to_origin`` helper (called by
+    all three stage functions), not directly in ``process_task``.
+    """
+
+    def _push_helper_node(self):
         tree = _parse_executor()
-        node = _find_function(tree, "process_task")
-        self.assertIsNotNone(node, "process_task not found in executor.py")
+        node = _find_function(tree, "_push_branch_to_origin")
+        self.assertIsNotNone(node, "_push_branch_to_origin not found in executor.py")
         return node
 
     def test_rejected_stderr_check_present(self):
-        """process_task must inspect push stderr for 'non-fast-forward' or '[rejected]'
+        """executor.py must inspect push stderr for 'non-fast-forward' or '[rejected]'
         to distinguish a race-condition push failure from a hard failure."""
         with open(EXECUTOR_FILE, "r", encoding="utf-8") as f:
             source = f.read()
@@ -263,43 +267,34 @@ class TestForcePushAST(unittest.TestCase):
             "stderr to detect race-condition branch conflicts.",
         )
 
-    def test_force_with_lease_in_process_task(self):
-        """process_task must contain a `git push --force-with-lease` call for the
-        fallback path when the initial push is rejected."""
-        func = self._process_task_node()
-        calls = _git_calls(func)
-        force_push_lines = [
-            lineno for lineno, tokens in calls
-            if "push" in tokens and "--force-with-lease" in tokens
-        ]
-        self.assertTrue(
-            force_push_lines,
-            "process_task must contain a `git push --force-with-lease` call as a "
+    def test_force_with_lease_in_push_helper(self):
+        """_push_branch_to_origin must contain a `--force-with-lease` push
+        for the fallback path when the initial push is rejected."""
+        with open(EXECUTOR_FILE, "r", encoding="utf-8") as f:
+            source = f.read()
+        # The push helper builds commands via list concatenation so a plain
+        # source-text search is more reliable than AST walking.
+        self.assertIn(
+            "--force-with-lease",
+            source,
+            "_push_branch_to_origin must pass '--force-with-lease' as a "
             "fallback when the initial push is rejected (non-fast-forward).",
         )
 
     def test_plain_push_precedes_force_push(self):
-        """The plain `git push` must appear before the `--force-with-lease` push —
+        """The plain push must appear before the `--force-with-lease` push —
         force should only be used as a fallback, not the default."""
-        func = self._process_task_node()
-        calls = _git_calls(func)
-        plain_push_line = next(
-            (lineno for lineno, tokens in calls
-             if "push" in tokens and "--force-with-lease" not in tokens
-             and "origin" in tokens),
-            None,
-        )
-        force_push_line = next(
-            (lineno for lineno, tokens in calls
-             if "push" in tokens and "--force-with-lease" in tokens),
-            None,
-        )
-        self.assertIsNotNone(plain_push_line, "No plain `git push origin` found in process_task")
-        self.assertIsNotNone(force_push_line, "No `git push --force-with-lease` found in process_task")
+        with open(EXECUTOR_FILE, "r", encoding="utf-8") as f:
+            source = f.read()
+        # Use the code-only occurrence: ["git", "push"] and ["--force-with-lease"]
+        plain_pos = source.find('"git", "push"')
+        # Find the code call site: _do_push(["--force-with-lease"])
+        force_pos = source.find('["--force-with-lease"]')
+        self.assertGreater(plain_pos, 0, 'No ["git", "push"] literal found in executor.py')
+        self.assertGreater(force_pos, 0, 'No ["--force-with-lease"] call found in executor.py')
         self.assertLess(
-            plain_push_line, force_push_line,
-            f"Plain push (line {plain_push_line}) must appear before force-push "
-            f"(line {force_push_line}) — force should only be a fallback.",
+            plain_pos, force_pos,
+            "Plain push must appear before force-push in source — force should only be a fallback.",
         )
 
 

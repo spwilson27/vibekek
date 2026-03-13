@@ -56,5 +56,7 @@ def test_load_workflow_state():
 def test_load_workflow_state_empty():
     with patch('os.path.exists', return_value=False):
         state = workflow.load_workflow_state()
-        assert state == {"completed_tasks": [], "merged_tasks": []}
+        assert state["completed_tasks"] == []
+        assert state["merged_tasks"] == []
+        assert "task_stages" in state
 

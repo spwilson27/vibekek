@@ -52,6 +52,34 @@ from .agent_pool import AgentPoolManager, QUOTA_RETURN_CODE, QUOTA_PATTERNS, QUO
 shutdown_requested = False
 _active_dashboard: Any = None
 
+# ---------------------------------------------------------------------------
+# Stage constants for restartable process_task pipeline
+# ---------------------------------------------------------------------------
+
+STAGE_IMPL     = "impl"
+STAGE_REVIEW   = "review"
+STAGE_VALIDATE = "validate"
+STAGE_DONE     = "done"
+_STAGE_ORDER   = [STAGE_IMPL, STAGE_REVIEW, STAGE_VALIDATE]
+
+
+def _starting_stage_for(task_id: str, state: Dict[str, Any]) -> str:
+    """Return the first stage that still needs to run for *task_id*.
+
+    :param task_id: Fully-qualified task ID, e.g. ``"phase_1/sub/01.md"``.
+    :param state: Workflow state dict (must contain ``"task_stages"`` key).
+    :returns: One of the ``STAGE_*`` constants, or ``STAGE_DONE`` when all
+        stages have already been recorded.
+    """
+    completed = state.get("task_stages", {}).get(task_id)
+    if completed is None:
+        return STAGE_IMPL
+    try:
+        idx = _STAGE_ORDER.index(completed)
+    except ValueError:
+        return STAGE_IMPL
+    return _STAGE_ORDER[idx + 1] if idx + 1 < len(_STAGE_ORDER) else STAGE_DONE
+
 
 def _restore_terminal() -> None:
     """Best-effort restore terminal state (cursor visibility, alternate screen)."""
@@ -912,80 +940,199 @@ def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.L
 
 
 
-def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False, docker_config: Optional[Any] = None) -> bool:
-    """Run the full implementation lifecycle for one task.
+def _push_branch_to_origin(
+    branch_name: str,
+    *,
+    cwd: str = "",
+    container_name: str = "",
+    env_file: str = "",
+    _log: Callable,
+) -> bool:
+    """Push *branch_name* to ``origin``, retrying with ``--force-with-lease`` on rejection.
 
-    Steps performed:
+    Handles both host (plain ``subprocess.run``) and container (``docker exec``)
+    push paths.  A plain push is tried first; if it is rejected due to a
+    non-fast-forward conflict (race condition from a concurrent run), a
+    ``--force-with-lease`` retry is attempted.
 
-    1. Clone the repo into a temp directory on a dedicated branch.
-    2. Optionally seed the Serena cache and copy ``.mcp.json`` (when
-       *serena* is ``True``).
-    3. Run the **Implementation** AI agent.
-    4. Run the **Review** AI agent.
-    5. Run the presubmit command up to *max_retries* times, feeding failure
-       output back to the Review agent on each retry.
-    6. Commit changes if the presubmit passes.
+    :returns: ``True`` on success, ``False`` if the push ultimately failed.
+    """
+    def _do_push(extra_flags: List[str]) -> subprocess.CompletedProcess:
+        cmd = ["git", "push"] + extra_flags + ["origin", branch_name]
+        if container_name:
+            return _docker_exec(container_name, cmd, env_file=env_file)
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
 
-    The clone is removed on success.  On failure it is left in place so the
-    developer can inspect or manually fix the state (unless cleanup=True is passed).
+    res = _do_push([])
+    if res.returncode == 0:
+        return True
+    if "non-fast-forward" in res.stderr or "[rejected]" in res.stderr:
+        _log(f"      [!] Push rejected (branch exists from prior run); force-pushing verified branch.")
+        force_res = _do_push(["--force-with-lease"])
+        if force_res.returncode == 0:
+            return True
+        _log(f"      [!] Force-push also failed:\n{force_res.stderr}")
+        return False
+    _log(f"      [!] Failed to push task branch {branch_name} to origin:\n{res.stderr}")
+    return False
 
-    :param root_dir: Absolute path to the project root git repository.
-    :type root_dir: str
-    :param full_task_id: Fully-qualified task ID, e.g.
-        ``"phase_1/api/01_setup.md"``.
-    :type full_task_id: str
-    :param presubmit_cmd: Shell command string (split on whitespace) used to
-        verify the implementation, e.g. ``"./do presubmit"``.
-    :type presubmit_cmd: str
-    :param backend: AI backend to use (``"gemini"``, ``"claude"``, or
-        ``"copilot"``).  Defaults to ``"gemini"``.
-    :type backend: str
-    :param max_retries: Maximum number of presubmit verification attempts
-        before giving up.  Defaults to ``3``.
-    :type max_retries: int
-    :param serena: When ``True``, seed the Serena cache into the clone and
-        copy ``.mcp.json`` so the Claude CLI can discover the Serena MCP
-        server.  Defaults to ``False``.
-    :type serena: bool
-    :param cleanup: When ``True``, remove the temporary clone even on failure.
-        Defaults to ``False``.
-    :type cleanup: bool
-    :returns: ``True`` if the task was implemented, verified, and committed
-        successfully; ``False`` otherwise.
-    :rtype: bool
+
+def _stage_clone(
+    stage_label: str,
+    full_task_id: str,
+    branch_name: str,
+    clone_remote: str,
+    checkout_ref: str,
+    docker_config: Optional[Any],
+    dashboard: Any,
+    _log: Callable,
+) -> "tuple[str, str, str, str]":
+    """Create a fresh tmpdir + optional container, clone the repo, and checkout *checkout_ref*.
+
+    For the impl stage *checkout_ref* is ``origin/{dev_branch}`` (creates the
+    task branch).  For review / validate stages it is ``origin/{branch_name}``
+    (checks out the existing task branch).
+
+    :returns: ``(tmpdir, container_name, env_file, cwd)`` on success, or raises
+        ``subprocess.CalledProcessError`` / ``RuntimeError`` on clone failure.
+    :raises RuntimeError: When the clone or checkout fails.
     """
     phase_id, task_id = full_task_id.split("/", 1)
     safe_task_id = task_id.replace("/", "_").replace(".md", "")
-    branch_name = f"ai-phase-{safe_task_id}"
 
-    def _log(msg: str) -> None:
+    tmpdir = tempfile.mkdtemp(prefix=f"ai_{safe_task_id}_{stage_label}_")
+    os.chmod(tmpdir, 0o755)
+
+    _container_name = ""
+    env_file = ""
+
+    if docker_config:
+        env_file = _write_container_env_file(tmpdir)
+        import uuid as _uuid
+        _container_name = f"ai_{stage_label}_{safe_task_id}_{_uuid.uuid4().hex[:8]}"
+        _start_task_container(_container_name, docker_config, env_file, _log)
+        _log(f"      [{stage_label}] Cloning repository into container...")
         if dashboard:
-            dashboard.log(msg)
+            dashboard.set_agent(full_task_id, stage_label, "cloning", "")
+        try:
+            _docker_exec(_container_name, ["git", "clone", clone_remote, "/workspace"],
+                         env_file=env_file, check=True, log=_log)
+            _docker_exec(_container_name, ["git", "-C", "/workspace", "submodule", "update",
+                                            "--init", "--recursive"],
+                         env_file=env_file, check=False, log=_log)
+            _docker_exec(_container_name, ["git", "-C", "/workspace", "checkout", "-B",
+                                            branch_name, checkout_ref],
+                         env_file=env_file, check=True, log=_log)
+        except subprocess.CalledProcessError as e:
+            err = e.stderr.decode("utf-8") if isinstance(e.stderr, bytes) else str(e.stderr or "")
+            _stop_task_container(_container_name, _log)
+            raise RuntimeError(f"Clone/checkout failed: {err}") from e
+        cwd = "/workspace"
+    else:
+        _log(f"      [{stage_label}] Cloning repository to {tmpdir} on {branch_name}...")
+        if dashboard:
+            dashboard.set_agent(full_task_id, stage_label, "cloning", "")
+        try:
+            subprocess.run(["git", "clone", clone_remote, tmpdir],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            subprocess.run(["git", "submodule", "update", "--init", "--recursive"],
+                           cwd=tmpdir, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            subprocess.run(["git", "checkout", "-B", branch_name, checkout_ref],
+                           cwd=tmpdir, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as e:
+            err = e.stderr.decode("utf-8") if isinstance(e.stderr, bytes) else str(e.stderr)
+            raise RuntimeError(f"Clone/checkout failed: {err}") from e
+        cwd = tmpdir
+
+    return tmpdir, _container_name, env_file, cwd
+
+
+def _stage_commit_and_push(
+    branch_name: str,
+    commit_msg: str,
+    *,
+    cwd: str,
+    container_name: str,
+    env_file: str,
+    _log: Callable,
+) -> bool:
+    """``git add -A``, conditionally commit, then push *branch_name*.
+
+    :returns: ``True`` on success.
+    """
+    if container_name:
+        _docker_exec(container_name, ["git", "add", "-A"], env_file=env_file, log=_log)
+        status_res = _docker_exec(container_name, ["git", "status", "--porcelain"],
+                                   env_file=env_file)
+        if status_res.stdout.strip():
+            _docker_exec(container_name, ["git", "commit", "--no-verify", "-m", commit_msg],
+                         env_file=env_file, check=True, log=_log)
         else:
-            print(msg)
+            _log(f"      No changes to commit after {commit_msg!r}.")
+    else:
+        subprocess.run(["git", "add", "-A"], cwd=cwd, check=True)
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=cwd,
+                                 capture_output=True, text=True)
+        if status.stdout.strip():
+            subprocess.run(["git", "commit", "--no-verify", "-m", commit_msg],
+                           cwd=cwd, check=True, stdout=subprocess.DEVNULL)
+        else:
+            _log(f"      No changes to commit after {commit_msg!r}.")
 
-    # If the task branch already exists in origin (e.g. from a prior run that
-    # succeeded but failed to record state), skip re-running the agent and let
-    # merge_task handle it directly.
-    try:
-        existing = subprocess.run(
-            ["git", "ls-remote", "--heads", remote_url or root_dir, branch_name],
-            capture_output=True, text=True,
-        )
-        if "refs/heads/" in existing.stdout:
-            _log(f"\n   -> [Implementation] Skipping {full_task_id} — branch {branch_name} already exists in origin.")
-            return True
-    except Exception:
-        pass  # ls-remote failed; proceed with normal implementation flow
+    return _push_branch_to_origin(
+        branch_name, cwd=cwd, container_name=container_name,
+        env_file=env_file, _log=_log,
+    )
 
-    _log(f"\n   -> [Implementation] Starting {full_task_id}")
-    if dashboard:
-        dashboard.set_agent(full_task_id, "Impl", "queued", "")
+
+def _stage_cleanup(
+    tmpdir: str,
+    container_name: str,
+    success: bool,
+    cleanup: bool,
+    branch_name: str,
+    _log: Callable,
+) -> None:
+    """Stop container, reclaim ownership, and optionally delete *tmpdir*."""
+    if container_name:
+        _stop_task_container(container_name, _log)
+    if tmpdir and not container_name:
+        _reclaim_dir_ownership(tmpdir, _log)
+    if success or (cleanup and tmpdir):
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+    else:
+        _log(f"      [!] Stage failed. Leaving clone {tmpdir} and branch {branch_name} for investigation.")
+
+
+def run_impl_stage(
+    root_dir: str,
+    full_task_id: str,
+    branch_name: str,
+    backend: str = "gemini",
+    serena: bool = False,
+    dashboard: Any = None,
+    model: Optional[str] = None,
+    dev_branch: str = "dev",
+    remote_url: Optional[str] = None,
+    agent_pool: Optional[AgentPoolManager] = None,
+    cleanup: bool = False,
+    docker_config: Optional[Any] = None,
+    _log: Callable = print,
+) -> bool:
+    """Clone from *dev_branch*, run the Implementation agent, and push *branch_name*.
+
+    Each call creates a fresh tmpdir (and optionally a fresh Docker container).
+    On success the task branch is pushed to origin for the next stage to clone.
+
+    :returns: ``True`` on success, ``False`` otherwise.
+    """
+    phase_id, task_id = full_task_id.split("/", 1)
 
     # When a pool is active and docker is configured, pre-acquire the impl agent
-    # before starting the container so we can use its docker override (e.g. per-user
-    # credentials).  This agent token is passed directly to run_agent("Implementation")
-    # to avoid a second acquire.
+    # before starting the container so we can use its docker override.
     _pre_acquired_impl_agent = None
     if agent_pool is not None and docker_config is not None:
         from .config import merge_docker_configs
@@ -997,77 +1144,34 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
     _container_name = ""
     success = False
     try:
-        tmpdir = tempfile.mkdtemp(prefix=f"ai_{safe_task_id}_")
-        os.chmod(tmpdir, 0o755)  # Allow other OS users to traverse (needed for sudo -u <user>)
-
-        # When docker is configured, start the container and clone inside it.
-        # Otherwise, clone into tmpdir on the host as usual.
         clone_remote = remote_url or root_dir
-        env_file = ""
-        if docker_config:
-            env_file = _write_container_env_file(tmpdir)
-            import uuid as _uuid
-            _container_name = f"ai_{safe_task_id}_{_uuid.uuid4().hex[:8]}"
-            _start_task_container(_container_name, docker_config, env_file, _log)
-            _log(f"      Cloning repository into container on branch {branch_name}...")
-            if dashboard:
-                dashboard.set_agent(full_task_id, "Impl", "cloning", "")
-            try:
-                _docker_exec(_container_name, ["git", "clone", clone_remote, "/workspace"], env_file=env_file, check=True, log=_log)
-                _docker_exec(_container_name, ["git", "-C", "/workspace", "submodule", "update", "--init", "--recursive"], env_file=env_file, check=False, log=_log)
-                _docker_exec(_container_name, ["git", "-C", "/workspace", "checkout", "-B", branch_name, f"origin/{dev_branch}"], env_file=env_file, check=True, log=_log)
-            except subprocess.CalledProcessError as e:
-                _log(f"      [!] Failed to clone inside container: {e}")
-                if dashboard:
-                    dashboard.set_agent(full_task_id, "Impl", "failed", "Clone failed")
-                if _pre_acquired_impl_agent is not None and agent_pool is not None:
-                    agent_pool.release(_pre_acquired_impl_agent)
-                    _pre_acquired_impl_agent = None
-                return False
-            cwd = "/workspace"
-        else:
-            _log(f"      Cloning repository to {tmpdir} on branch {branch_name}...")
-            if dashboard:
-                dashboard.set_agent(full_task_id, "Impl", "cloning", "")
-            try:
-                subprocess.run(["git", "clone", clone_remote, tmpdir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                subprocess.run(["git", "checkout", "-B", branch_name, f"origin/{dev_branch}"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            except subprocess.CalledProcessError as e:
-                _log(f"      [!] Failed to create clone:\n{e.stderr.decode('utf-8')}")
-                if dashboard:
-                    dashboard.set_agent(full_task_id, "Impl", "failed", "Clone failed")
-                return False
-            cwd = tmpdir
+        checkout_ref = f"origin/{dev_branch}"
+
+        tmpdir, _container_name, env_file, cwd = _stage_clone(
+            "Impl", full_task_id, branch_name, clone_remote, checkout_ref,
+            docker_config, dashboard, _log,
+        )
 
         if serena:
-            # Seed Serena cache from main repo so agents don't start cold
             serena_cache_src = os.path.join(root_dir, ".serena", "cache")
             serena_cache_dst = os.path.join(tmpdir, ".serena", "cache")
             if os.path.isdir(serena_cache_src) and not os.path.isdir(serena_cache_dst):
                 shutil.copytree(serena_cache_src, serena_cache_dst)
-
-            # Copy .mcp.json so Claude CLI picks up Serena in the clone
             mcp_src = os.path.join(root_dir, ".mcp.json")
             mcp_dst = os.path.join(tmpdir, ".mcp.json")
             if os.path.exists(mcp_src) and not os.path.exists(mcp_dst):
                 shutil.copy2(mcp_src, mcp_dst)
 
-        task_details = get_task_details(full_task_id)
-        description_ctx = get_project_context()
-        memory_ctx = get_memory_context(root_dir)
-
         context = {
             "phase_filename": phase_id,
             "task_name": task_id,
             "target_dir": full_task_id,
-            "task_details": task_details,
-            "description_ctx": description_ctx,
-            "memory_ctx": memory_ctx,
+            "task_details": get_task_details(full_task_id),
+            "description_ctx": get_project_context(),
+            "memory_ctx": get_memory_context(root_dir),
             "clone_dir": tmpdir,
             "spec_ctx": get_spec_context(),
             "shared_components_ctx": get_shared_components_context(),
-            #"file_tree_ctx": get_file_tree_context(tmpdir),
         }
 
         _run_agent_kwargs = dict(
@@ -1075,7 +1179,6 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
             agent_pool=agent_pool, container_name=_container_name, container_env_file=env_file,
         )
 
-        # 1. Implementation Agent
         if dashboard:
             dashboard.set_agent(full_task_id, "Impl", "running", "")
         if not run_agent("Implementation", "implement_task.md", context, cwd,
@@ -1084,7 +1187,82 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
                 dashboard.set_agent(full_task_id, "Impl", "failed", "Implementation agent failed")
             return False
 
-        # 2. Review Agent
+        if not _container_name:
+            _reclaim_dir_ownership(tmpdir, _log)
+
+        commit_msg = f"{phase_id}:{task_id}: Implementation (WIP)"
+        if not _stage_commit_and_push(
+            branch_name, commit_msg,
+            cwd=cwd, container_name=_container_name, env_file=env_file, _log=_log,
+        ):
+            return False
+
+        success = True
+        return True
+
+    except RuntimeError as e:
+        _log(f"      [!] [Impl] {e}")
+        if dashboard:
+            dashboard.set_agent(full_task_id, "Impl", "failed", str(e))
+        return False
+    finally:
+        if _pre_acquired_impl_agent is not None and agent_pool is not None:
+            agent_pool.release(_pre_acquired_impl_agent)
+        _stage_cleanup(tmpdir, _container_name, success, cleanup, branch_name, _log)
+
+
+def run_review_stage(
+    root_dir: str,
+    full_task_id: str,
+    branch_name: str,
+    backend: str = "gemini",
+    serena: bool = False,
+    dashboard: Any = None,
+    model: Optional[str] = None,
+    dev_branch: str = "dev",
+    remote_url: Optional[str] = None,
+    agent_pool: Optional[AgentPoolManager] = None,
+    cleanup: bool = False,
+    docker_config: Optional[Any] = None,
+    _log: Callable = print,
+) -> bool:
+    """Clone from *branch_name* (impl already pushed), run the Review agent, and push.
+
+    Each call creates a fresh tmpdir (and optionally a fresh Docker container).
+
+    :returns: ``True`` on success, ``False`` otherwise.
+    """
+    phase_id, task_id = full_task_id.split("/", 1)
+
+    tmpdir = ""
+    _container_name = ""
+    success = False
+    try:
+        clone_remote = remote_url or root_dir
+        checkout_ref = f"origin/{branch_name}"
+
+        tmpdir, _container_name, env_file, cwd = _stage_clone(
+            "Review", full_task_id, branch_name, clone_remote, checkout_ref,
+            docker_config, dashboard, _log,
+        )
+
+        context = {
+            "phase_filename": phase_id,
+            "task_name": task_id,
+            "target_dir": full_task_id,
+            "task_details": get_task_details(full_task_id),
+            "description_ctx": get_project_context(),
+            "memory_ctx": get_memory_context(root_dir),
+            "clone_dir": tmpdir,
+            "spec_ctx": get_spec_context(),
+            "shared_components_ctx": get_shared_components_context(),
+        }
+
+        _run_agent_kwargs = dict(
+            backend=backend, dashboard=dashboard, task_id=full_task_id, model=model,
+            agent_pool=agent_pool, container_name=_container_name, container_env_file=env_file,
+        )
+
         if dashboard:
             dashboard.set_agent(full_task_id, "Review", "running", "")
         if not run_agent("Review", "review_task.md", context, cwd, **_run_agent_kwargs):
@@ -1092,69 +1270,113 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
                 dashboard.set_agent(full_task_id, "Review", "failed", "Review agent failed")
             return False
 
-        # Reclaim ownership of files written by alternate-user agents before
-        # running presubmit and git commands as the current user (host-only).
         if not _container_name:
             _reclaim_dir_ownership(tmpdir, _log)
 
-        # 3. Verification Loop
+        commit_msg = f"{phase_id}:{task_id}: Review"
+        if not _stage_commit_and_push(
+            branch_name, commit_msg,
+            cwd=cwd, container_name=_container_name, env_file=env_file, _log=_log,
+        ):
+            return False
+
+        success = True
+        return True
+
+    except RuntimeError as e:
+        _log(f"      [!] [Review] {e}")
+        if dashboard:
+            dashboard.set_agent(full_task_id, "Review", "failed", str(e))
+        return False
+    finally:
+        _stage_cleanup(tmpdir, _container_name, success, cleanup, branch_name, _log)
+
+
+def run_validate_stage(
+    root_dir: str,
+    full_task_id: str,
+    branch_name: str,
+    presubmit_cmd: str,
+    backend: str = "gemini",
+    serena: bool = False,
+    dashboard: Any = None,
+    model: Optional[str] = None,
+    dev_branch: str = "dev",
+    remote_url: Optional[str] = None,
+    agent_pool: Optional[AgentPoolManager] = None,
+    cleanup: bool = False,
+    docker_config: Optional[Any] = None,
+    max_retries: int = 3,
+    _log: Callable = print,
+) -> bool:
+    """Clone from *branch_name*, run the presubmit loop, and push on success.
+
+    Mirrors the original verification loop: on failure the Review agent is
+    re-invoked with presubmit failure context, then the presubmit is retried.
+
+    :returns: ``True`` when presubmit passes and the branch is pushed.
+    """
+    phase_id, task_id = full_task_id.split("/", 1)
+
+    tmpdir = ""
+    _container_name = ""
+    success = False
+    try:
+        clone_remote = remote_url or root_dir
+        checkout_ref = f"origin/{branch_name}"
+
+        tmpdir, _container_name, env_file, cwd = _stage_clone(
+            "Verify", full_task_id, branch_name, clone_remote, checkout_ref,
+            docker_config, dashboard, _log,
+        )
+
+        task_details = get_task_details(full_task_id)
+        context = {
+            "phase_filename": phase_id,
+            "task_name": task_id,
+            "target_dir": full_task_id,
+            "task_details": task_details,
+            "description_ctx": get_project_context(),
+            "memory_ctx": get_memory_context(root_dir),
+            "clone_dir": tmpdir,
+            "spec_ctx": get_spec_context(),
+            "shared_components_ctx": get_shared_components_context(),
+        }
+
+        _run_agent_kwargs = dict(
+            backend=backend, dashboard=dashboard, task_id=full_task_id, model=model,
+            agent_pool=agent_pool, container_name=_container_name, container_env_file=env_file,
+        )
+
+        if not _container_name:
+            _reclaim_dir_ownership(tmpdir, _log)
+
+        cmd_list = presubmit_cmd.split()
         for attempt in range(1, max_retries + 1):
             _log(f"      [Verification] Running presubmit (Attempt {attempt}/{max_retries})...")
             if dashboard:
                 dashboard.set_agent(full_task_id, "Verify", "running", f"Attempt {attempt}/{max_retries}")
-            cmd_list = presubmit_cmd.split()
 
             if _container_name:
                 presubmit_res = _docker_exec(_container_name, cmd_list, env_file=env_file, log=_log)
             else:
-                presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True, start_new_session=True)
+                presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True,
+                                                text=True, start_new_session=True)
 
             if presubmit_res.returncode == 0:
                 _log(f"      [Verification] Presubmit passed!")
 
                 commit_msg = f"{phase_id}:{task_id}: Standardized Implementation"
-                match = re.search(r'^#\s*Task:\s*(.*?)(?:\s*\(Sub-Epic:.*?\))?$', task_details, re.MULTILINE)
-                if match and match.group(1).strip():
-                    commit_msg = f"{phase_id}:{task_id}: {match.group(1).strip()}"
+                m = re.search(r'^#\s*Task:\s*(.*?)(?:\s*\(Sub-Epic:.*?\))?$',
+                               task_details, re.MULTILINE)
+                if m and m.group(1).strip():
+                    commit_msg = f"{phase_id}:{task_id}: {m.group(1).strip()}"
 
-                if _container_name:
-                    # Commit and push from inside the container
-                    _docker_exec(_container_name, ["git", "add", "-A"], env_file=env_file, log=_log)
-                    status_res = _docker_exec(_container_name, ["git", "status", "--porcelain"], env_file=env_file)
-                    if status_res.stdout.strip():
-                        _docker_exec(_container_name, ["git", "commit", "--no-verify", "-m", commit_msg], env_file=env_file, check=True, log=_log)
-                    else:
-                        _log(f"      [Verification] No changes to commit for {full_task_id}.")
-                    push_res = _docker_exec(_container_name, ["git", "push", "origin", branch_name], env_file=env_file)
-                    if push_res.returncode != 0:
-                        if "non-fast-forward" in push_res.stderr or "[rejected]" in push_res.stderr:
-                            _log(f"      [!] Push rejected (branch exists from prior run); force-pushing verified branch.")
-                            force_res = _docker_exec(_container_name, ["git", "push", "--force-with-lease", "origin", branch_name], env_file=env_file)
-                            if force_res.returncode != 0:
-                                _log(f"      [!] Force-push also failed:\n{force_res.stderr}")
-                                return False
-                        else:
-                            _log(f"      [!] Failed to push task branch {branch_name} to origin:\n{push_res.stderr}")
-                            return False
-                else:
-                    # Commit and push on the host
-                    subprocess.run(["git", "add", "-A"], cwd=tmpdir, check=True)
-                    status = subprocess.run(["git", "status", "--porcelain"], cwd=tmpdir, capture_output=True, text=True)
-                    if status.stdout.strip():
-                        subprocess.run(["git", "commit", "--no-verify", "-m", commit_msg], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL)
-                    else:
-                        _log(f"      [Verification] No changes to commit for {full_task_id}.")
-                    push_res = subprocess.run(["git", "push", "origin", branch_name], cwd=tmpdir, capture_output=True, text=True)
-                    if push_res.returncode != 0:
-                        if "non-fast-forward" in push_res.stderr or "[rejected]" in push_res.stderr:
-                            _log(f"      [!] Push rejected (branch exists from prior run); force-pushing verified branch.")
-                            force_res = subprocess.run(["git", "push", "--force-with-lease", "origin", branch_name], cwd=tmpdir, capture_output=True, text=True)
-                            if force_res.returncode != 0:
-                                _log(f"      [!] Force-push also failed:\n{force_res.stderr}")
-                                return False
-                        else:
-                            _log(f"      [!] Failed to push task branch {branch_name} to origin:\n{push_res.stderr}")
-                            return False
+                if not _stage_commit_and_push(
+                    branch_name, commit_msg,
+                    cwd=cwd, container_name=_container_name, env_file=env_file, _log=_log,
+                ):
+                    return False
 
                 if dashboard:
                     dashboard.set_agent(full_task_id, "Verify", "done", "Presubmit passed")
@@ -1164,41 +1386,155 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
             _log(f"      [Verification] Presubmit failed.")
             if attempt < max_retries:
                 failure_ctx = dict(context)
-                failure_ctx["task_details"] += f"\n\n### PRESUBMIT FAILURE (Attempt {attempt})\nThe presubmit script failed with the following output. Please fix the code.\n\n```\n{presubmit_res.stdout}\n{presubmit_res.stderr}\n```\n"
+                failure_ctx["task_details"] += (
+                    f"\n\n### PRESUBMIT FAILURE (Attempt {attempt})\n"
+                    f"The presubmit script failed with the following output. "
+                    f"Please fix the code.\n\n```\n"
+                    f"{presubmit_res.stdout}\n{presubmit_res.stderr}\n```\n"
+                )
                 if dashboard:
-                    dashboard.set_agent(full_task_id, "Review", "running", f"Retry after presubmit failure")
-                if not run_agent("Review (Retry)", "review_task.md", failure_ctx, cwd, **_run_agent_kwargs):
+                    dashboard.set_agent(full_task_id, "Review", "running",
+                                        "Retry after presubmit failure")
+                if not run_agent("Review (Retry)", "review_task.md", failure_ctx, cwd,
+                                 **_run_agent_kwargs):
                     return False
 
         _log(f"   -> [!] Task {full_task_id} failed presubmit {max_retries} times. Aborting task.")
         if dashboard:
-            dashboard.set_agent(full_task_id, "Verify", "failed", f"Failed after {max_retries} attempts")
+            dashboard.set_agent(full_task_id, "Verify", "failed",
+                                 f"Failed after {max_retries} attempts")
         return False
 
+    except RuntimeError as e:
+        _log(f"      [!] [Verify] {e}")
+        if dashboard:
+            dashboard.set_agent(full_task_id, "Verify", "failed", str(e))
+        return False
     finally:
-        # Release pre-acquired impl agent if it was never consumed by run_agent
-        # (e.g. early failure before Implementation step ran).
-        if _pre_acquired_impl_agent is not None and agent_pool is not None:
-            agent_pool.release(_pre_acquired_impl_agent)
+        _stage_cleanup(tmpdir, _container_name, success, cleanup, branch_name, _log)
 
-        # Always stop the docker container (best-effort).
-        if _container_name:
-            _stop_task_container(_container_name, _log)
 
-        # Reclaim ownership of files written by alternate-user agents so they
-        # can be deleted (or inspected) by the current user (host path only).
-        if tmpdir and not _container_name:
-            _reclaim_dir_ownership(tmpdir, _log)
+def process_task(
+    root_dir: str,
+    full_task_id: str,
+    presubmit_cmd: str,
+    backend: str = "gemini",
+    max_retries: int = 3,
+    serena: bool = False,
+    dashboard: Any = None,
+    model: Optional[str] = None,
+    dev_branch: str = "dev",
+    remote_url: Optional[str] = None,
+    agent_pool: Optional[AgentPoolManager] = None,
+    cleanup: bool = False,
+    docker_config: Optional[Any] = None,
+    starting_stage: str = STAGE_IMPL,
+    on_stage_complete: Optional[Callable[[str, str], None]] = None,
+) -> bool:
+    """Orchestrate the full implementation lifecycle for one task.
 
-        if success or (cleanup and tmpdir):
-            # Cleanup clone
-            if tmpdir:
-                _log(f"      Cleaning up clone {tmpdir}...")
-                shutil.rmtree(tmpdir, ignore_errors=True)
+    Runs three independently restartable stages in sequence:
+
+    1. **impl** — clone from *dev_branch*, run the Implementation agent,
+       commit and push to the task branch.
+    2. **review** — clone from the task branch, run the Review agent,
+       commit and push.
+    3. **validate** — clone from the task branch, run the presubmit loop
+       (with Review retry on failure), commit and push on success.
+
+    Pass *starting_stage* to resume from a specific stage (e.g. after a
+    crash partway through).  *on_stage_complete* is called with
+    ``(full_task_id, stage_name)`` after each stage successfully completes,
+    allowing the caller to persist progress between stages.
+
+    Each stage creates its own fresh clone and Docker container (when
+    *docker_config* is set).
+
+    :param starting_stage: The first stage to run.  One of :data:`STAGE_IMPL`,
+        :data:`STAGE_REVIEW`, :data:`STAGE_VALIDATE`, or :data:`STAGE_DONE`.
+        Defaults to :data:`STAGE_IMPL`.
+    :param on_stage_complete: Optional callback invoked as
+        ``on_stage_complete(full_task_id, stage_name)`` after each stage
+        succeeds.  Useful for persisting restart state.
+    :returns: ``True`` if all stages (from *starting_stage* onward) completed
+        successfully; ``False`` otherwise.
+    """
+    phase_id, task_id = full_task_id.split("/", 1)
+    safe_task_id = task_id.replace("/", "_").replace(".md", "")
+    branch_name = f"ai-phase-{safe_task_id}"
+
+    def _log(msg: str) -> None:
+        if dashboard:
+            dashboard.log(msg)
+        else:
+            print(msg)
+
+    # All stages already done — nothing to run.
+    if starting_stage == STAGE_DONE:
+        return True
+
+    # For a fresh start (impl stage), check if the task branch already exists
+    # in origin (e.g. from a prior run that succeeded but failed to record
+    # state).  Skip straight to merge in that case.  Do NOT apply this early-out
+    # when resuming at a later stage — the branch is expected to exist.
+    if starting_stage == STAGE_IMPL:
+        try:
+            existing = subprocess.run(
+                ["git", "ls-remote", "--heads", remote_url or root_dir, branch_name],
+                capture_output=True, text=True,
+            )
+            if "refs/heads/" in existing.stdout:
+                _log(f"\n   -> [Implementation] Skipping {full_task_id} — branch {branch_name} already exists in origin.")
+                return True
+        except Exception:
+            pass  # ls-remote failed; proceed with normal implementation flow
+
+    _log(f"\n   -> [Implementation] Starting {full_task_id} from stage {starting_stage!r}")
+    if dashboard:
+        dashboard.set_agent(full_task_id, "Impl", "queued", "")
+
+    _cb: Callable[[str, str], None] = on_stage_complete or (lambda tid, s: None)
+
+    _stage_fns: Dict[str, Callable[..., bool]] = {
+        STAGE_IMPL:     run_impl_stage,
+        STAGE_REVIEW:   run_review_stage,
+        STAGE_VALIDATE: run_validate_stage,
+    }
+    _stage_extra_kwargs: Dict[str, Any] = {
+        STAGE_VALIDATE: {"presubmit_cmd": presubmit_cmd, "max_retries": max_retries},
+    }
+
+    stage_kwargs = dict(
+        root_dir=root_dir,
+        full_task_id=full_task_id,
+        branch_name=branch_name,
+        backend=backend,
+        serena=serena,
+        dashboard=dashboard,
+        model=model,
+        dev_branch=dev_branch,
+        remote_url=remote_url,
+        agent_pool=agent_pool,
+        cleanup=cleanup,
+        docker_config=docker_config,
+        _log=_log,
+    )
+
+    overall_success = False
+    try:
+        stages_to_run = _STAGE_ORDER[_STAGE_ORDER.index(starting_stage):]
+        for stage in stages_to_run:
+            extra = _stage_extra_kwargs.get(stage, {})
+            if not _stage_fns[stage](**stage_kwargs, **extra):
+                return False
+            _cb(full_task_id, stage)
+        overall_success = True
+        return True
+    finally:
+        if overall_success:
             if dashboard:
                 dashboard.remove_agent(full_task_id)
         else:
-            _log(f"      [!] Task failed. Leaving clone {tmpdir} and branch {branch_name} for investigation.")
             if dashboard:
                 dashboard.set_agent(full_task_id, "failed", "failed", "Task failed")
 
@@ -1788,6 +2124,14 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
     failed_tasks: set = set()
     state_lock = threading.Lock()
 
+    def _make_stage_callback(task_id: str) -> Callable[[str, str], None]:
+        """Return a callback that persists stage completion to state['task_stages']."""
+        def on_stage_complete(tid: str, stage: str) -> None:
+            with state_lock:
+                state.setdefault("task_stages", {})[tid] = stage
+                save_workflow_state(state)
+        return on_stage_complete
+
     # Discover tasks that already have an implementation branch in origin so
     # they can be prioritised ahead of fresh tasks in the scheduling loop.
     resumable_tasks = _get_resumable_tasks(master_dag, remote_url, root_dir)
@@ -1815,7 +2159,16 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                 with state_lock:
                     active_tasks.add(task_id)
 
-                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, agent_pool=agent_pool, cleanup=cleanup, docker_config=docker_config)
+                with state_lock:
+                    _starting = _starting_stage_for(task_id, state)
+                future = executor.submit(
+                    process_task, root_dir, task_id, presubmit_cmd, backend,
+                    serena=serena_enabled, dashboard=dashboard, model=model,
+                    dev_branch=dev_branch, remote_url=remote_url,
+                    agent_pool=agent_pool, cleanup=cleanup, docker_config=docker_config,
+                    starting_stage=_starting,
+                    on_stage_complete=_make_stage_callback(task_id),
+                )
                 future_to_task[future] = task_id
 
             # If no tasks are running and (none are ready or shutdown requested), we are done/deadlocked
@@ -1872,6 +2225,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                             with state_lock:
                                 state["completed_tasks"].append(task_id)
                                 state["merged_tasks"].append(task_id)
+                                state.get("task_stages", {}).pop(task_id, None)
                                 save_workflow_state(state)
                             dashboard.log(f"   -> [Success] Task {task_id} fully integrated into {dev_branch}.")
                             # Sync local dev-branch ref from remote (succeeds now: merge_task just pushed there).
