@@ -113,10 +113,10 @@ def verify_tasks(phases_dir, tasks_dir):
         return 1
 
     for filename in os.listdir(phases_dir):
-        if filename.endswith(".md"):
+        if filename.endswith(".md") and filename != "phase_removed.md":
             file_path = os.path.join(phases_dir, filename)
             phases_reqs.update(parse_requirements(file_path))
-            
+
     tasks_reqs = set()
     if not os.path.exists(tasks_dir) or not os.path.isdir(tasks_dir):
         print(f"Error: Directory not found or not a directory: {tasks_dir}")

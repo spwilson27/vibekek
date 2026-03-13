@@ -960,7 +960,7 @@ def _fix_task_mappings(unmapped_reqs: List[str], ctx: ProjectContext, dry_run: b
     # Build req_id -> phase_ids mapping
     phases_reqs: Dict[str, set] = {}
     for filename in os.listdir(phases_dir):
-        if not filename.endswith(".md"):
+        if not filename.endswith(".md") or filename == "phase_removed.md":
             continue
         phase_id = filename.replace(".md", "")
         file_path = os.path.join(phases_dir, filename)
@@ -1326,6 +1326,11 @@ def _fix_single_dag_ref(
 
     # Cross-phase reference (starts with phase_N/ but different phase)
     if re.match(r"^phase_\d+/", ref):
+        return None
+
+    # Full project-relative path pointing to a different phase
+    # (e.g. docs/plan/tasks/phase_1/foo in phase_5's DAG)
+    if re.match(r"^docs/plan/tasks/phase_\d+/", ref):
         return None
 
     # Unknown broken ref — return as-is, validation will still catch it

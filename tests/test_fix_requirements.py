@@ -168,6 +168,22 @@ class TestFixTaskMappingsDetection(unittest.TestCase):
                 result = _fix_task_mappings(["REQ-001"], MagicMock())
             self.assertFalse(result)
 
+    def test_phase_removed_reqs_not_treated_as_unmapped(self):
+        """Requirements only in phase_removed.md are ignored by _fix_task_mappings."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_dir = _setup_dirs(
+                tmp,
+                phases_content={
+                    "phase_0.md": "[ACT-001]",
+                    "phase_removed.md": "[REM-001]",
+                },
+                tasks_content={"phase_0/sub/01.md": "[ACT-001]"},
+            )
+            with _patches(tmp, tasks_dir):
+                result = _fix_task_mappings(["REM-001"], MagicMock(), dry_run=True)
+            # REM-001 is only in phase_removed.md — nothing to fix
+            self.assertFalse(result)
+
     def test_multi_phase_unmapped(self):
         with tempfile.TemporaryDirectory() as tmp:
             tasks_dir = _setup_dirs(
@@ -954,6 +970,76 @@ class TestFixDagOrphanDepth(unittest.TestCase):
 
             mock_rebuild.assert_called_once()
             self.assertGreater(fixes, 0)
+
+
+# ── phase_removed regression tests ───────────────────────────────────────
+
+
+class TestCmdFixupPhaseRemovedRegression(unittest.TestCase):
+    """Regression: cmd_fixup must not generate tasks for phase_removed requirements."""
+
+    def test_fixup_all_pass_when_only_removed_reqs_are_untracked(self):
+        """When the only uncovered reqs live in phase_removed.md, fixup reports all-pass."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_dir = _setup_dirs(
+                tmp,
+                phases_content={
+                    "phase_0.md": "[ACT-001]",
+                    "phase_removed.md": "[REM-001]",
+                },
+                tasks_content={"phase_0/sub/01.md": "[ACT-001]"},
+            )
+            args = _make_args(dry_run=True)
+
+            with _patches(tmp, tasks_dir), \
+                 patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()), \
+                 patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
+                 patch("workflow_lib.replan.load_replan_state", return_value={}), \
+                 patch("workflow_lib.replan.save_replan_state"), \
+                 patch("workflow_lib.replan.log_action"), \
+                 patch("subprocess.run") as mock_sp, \
+                 patch("workflow_lib.replan._fix_task_mappings") as mock_fix_tasks:
+                # verify-tasks passes (no missing reqs after the fix)
+                mock_sp.return_value = types.SimpleNamespace(
+                    returncode=0,
+                    stdout="Success: All requirements mapped.\n",
+                )
+                cmd_fixup(args)
+                # The fixer must not be invoked for removed reqs
+                mock_fix_tasks.assert_not_called()
+
+    def test_no_task_files_created_under_phase_removed_dir(self):
+        """cmd_fixup must not create any task files under tasks/phase_removed/."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_dir = _setup_dirs(
+                tmp,
+                phases_content={
+                    "phase_0.md": "[ACT-001]",
+                    "phase_removed.md": "[REM-001] [REM-002] [REM-003]",
+                },
+                tasks_content={"phase_0/sub/01.md": "[ACT-001]"},
+            )
+            args = _make_args(dry_run=True)
+
+            with _patches(tmp, tasks_dir), \
+                 patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()), \
+                 patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
+                 patch("workflow_lib.replan.load_replan_state", return_value={}), \
+                 patch("workflow_lib.replan.save_replan_state"), \
+                 patch("workflow_lib.replan.log_action"), \
+                 patch("subprocess.run") as mock_sp:
+                mock_sp.return_value = types.SimpleNamespace(
+                    returncode=0,
+                    stdout="Success: All requirements mapped.\n",
+                )
+                cmd_fixup(args)
+
+            phase_removed_dir = os.path.join(tasks_dir, "phase_removed")
+            # No phase_removed/ task directory should exist
+            self.assertFalse(
+                os.path.isdir(phase_removed_dir),
+                "phase_removed task directory should not be created",
+            )
 
 
 # ── CLI wiring test ──────────────────────────────────────────────────────
