@@ -31,9 +31,114 @@ from workflow import (
     log_action, load_dags,
 )
 
+from workflow_lib.executor import (
+    _restore_terminal, _step_for_agent_type, _compact_task_id
+)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class TestInternalHelpers:
+    def test_restore_terminal(self):
+        with patch("sys.stdout.write") as mock_write, \
+             patch("sys.stdout.flush") as mock_flush:
+            _restore_terminal()
+        assert mock_write.called
+        assert mock_flush.called
+
+    def test_restore_terminal_exception(self):
+        # Should catch and pass
+        with patch("sys.stdout.write", side_effect=RuntimeError("fail")):
+            _restore_terminal()
+
+    def test_step_for_agent_type(self):
+        assert _step_for_agent_type("Implementation") == "develop"
+        assert _step_for_agent_type("Implementation: Fixup") == "develop"
+        assert _step_for_agent_type("Review") == "review"
+        assert _step_for_agent_type("Review: Final") == "review"
+        assert _step_for_agent_type("Merge") == "merge"
+        assert _step_for_agent_type("Unknown") == "all"
+
+    def test_compact_task_id_simple(self):
+        assert _compact_task_id("phase_1", "my_task.md") == "p1/my_task"
+
+    def test_compact_task_id_nested(self):
+        assert _compact_task_id("phase_2", "sub/task.md") == "p2/sub/task"
+
+    def test_compact_task_id_long(self):
+        assert _compact_task_id("phase_1", "this_is_a_very_long_task_name.md") == "p1/this_is_a_very_long_"
+
+    def test_compact_task_id_fallback(self):
+        assert _compact_task_id("not_a_phase", "t.md") == "not_a_phase/t"
+
+
+class TestGetReadyTasks:
+    def test_get_ready_tasks_basic(self):
+        dag = {
+            "phase_1/t1.md": [],
+            "phase_1/t2.md": ["phase_1/t1.md"],
+            "phase_2/t3.md": []
+        }
+        # Only t1 is ready (t2 has prereq, t3 is in later phase)
+        assert get_ready_tasks(dag, [], []) == ["phase_1/t1.md"]
+        # If t1 is done, t2 is ready
+        assert get_ready_tasks(dag, ["phase_1/t1.md"], []) == ["phase_1/t2.md"]
+
+    def test_get_ready_tasks_phase_barrier(self):
+        dag = {
+            "phase_1/t1.md": [],
+            "phase_2/t2.md": []
+        }
+        # t2 should not be ready until phase_1 is empty (all done or active)
+        assert get_ready_tasks(dag, [], []) == ["phase_1/t1.md"]
+
+    def test_get_ready_tasks_with_blocked(self):
+        dag = {
+            "phase_1/t1.md": [],
+            "phase_1/t2.md": ["phase_1/t1.md"]
+        }
+        with patch("workflow_lib.executor.load_blocked_tasks", return_value={"phase_1/t1.md"}):
+            # t1 is blocked, so it's not ready. t2 depends on t1, so it's not ready either.
+            assert get_ready_tasks(dag, [], []) == []
+
+
+class TestAIRunner:
+    def test_wrap_cmd_no_user(self):
+        runner = AIRunner()
+        cmd = ["ls"]
+        assert runner._wrap_cmd(cmd) == cmd
+
+    def test_wrap_cmd_with_user(self):
+        runner = AIRunner(user="other")
+        cmd = ["ls"]
+        with patch("os.getenv", return_value="current"):
+            wrapped = runner._wrap_cmd(cmd)
+        assert "sudo" in wrapped
+        assert "other" in wrapped
+
+    def test_wrap_cmd_same_user(self):
+        runner = AIRunner(user="current")
+        cmd = ["ls"]
+        with patch("os.getenv", return_value="current"):
+            assert runner._wrap_cmd(cmd) == cmd
+
+    def test_build_exec_cmd_no_container(self):
+        runner = AIRunner()
+        cmd = ["ls"]
+        assert runner._build_exec_cmd(cmd) == cmd
+
+    def test_build_exec_cmd_with_container(self):
+        runner = AIRunner(container_name="my_cont")
+        runner._container_env_file = "/tmp/env"
+        cmd = ["ls"]
+        wrapped = runner._build_exec_cmd(cmd)
+        assert "docker" in wrapped
+        assert "exec" in wrapped
+        assert "my_cont" in wrapped
+        assert "--env-file" in wrapped
+
 
 def _mock_ctx(state=None):
     ctx = MagicMock(spec=ProjectContext)
@@ -168,7 +273,8 @@ class TestHelpers:
         with patch("os.path.exists", return_value=True), \
              patch("builtins.open", mock_open(read_data="memory content")):
             result = get_memory_context("/fake/root")
-        assert result == "memory content"
+        # Since os.path.exists=True, it reads MEMORY.md and DECISIONS.md and joins them.
+        assert result == "memory content\n\n---\n\nmemory content"
 
     def test_get_memory_context_missing(self):
         with patch("os.path.exists", return_value=False):

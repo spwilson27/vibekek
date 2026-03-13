@@ -59,8 +59,8 @@ PROMPT_PLACEHOLDERS = {
     "dag_tasks_review.md": {"description_ctx", "phase_filename", "proposed_dag", "target_path", "tasks_content"},
 
     # Implementation (run phase)
-    "implement_task.md": {"description_ctx", "memory_ctx", "phase_filename", "target_dir", "task_details", "task_name", "spec_ctx", "shared_components_ctx", "upstream_ctx", "file_tree_ctx"},
-    "review_task.md": {"description_ctx", "memory_ctx", "phase_filename", "target_dir", "task_details", "task_name", "spec_ctx", "shared_components_ctx", "upstream_ctx", "file_tree_ctx"},
+    "implement_task.md": {"description_ctx", "memory_ctx", "phase_filename", "target_dir", "task_details", "task_name", "spec_ctx", "shared_components_ctx"},
+    "review_task.md": {"description_ctx", "memory_ctx", "phase_filename", "target_dir", "task_details", "task_name", "spec_ctx", "shared_components_ctx"},
     "add_task.md": {"description_ctx", "existing_tasks_content", "phase_filename", "shared_components_ctx", "sub_epic_name", "target_dir", "task_filename", "user_description"},
     "fix_requirements.md": {"description_ctx", "existing_tasks_content", "next_task_num", "phase_filename", "shared_components_ctx", "sub_epic_name", "target_dir", "unmapped_reqs_list"},
     "merge_task.md": {"description_ctx", "branches_list"},
