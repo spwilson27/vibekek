@@ -103,6 +103,14 @@ class TestQwenGetCmd:
         cmd = r.get_cmd()
         assert "--session-id" not in cmd
         assert "--resume" not in cmd
+        assert "--chat-recording" not in cmd
+
+    def test_chat_recording_only_with_session_id(self):
+        r = QwenRunner()
+        cmd_no_session = r.get_cmd()
+        cmd_with_session = r.get_cmd(session_id="abc-123")
+        assert "--chat-recording" not in cmd_no_session
+        assert "--chat-recording" in cmd_with_session
 
 
 # ---------------------------------------------------------------------------
@@ -110,13 +118,15 @@ class TestQwenGetCmd:
 # ---------------------------------------------------------------------------
 
 class TestQwenBuildResume:
-    def test_resume_uses_stdin(self):
+    def test_resume_returns_prompt_separately(self):
+        # _build_resume_cmd_and_prompt returns (cmd, prompt); _run_session
+        # appends the prompt to cmd as a positional arg (one-shot mode).
         r = QwenRunner()
         cmd, prompt = r._build_resume_cmd_and_prompt("sess-456")
         assert "--resume" in cmd
         assert "sess-456" in cmd
-        assert RESUME_PROMPT not in cmd  # not appended to cmd
-        assert prompt == RESUME_PROMPT  # passed via stdin
+        assert RESUME_PROMPT not in cmd  # not baked into cmd by this method
+        assert prompt == RESUME_PROMPT  # caller (_run_session) appends it
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +251,9 @@ class TestQwenRunnerRun:
         mock_st.assert_not_called()
         mock_json.assert_called_once()
 
-    def test_prompt_is_passed_via_stdin(self):
+    def test_prompt_is_passed_as_positional_arg(self):
+        # qwen's positional arg triggers one-shot task mode.
+        # Piping via stdin enters interactive chat mode instead.
         r = QwenRunner(soft_timeout=None)
         expected = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
@@ -249,8 +261,8 @@ class TestQwenRunnerRun:
             r.run("/tmp", "my prompt", on_line=lambda l: None)
 
         cmd_arg = mock_json.call_args[0][0]
-        assert "my prompt" not in cmd_arg  # not a positional arg
-        assert mock_json.call_args[1].get("prompt") == "my prompt"  # passed via stdin
+        assert cmd_arg[-1] == "my prompt"  # appended as positional arg
+        assert mock_json.call_args[1].get("prompt") == ""  # stdin not used
 
     def test_no_on_line_uses_subprocess_run(self):
         r = QwenRunner(soft_timeout=60)
@@ -346,7 +358,7 @@ class TestRunAiCommand:
 
             run_ai_command("prompt", "/tmp", backend="qwen")
 
-        mock_make.assert_called_once_with("qwen", model=None, soft_timeout=300, user=None)
+        mock_make.assert_called_once_with("qwen", model=None, soft_timeout=300, user=None, container_name=None)
 
     def test_handles_timeout_expired(self):
         from workflow_lib.executor import run_ai_command

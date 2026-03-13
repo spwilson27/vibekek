@@ -44,7 +44,7 @@ from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR, REPLAN_STATE_FILE, STATE_
 from .context import ProjectContext
 from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state
-from .config import get_serena_enabled, get_dev_branch, get_pivot_remote
+from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config
 from .discord import notify_failure
 from .dashboard import make_dashboard
 from .agent_pool import AgentPoolManager, QUOTA_RETURN_CODE, QUOTA_PATTERNS
@@ -163,6 +163,135 @@ def get_gitlab_remote_url(root_dir: str, remote_name: str = "origin") -> str:
         f"No git remote found. Configure a remote with: git remote add {remote_name} <url>"
     )
 
+# Host-identity env vars that must not be forwarded into Docker containers.
+# Each AI CLI resolves its config directory from HOME; forwarding a host-side
+# HOME that doesn't exist inside the container causes an immediate ENOENT crash.
+_DOCKER_ENV_SKIP = frozenset({"HOME", "USER", "LOGNAME", "SHELL", "PWD", "OLDPWD"})
+
+
+def _write_container_env_file(tmpdir: str) -> str:
+    """Write current process env (minus identity vars) to *tmpdir*/container.env.
+
+    :param tmpdir: Directory in which to create the env file.
+    :returns: Absolute path to the written env file.
+    """
+    import tempfile as _tempfile
+    path = os.path.join(tmpdir, "container.env")
+    with open(path, "w", encoding="utf-8") as f:
+        for key, val in os.environ.items():
+            if key in _DOCKER_ENV_SKIP:
+                continue
+            # Skip vars with newlines or '=' in the key — invalid env-file format.
+            if "\n" in key or "\n" in val or "=" in key:
+                continue
+            f.write(f"{key}={val}\n")
+    return path
+
+
+def _docker_exec(
+    container_name: str,
+    cmd: List[str],
+    *,
+    env_file: str = "",
+    capture: bool = True,
+    check: bool = False,
+    log: Optional[Callable] = None,
+) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+    """Run *cmd* inside *container_name* via ``docker exec``.
+
+    :param container_name: Name of the running Docker container.
+    :param cmd: Command list to execute inside the container.
+    :param env_file: Path to an env-file on the host passed via ``--env-file``.
+    :param capture: When ``True``, capture stdout/stderr (default).
+    :param check: When ``True``, raise on non-zero exit.
+    :param log: Optional callable for logging stderr on failure.
+    :returns: :class:`subprocess.CompletedProcess`.
+    """
+    exec_cmd = ["docker", "exec", "-i", "--workdir", "/workspace"]
+    if env_file:
+        exec_cmd += ["--env-file", env_file]
+    exec_cmd += [container_name] + cmd
+    result = subprocess.run(
+        exec_cmd,
+        capture_output=capture,
+        text=True,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        if log:
+            log(f"      [!] docker exec failed (rc={result.returncode}): {' '.join(cmd)}")
+            if result.stderr:
+                log(f"          {result.stderr.strip()}")
+        raise subprocess.CalledProcessError(result.returncode, exec_cmd, result.stdout, result.stderr)
+    return result
+
+
+def _start_task_container(
+    container_name: str,
+    docker_config: Any,
+    env_file: str,
+    log: Callable,
+) -> None:
+    """Start a detached Docker container for the duration of one workflow task.
+
+    Validates that all ``copy_files`` sources exist on the host, then runs
+    ``docker run -d --name <name> --env-file <env_file> <volumes> <image> sleep infinity``.
+
+    :param container_name: Unique name for the container.
+    :param docker_config: :class:`~workflow_lib.agent_pool.DockerConfig`.
+    :param env_file: Path to the env-file written by :func:`_write_container_env_file`.
+    :param log: Callable for status messages.
+    :raises FileNotFoundError: If a ``copy_files`` src path does not exist.
+    """
+    import warnings as _warnings
+    dc = docker_config
+
+    # Build volume flags
+    volume_flags: List[str] = []
+    for vol in dc.volumes:
+        volume_flags += ["-v", vol]
+
+    # Collect existing volume dests to detect duplicates
+    mounted_dests: set = set()
+    for vol in dc.volumes:
+        parts = vol.split(":")
+        if len(parts) >= 2:
+            mounted_dests.add(parts[1])
+
+    for cf in dc.copy_files:
+        if not os.path.exists(cf.src):
+            raise FileNotFoundError(f"docker copy_files src does not exist: {cf.src!r}")
+        if cf.dest in mounted_dests:
+            _warnings.warn(
+                f"docker copy_files dest {cf.dest!r} duplicates an existing volume mount — skipping",
+                stacklevel=3,
+            )
+            continue
+        volume_flags += ["-v", f"{cf.src}:{cf.dest}:ro"]
+        mounted_dests.add(cf.dest)
+
+    docker_cmd = [
+        "docker", "run", "-d",
+        "--name", container_name,
+        "--env-file", env_file,
+    ] + volume_flags + [dc.image, "sleep", "infinity"]
+
+    log(f"      [docker] Starting container {container_name} ({dc.image})...")
+    subprocess.run(docker_cmd, check=True, capture_output=True)
+
+
+def _stop_task_container(container_name: str, log: Callable) -> None:
+    """Remove *container_name* (best-effort, errors are logged not raised).
+
+    :param container_name: Name of the container to remove.
+    :param log: Callable for status messages.
+    """
+    if not container_name:
+        return
+    log(f"      [docker] Stopping container {container_name}...")
+    subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, check=False)
+
+
 class Logger(object):
     """Thread-safe stream wrapper that timestamps output and mirrors it to a log file.
 
@@ -231,6 +360,8 @@ def run_ai_command(
     on_line: Optional[Callable[[str], None]] = None,
     model: Optional[str] = None,
     user: Optional[str] = None,
+    container_name: Optional[str] = None,
+    container_env_file: str = "",
 ) -> tuple:  # type: ignore[type-arg]
     """Launch an AI CLI process and stream its output.
 
@@ -250,6 +381,9 @@ def run_ai_command(
     :param on_line: Optional callback invoked per output line.
     :param model: Optional model name passed to the CLI.
     :param user: Optional OS user to run the CLI as (via sudo).
+    :param container_name: Optional name of a running Docker container.
+        When set, the CLI is routed into the container via ``docker exec``.
+    :param container_env_file: Path to the env-file for ``docker exec --env-file``.
     :returns: Tuple of (return_code, stderr_text).
     """
     from .config import get_config_defaults
@@ -257,7 +391,9 @@ def run_ai_command(
     soft_timeout = cfg.get("soft_timeout")
     hard_timeout = cfg.get("timeout")
 
-    runner = make_runner(backend, model=model, soft_timeout=soft_timeout, user=user)
+    runner = make_runner(backend, model=model, soft_timeout=soft_timeout, user=user, container_name=container_name)
+    if container_name and container_env_file:
+        runner._container_env_file = container_env_file
 
     quota_detected = [False]
     quota_patterns_lower = [p.lower() for p in QUOTA_PATTERNS]
@@ -412,7 +548,7 @@ def get_project_images() -> List[str]:
     )
 
 
-def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "", model: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None) -> bool:
+def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "", model: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None, container_name: Optional[str] = None, container_env_file: str = "", _pre_acquired_agent: Optional[Any] = None) -> bool:
     """Format a prompt template and execute an AI agent subprocess.
 
     Reads the named prompt template from ``.tools/prompts/``, performs simple
@@ -483,23 +619,29 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
 
         if agent_pool is not None:
             step = _step_for_agent_type(agent_type)
-            if attempt > 1 and dashboard and task_id:
-                dashboard.set_agent(task_id, agent_type, "waiting",
-                                    f"Waiting for available agent (attempt {attempt})...", agent_name="")
-            while True:
-                agent_cfg = agent_pool.acquire(timeout=300.0, step=step)
-                if agent_cfg is not None:
-                    break
-                # All agents for this step are quota-suppressed or at capacity.
-                # Log a visible waiting status and keep polling — do not treat
-                # this as fatal, as quota windows will eventually expire and
-                # running agents will eventually finish and free their slots.
-                wait_msg = f"[{agent_type}] All agents for step '{step}' are busy or quota-suppressed — waiting for a slot..."
-                if dashboard:
-                    dashboard.log(f"{prefix}{wait_msg}")
-                    if task_id:
-                        dashboard.set_agent(task_id, agent_type, "waiting",
-                                            "Waiting for available agent slot...", agent_name="")
+            if _pre_acquired_agent is not None and attempt == 1:
+                # Caller already acquired this agent (e.g. to resolve docker config before
+                # starting the container); use it directly without going through the pool.
+                agent_cfg = _pre_acquired_agent
+                _pre_acquired_agent = None  # only skip acquire on first attempt
+            else:
+                if attempt > 1 and dashboard and task_id:
+                    dashboard.set_agent(task_id, agent_type, "waiting",
+                                        f"Waiting for available agent (attempt {attempt})...", agent_name="")
+                while True:
+                    agent_cfg = agent_pool.acquire(timeout=300.0, step=step)
+                    if agent_cfg is not None:
+                        break
+                    # All agents for this step are quota-suppressed or at capacity.
+                    # Log a visible waiting status and keep polling — do not treat
+                    # this as fatal, as quota windows will eventually expire and
+                    # running agents will eventually finish and free their slots.
+                    wait_msg = f"[{agent_type}] All agents for step '{step}' are busy or quota-suppressed — waiting for a slot..."
+                    if dashboard:
+                        dashboard.log(f"{prefix}{wait_msg}")
+                        if task_id:
+                            dashboard.set_agent(task_id, agent_type, "waiting",
+                                                "Waiting for available agent slot...", agent_name="")
             active_backend = agent_cfg.backend
             active_model = agent_cfg.model or model
             active_user = agent_cfg.user
@@ -514,7 +656,8 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
         # different user, leaving files owned by them that this agent can't write.
         # Also chown the cargo target-dir so the agent can build without needing
         # to modify .cargo/config.toml to point at a different path.
-        if agent_pool is not None and active_user:
+        # Skip when docker is configured: the container manages its own permissions.
+        if agent_pool is not None and active_user and not container_name:
             _log = (lambda msg: dashboard.log(msg)) if dashboard else (lambda msg: print(f"      {msg}"))
             if agent_cfg is not None and agent_cfg.cargo_target_dir:
                 _set_cargo_target_dir(cwd, agent_cfg.cargo_target_dir, _log)
@@ -530,6 +673,8 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
                 prompt, cwd, prefix=prefix, backend=active_backend,
                 image_paths=get_project_images(), on_line=on_line,
                 model=active_model, user=active_user,
+                container_name=container_name,
+                container_env_file=container_env_file,
             )
         finally:
             if agent_pool is not None and agent_cfg is not None:
@@ -658,7 +803,7 @@ def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.L
 
 
 
-def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False) -> bool:
+def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False, docker_config: Optional[Any] = None) -> bool:
     """Run the full implementation lifecycle for one task.
 
     Steps performed:
@@ -728,23 +873,63 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
     if dashboard:
         dashboard.set_agent(full_task_id, "Impl", "queued", "")
 
+    # When a pool is active and docker is configured, pre-acquire the impl agent
+    # before starting the container so we can use its docker override (e.g. per-user
+    # credentials).  This agent token is passed directly to run_agent("Implementation")
+    # to avoid a second acquire.
+    _pre_acquired_impl_agent = None
+    if agent_pool is not None and docker_config is not None:
+        from .config import merge_docker_configs
+        _pre_acquired_impl_agent = agent_pool.acquire(timeout=300.0, step="develop")
+        if _pre_acquired_impl_agent is not None and _pre_acquired_impl_agent.docker_config is not None:
+            docker_config = merge_docker_configs(docker_config, _pre_acquired_impl_agent.docker_config)
+
     tmpdir = ""
+    _container_name = ""
     success = False
     try:
         tmpdir = tempfile.mkdtemp(prefix=f"ai_{safe_task_id}_")
         os.chmod(tmpdir, 0o755)  # Allow other OS users to traverse (needed for sudo -u <user>)
-        _log(f"      Cloning repository to {tmpdir} on branch {branch_name}...")
-        if dashboard:
-            dashboard.set_agent(full_task_id, "Impl", "cloning", "")
-        try:
-            subprocess.run(["git", "clone", remote_url or root_dir, tmpdir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            subprocess.run(["git", "checkout", "-B", branch_name, f"origin/{dev_branch}"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        except subprocess.CalledProcessError as e:
-            _log(f"      [!] Failed to create clone:\n{e.stderr.decode('utf-8')}")
+
+        # When docker is configured, start the container and clone inside it.
+        # Otherwise, clone into tmpdir on the host as usual.
+        clone_remote = remote_url or root_dir
+        env_file = ""
+        if docker_config:
+            env_file = _write_container_env_file(tmpdir)
+            import uuid as _uuid
+            _container_name = f"ai_{safe_task_id}_{_uuid.uuid4().hex[:8]}"
+            _start_task_container(_container_name, docker_config, env_file, _log)
+            _log(f"      Cloning repository into container on branch {branch_name}...")
             if dashboard:
-                dashboard.set_agent(full_task_id, "Impl", "failed", "Clone failed")
-            return False
+                dashboard.set_agent(full_task_id, "Impl", "cloning", "")
+            try:
+                _docker_exec(_container_name, ["git", "clone", clone_remote, "/workspace"], env_file=env_file, check=True, log=_log)
+                _docker_exec(_container_name, ["git", "-C", "/workspace", "submodule", "update", "--init", "--recursive"], env_file=env_file, check=False, log=_log)
+                _docker_exec(_container_name, ["git", "-C", "/workspace", "checkout", "-B", branch_name, f"origin/{dev_branch}"], env_file=env_file, check=True, log=_log)
+            except subprocess.CalledProcessError as e:
+                _log(f"      [!] Failed to clone inside container: {e}")
+                if dashboard:
+                    dashboard.set_agent(full_task_id, "Impl", "failed", "Clone failed")
+                if _pre_acquired_impl_agent is not None and agent_pool is not None:
+                    agent_pool.release(_pre_acquired_impl_agent)
+                    _pre_acquired_impl_agent = None
+                return False
+            cwd = "/workspace"
+        else:
+            _log(f"      Cloning repository to {tmpdir} on branch {branch_name}...")
+            if dashboard:
+                dashboard.set_agent(full_task_id, "Impl", "cloning", "")
+            try:
+                subprocess.run(["git", "clone", clone_remote, tmpdir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                subprocess.run(["git", "checkout", "-B", branch_name, f"origin/{dev_branch}"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as e:
+                _log(f"      [!] Failed to create clone:\n{e.stderr.decode('utf-8')}")
+                if dashboard:
+                    dashboard.set_agent(full_task_id, "Impl", "failed", "Clone failed")
+                return False
+            cwd = tmpdir
 
         if serena:
             # Seed Serena cache from main repo so agents don't start cold
@@ -773,10 +958,16 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
             "clone_dir": tmpdir
         }
 
+        _run_agent_kwargs = dict(
+            backend=backend, dashboard=dashboard, task_id=full_task_id, model=model,
+            agent_pool=agent_pool, container_name=_container_name, container_env_file=env_file,
+        )
+
         # 1. Implementation Agent
         if dashboard:
             dashboard.set_agent(full_task_id, "Impl", "running", "")
-        if not run_agent("Implementation", "implement_task.md", context, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model, agent_pool=agent_pool):
+        if not run_agent("Implementation", "implement_task.md", context, cwd,
+                         _pre_acquired_agent=_pre_acquired_impl_agent, **_run_agent_kwargs):
             if dashboard:
                 dashboard.set_agent(full_task_id, "Impl", "failed", "Implementation agent failed")
             return False
@@ -784,60 +975,74 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
         # 2. Review Agent
         if dashboard:
             dashboard.set_agent(full_task_id, "Review", "running", "")
-        if not run_agent("Review", "review_task.md", context, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model, agent_pool=agent_pool):
+        if not run_agent("Review", "review_task.md", context, cwd, **_run_agent_kwargs):
             if dashboard:
                 dashboard.set_agent(full_task_id, "Review", "failed", "Review agent failed")
             return False
 
         # Reclaim ownership of files written by alternate-user agents before
-        # running presubmit and git commands as the current user.
-        _reclaim_dir_ownership(tmpdir, _log)
+        # running presubmit and git commands as the current user (host-only).
+        if not _container_name:
+            _reclaim_dir_ownership(tmpdir, _log)
 
         # 3. Verification Loop
         for attempt in range(1, max_retries + 1):
             _log(f"      [Verification] Running presubmit (Attempt {attempt}/{max_retries})...")
             if dashboard:
                 dashboard.set_agent(full_task_id, "Verify", "running", f"Attempt {attempt}/{max_retries}")
-            # We split the command string into a list for subprocess
             cmd_list = presubmit_cmd.split()
-            presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True, start_new_session=True)
+
+            if _container_name:
+                presubmit_res = _docker_exec(_container_name, cmd_list, env_file=env_file, log=_log)
+            else:
+                presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True, start_new_session=True)
 
             if presubmit_res.returncode == 0:
                 _log(f"      [Verification] Presubmit passed!")
 
-                # Commit the changes
-                subprocess.run(["git", "add", "-A"], cwd=tmpdir, check=True)
-                # Only commit if there are changes
-                status = subprocess.run(["git", "status", "--porcelain"], cwd=tmpdir, capture_output=True, text=True)
-                if status.stdout.strip():
-                     commit_msg = f"{phase_id}:{task_id}: Standardized Implementation"
-                     match = re.search(r'^#\s*Task:\s*(.*?)(?:\s*\(Sub-Epic:.*?\))?$', task_details, re.MULTILINE)
-                     if match and match.group(1).strip():
-                         commit_msg = f"{phase_id}:{task_id}: {match.group(1).strip()}"
-                     subprocess.run(["git", "commit", "--no-verify", "-m", commit_msg], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL)
-                else:
-                     _log(f"      [Verification] No changes to commit for {full_task_id}.")
-                # Push the task branch back to the main repo so merge_task can access it
-                push_res = subprocess.run(
-                    ["git", "push", "origin", branch_name],
-                    cwd=tmpdir, capture_output=True, text=True,
-                )
-                if push_res.returncode != 0:
-                    # Non-fast-forward means the branch already exists from a prior run
-                    # that passed presubmit but failed to record state. Force-push our
-                    # verified implementation so merge_task can proceed.
-                    if "non-fast-forward" in push_res.stderr or "[rejected]" in push_res.stderr:
-                        _log(f"      [!] Push rejected (branch exists from prior run); force-pushing verified branch.")
-                        force_res = subprocess.run(
-                            ["git", "push", "--force-with-lease", "origin", branch_name],
-                            cwd=tmpdir, capture_output=True, text=True,
-                        )
-                        if force_res.returncode != 0:
-                            _log(f"      [!] Force-push also failed:\n{force_res.stderr}")
-                            return False
+                commit_msg = f"{phase_id}:{task_id}: Standardized Implementation"
+                match = re.search(r'^#\s*Task:\s*(.*?)(?:\s*\(Sub-Epic:.*?\))?$', task_details, re.MULTILINE)
+                if match and match.group(1).strip():
+                    commit_msg = f"{phase_id}:{task_id}: {match.group(1).strip()}"
+
+                if _container_name:
+                    # Commit and push from inside the container
+                    _docker_exec(_container_name, ["git", "add", "-A"], env_file=env_file, log=_log)
+                    status_res = _docker_exec(_container_name, ["git", "status", "--porcelain"], env_file=env_file)
+                    if status_res.stdout.strip():
+                        _docker_exec(_container_name, ["git", "commit", "--no-verify", "-m", commit_msg], env_file=env_file, check=True, log=_log)
                     else:
-                        _log(f"      [!] Failed to push task branch {branch_name} to origin:\n{push_res.stderr}")
-                        return False
+                        _log(f"      [Verification] No changes to commit for {full_task_id}.")
+                    push_res = _docker_exec(_container_name, ["git", "push", "origin", branch_name], env_file=env_file)
+                    if push_res.returncode != 0:
+                        if "non-fast-forward" in push_res.stderr or "[rejected]" in push_res.stderr:
+                            _log(f"      [!] Push rejected (branch exists from prior run); force-pushing verified branch.")
+                            force_res = _docker_exec(_container_name, ["git", "push", "--force-with-lease", "origin", branch_name], env_file=env_file)
+                            if force_res.returncode != 0:
+                                _log(f"      [!] Force-push also failed:\n{force_res.stderr}")
+                                return False
+                        else:
+                            _log(f"      [!] Failed to push task branch {branch_name} to origin:\n{push_res.stderr}")
+                            return False
+                else:
+                    # Commit and push on the host
+                    subprocess.run(["git", "add", "-A"], cwd=tmpdir, check=True)
+                    status = subprocess.run(["git", "status", "--porcelain"], cwd=tmpdir, capture_output=True, text=True)
+                    if status.stdout.strip():
+                        subprocess.run(["git", "commit", "--no-verify", "-m", commit_msg], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL)
+                    else:
+                        _log(f"      [Verification] No changes to commit for {full_task_id}.")
+                    push_res = subprocess.run(["git", "push", "origin", branch_name], cwd=tmpdir, capture_output=True, text=True)
+                    if push_res.returncode != 0:
+                        if "non-fast-forward" in push_res.stderr or "[rejected]" in push_res.stderr:
+                            _log(f"      [!] Push rejected (branch exists from prior run); force-pushing verified branch.")
+                            force_res = subprocess.run(["git", "push", "--force-with-lease", "origin", branch_name], cwd=tmpdir, capture_output=True, text=True)
+                            if force_res.returncode != 0:
+                                _log(f"      [!] Force-push also failed:\n{force_res.stderr}")
+                                return False
+                        else:
+                            _log(f"      [!] Failed to push task branch {branch_name} to origin:\n{push_res.stderr}")
+                            return False
 
                 if dashboard:
                     dashboard.set_agent(full_task_id, "Verify", "done", "Presubmit passed")
@@ -846,13 +1051,12 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
 
             _log(f"      [Verification] Presubmit failed.")
             if attempt < max_retries:
-                 # Feed the failure back to the review agent
-                 failure_ctx = dict(context)
-                 failure_ctx["task_details"] += f"\n\n### PRESUBMIT FAILURE (Attempt {attempt})\nThe presubmit script failed with the following output. Please fix the code.\n\n```\n{presubmit_res.stdout}\n{presubmit_res.stderr}\n```\n"
-                 if dashboard:
-                     dashboard.set_agent(full_task_id, "Review", "running", f"Retry after presubmit failure")
-                 if not run_agent("Review (Retry)", "review_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=full_task_id, model=model, agent_pool=agent_pool):
-                     return False
+                failure_ctx = dict(context)
+                failure_ctx["task_details"] += f"\n\n### PRESUBMIT FAILURE (Attempt {attempt})\nThe presubmit script failed with the following output. Please fix the code.\n\n```\n{presubmit_res.stdout}\n{presubmit_res.stderr}\n```\n"
+                if dashboard:
+                    dashboard.set_agent(full_task_id, "Review", "running", f"Retry after presubmit failure")
+                if not run_agent("Review (Retry)", "review_task.md", failure_ctx, cwd, **_run_agent_kwargs):
+                    return False
 
         _log(f"   -> [!] Task {full_task_id} failed presubmit {max_retries} times. Aborting task.")
         if dashboard:
@@ -860,9 +1064,18 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
         return False
 
     finally:
+        # Release pre-acquired impl agent if it was never consumed by run_agent
+        # (e.g. early failure before Implementation step ran).
+        if _pre_acquired_impl_agent is not None and agent_pool is not None:
+            agent_pool.release(_pre_acquired_impl_agent)
+
+        # Always stop the docker container (best-effort).
+        if _container_name:
+            _stop_task_container(_container_name, _log)
+
         # Reclaim ownership of files written by alternate-user agents so they
-        # can be deleted (or inspected) by the current user.
-        if tmpdir:
+        # can be deleted (or inspected) by the current user (host path only).
+        if tmpdir and not _container_name:
             _reclaim_dir_ownership(tmpdir, _log)
 
         if success or (cleanup and tmpdir):
@@ -989,7 +1202,7 @@ def _commit_state_in_clone(tmpdir: str, workflow_state: Optional[Dict], _log: An
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, workflow_state: Optional[Dict] = None, agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False) -> bool:
+def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, workflow_state: Optional[Dict] = None, agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False, docker_config: Optional[Any] = None) -> bool:
     """Squash-merge a task branch into ``dev`` via a temporary clone and verify.
 
     Steps performed:
@@ -1050,20 +1263,32 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
 
     # We clone into a new tmpdir to avoid messing with the developer's main working tree
     tmpdir = ""
+    _container_name = ""
     push_succeeded = False
     try:
         tmpdir = tempfile.mkdtemp(prefix=f"merge_{safe_name_part}_")
         os.chmod(tmpdir, 0o755)  # Allow other OS users to traverse (needed for sudo -u <user>)
 
         _log(f"\n   => [Merge] Attempting to squash merge {task_id} into dev...")
-        _log(f"      Cloning repository to {tmpdir}...")
-        
-        # Clone from remote_url (GitHub/GitLab) if provided, otherwise fall back to root_dir
-        clone_src = remote_url or root_dir
-        subprocess.run(["git", "clone", clone_src, tmpdir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        subprocess.run(["git", "checkout", dev_branch], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        clone_src = remote_url or root_dir
+        env_file = ""
+        if docker_config:
+            env_file = _write_container_env_file(tmpdir)
+            import uuid as _uuid
+            _container_name = f"merge_{safe_name_part}_{_uuid.uuid4().hex[:8]}"
+            _start_task_container(_container_name, docker_config, env_file, _log)
+            _log(f"      Cloning repository into container...")
+            _docker_exec(_container_name, ["git", "clone", clone_src, "/workspace"], env_file=env_file, check=True, log=_log)
+            _docker_exec(_container_name, ["git", "-C", "/workspace", "submodule", "update", "--init", "--recursive"], env_file=env_file, log=_log)
+            _docker_exec(_container_name, ["git", "-C", "/workspace", "checkout", dev_branch], env_file=env_file, check=True, log=_log)
+            cwd = "/workspace"
+        else:
+            _log(f"      Cloning repository to {tmpdir}...")
+            subprocess.run(["git", "clone", clone_src, tmpdir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "checkout", dev_branch], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cwd = tmpdir
 
         context = {
             "phase_filename": phase_part,
@@ -1071,36 +1296,40 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
             "branches_list": branch_name,
             "description_ctx": get_project_context()
         }
-        
+
+        # Helper: run a git command either on the host or inside the container.
+        def _git(cmd: List[str], *, capture: bool = True, check: bool = False) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+            if _container_name:
+                return _docker_exec(_container_name, cmd, env_file=env_file, capture=capture, check=check, log=_log)
+            kw: Dict[str, Any] = {"capture_output": True, "text": True} if capture else {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+            return subprocess.run(cmd, cwd=tmpdir, check=check, **kw)
+
         # 1. Verification Loop for Merge
         for attempt in range(1, max_retries + 1):
             failure_output = ""
             if attempt == 1:
                 # First attempt: Try a squash merge via git CLI
                 _log(f"      [Merge] Attempting squash merge (Attempt 1/{max_retries})...")
-                # Checkout branch to fetch it into the clone
-                subprocess.run(["git", "fetch", "origin", branch_name], cwd=tmpdir, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                
-                # Perform squash merge
-                merge_res = subprocess.run(["git", "merge", "--squash", f"origin/{branch_name}"], cwd=tmpdir, capture_output=True, text=True)
-                
+                _git(["git", "fetch", "origin", branch_name], capture=False)
+
+                merge_res = _git(["git", "merge", "--squash", f"origin/{branch_name}"])
+
                 if merge_res.returncode == 0:
-                    # Check if there are actually changes to commit
-                    status = subprocess.run(["git", "status", "--porcelain"], cwd=tmpdir, capture_output=True, text=True)
+                    status = _git(["git", "status", "--porcelain"])
                     if status.stdout.strip():
-                        # Squash merge staged the changes, now commit them
-                        subprocess.run(["git", "commit", "--no-verify", "-m", commit_msg], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL)
+                        _git(["git", "commit", "--no-verify", "-m", commit_msg], check=True)
                     else:
                         _log(f"      [Merge] No changes to squash merge for {task_id}.")
-                    
+
                     _log(f"      [Merge] Squash successful. Verifying with presubmit...")
                     cmd_list = presubmit_cmd.split()
-                    presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True, start_new_session=True)
-                    
+                    presubmit_res = _git(cmd_list)
+
                     if presubmit_res.returncode == 0:
                         _log(f"      [Merge] Presubmit passed! Pushing to origin.")
-                        _commit_state_in_clone(tmpdir, workflow_state, _log)
-                        res = subprocess.run(["git", "push", "--force-with-lease", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
+                        if not _container_name:
+                            _commit_state_in_clone(tmpdir, workflow_state, _log)
+                        res = _git(["git", "push", "--force-with-lease", "origin", dev_branch])
                         if res.returncode != 0:
                             _log(f"      [!] Failed to push merge to origin:\n{res.stderr}")
                             return False
@@ -1111,33 +1340,29 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                         failure_output = f"{presubmit_res.stdout}\n{presubmit_res.stderr}"
                 else:
                     _log(f"      [Merge] Squash merge failed (conflicts). Attempting rebase...")
-                    # Clean up failed squash merge state before rebasing
-                    subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    
-                    # Let's try to rebase the task branch onto the current dev to help resolve conflicts
-                    rebase_res = subprocess.run(["git", "rebase", dev_branch, f"origin/{branch_name}"], cwd=tmpdir, capture_output=True, text=True)
+                    _git(["git", "reset", "--hard", "HEAD"], capture=False)
+
+                    rebase_res = _git(["git", "rebase", dev_branch, f"origin/{branch_name}"])
                     if rebase_res.returncode == 0:
                         _log(f"      [Merge] Rebase successful. Retrying squash merge...")
-                        # Now that we rebased origin/{branch_name} locally, let's try to squash it into dev
-                        new_task_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmpdir, capture_output=True, text=True).stdout.strip()
-                        subprocess.run(["git", "checkout", dev_branch], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        new_task_head = _git(["git", "rev-parse", "HEAD"]).stdout.strip()
+                        _git(["git", "checkout", dev_branch], capture=False)
 
-                        # Try squash again from the newly rebased head
-                        merge_res = subprocess.run(["git", "merge", "--squash", new_task_head], cwd=tmpdir, capture_output=True, text=True)
+                        merge_res = _git(["git", "merge", "--squash", new_task_head])
                         if merge_res.returncode == 0:
-                            # Check if there are actually changes to commit
-                            status = subprocess.run(["git", "status", "--porcelain"], cwd=tmpdir, capture_output=True, text=True)
+                            status = _git(["git", "status", "--porcelain"])
                             if status.stdout.strip():
-                                subprocess.run(["git", "commit", "--no-verify", "-m", commit_msg], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL)
+                                _git(["git", "commit", "--no-verify", "-m", commit_msg], check=True)
                             else:
                                 _log(f"      [Merge] No changes to squash merge after rebase for {task_id}.")
 
                             cmd_list = presubmit_cmd.split()
-                            presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True, start_new_session=True)
+                            presubmit_res = _git(cmd_list)
                             if presubmit_res.returncode == 0:
                                 _log(f"      [Merge] Presubmit passed after rebase + squash! Pushing to origin.")
-                                _commit_state_in_clone(tmpdir, workflow_state, _log)
-                                res = subprocess.run(["git", "push", "--force-with-lease", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
+                                if not _container_name:
+                                    _commit_state_in_clone(tmpdir, workflow_state, _log)
+                                res = _git(["git", "push", "--force-with-lease", "origin", dev_branch])
                                 if res.returncode != 0:
                                     _log(f"      [!] Failed to push merge to origin:\n{res.stderr}")
                                     return False
@@ -1151,55 +1376,57 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
                             failure_output = f"{merge_res.stdout}\n{merge_res.stderr}"
                     else:
                         _log(f"      [Merge] Rebase failed to apply cleanly. Aborting rebase.")
-                        subprocess.run(["git", "rebase", "--abort"], cwd=tmpdir, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        # Ensure we are back on dev
-                        subprocess.run(["git", "checkout", dev_branch], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        _git(["git", "rebase", "--abort"], capture=False)
+                        _git(["git", "checkout", dev_branch], capture=False)
                         failure_output = f"{rebase_res.stdout}\n{rebase_res.stderr}"
             else:
                 # Merge Agent Attempt
                 _log(f"      [Merge] Spawning Merge Agent to resolve conflicts (Attempt {attempt}/{max_retries})...")
-                
-                # Reset to clean dev before the agent tries
-                subprocess.run(["git", "reset", "--hard", f"origin/{dev_branch}"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run(["git", "clean", "-fd"], cwd=tmpdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                
+
+                _git(["git", "reset", "--hard", f"origin/{dev_branch}"], capture=False)
+                _git(["git", "clean", "-fd"], capture=False)
+
                 failure_ctx = dict(context)
                 failure_ctx["description_ctx"] += f"\n\n### PREVIOUS ATTEMPT FAILURE\nThe previous squash merge or presubmit failed with:\n```\n{failure_output}\n```\n"
                 failure_ctx["description_ctx"] += f"\nPlease resolve the conflicts and ensure the final state is a single commit on the {dev_branch} branch with the message: {commit_msg}"
-                
-                if not run_agent("Merge", "merge_task.md", failure_ctx, tmpdir, backend, dashboard=dashboard, task_id=task_id, model=model, agent_pool=agent_pool):
+
+                if not run_agent("Merge", "merge_task.md", failure_ctx, cwd, backend, dashboard=dashboard, task_id=task_id, model=model, agent_pool=agent_pool, container_name=_container_name, container_env_file=env_file):
                     _log(f"      [!] Merge agent failed to cleanly exit.")
                     continue
 
-                _reclaim_dir_ownership(tmpdir, _log)
+                if not _container_name:
+                    _reclaim_dir_ownership(tmpdir, _log)
 
-                # The agent claims it's done. Let's verify.
                 _log(f"      [Merge] Verifying agent's merge...")
                 cmd_list = presubmit_cmd.split()
-                presubmit_res = subprocess.run(cmd_list, cwd=tmpdir, capture_output=True, text=True, start_new_session=True)
-                
+                presubmit_res = _git(cmd_list)
+
                 if presubmit_res.returncode == 0:
-                     _log(f"      [Merge] Presubmit passed! Pushing to origin.")
-                     _commit_state_in_clone(tmpdir, workflow_state, _log)
-                     res = subprocess.run(["git", "push", "--force-with-lease", "origin", dev_branch], cwd=tmpdir, capture_output=True, text=True)
-                     if res.returncode != 0:
-                         _log(f"      [!] Failed to push merge to origin:\n{res.stderr}")
-                         return False
-                     push_succeeded = True
-                     return True
+                    _log(f"      [Merge] Presubmit passed! Pushing to origin.")
+                    if not _container_name:
+                        _commit_state_in_clone(tmpdir, workflow_state, _log)
+                    res = _git(["git", "push", "--force-with-lease", "origin", dev_branch])
+                    if res.returncode != 0:
+                        _log(f"      [!] Failed to push merge to origin:\n{res.stderr}")
+                        return False
+                    push_succeeded = True
+                    return True
                 else:
-                     failure_output = f"{presubmit_res.stdout}\n{presubmit_res.stderr}"
-                     _log(f"      [Merge] Presubmit failed after agent merge.")
-                     
+                    failure_output = f"{presubmit_res.stdout}\n{presubmit_res.stderr}"
+                    _log(f"      [Merge] Presubmit failed after agent merge.")
+
         _log(f"   -> [!] Failed to merge {task_id} after {max_retries} attempts.")
         return False
-        
+
     finally:
+        if _container_name:
+            _stop_task_container(_container_name, _log)
+
         if push_succeeded and serena and cache_lock is not None:
             rebuild_serena_cache(tmpdir, root_dir, cache_lock, dashboard=dashboard)
-        
-        # Reclaim ownership before cleanup (or investigation)
-        if tmpdir:
+
+        # Reclaim ownership before cleanup (host path only)
+        if tmpdir and not _container_name:
             _reclaim_dir_ownership(tmpdir, _log)
 
         if push_succeeded or (cleanup and tmpdir):
@@ -1359,6 +1586,8 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
     except (RuntimeError, subprocess.CalledProcessError, OSError):
         remote_url = None
 
+    docker_config = get_docker_config()
+
     if serena_enabled:
         # Ensure .mcp.json exists at project root (copy from template if missing)
         mcp_dst = os.path.join(root_dir, ".mcp.json")
@@ -1409,7 +1638,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                 with state_lock:
                     active_tasks.add(task_id)
 
-                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, agent_pool=agent_pool, cleanup=cleanup)
+                future = executor.submit(process_task, root_dir, task_id, presubmit_cmd, backend, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, agent_pool=agent_pool, cleanup=cleanup, docker_config=docker_config)
                 future_to_task[future] = task_id
 
             # If no tasks are running and (none are ready or shutdown requested), we are done/deadlocked
@@ -1461,7 +1690,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                             }
 
                         # Trigger DAG Merge Workflow immediately
-                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, workflow_state=pending_state, agent_pool=agent_pool, cleanup=cleanup):
+                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, workflow_state=pending_state, agent_pool=agent_pool, cleanup=cleanup, docker_config=docker_config):
                             dashboard.set_agent(task_id, "Merge", "done", "Merged successfully")
                             with state_lock:
                                 state["completed_tasks"].append(task_id)

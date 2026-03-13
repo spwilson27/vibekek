@@ -38,6 +38,44 @@ QUOTA_PATTERNS: List[str] = [
 
 
 @dataclass
+class DockerCopyFile:
+    """A single file to make available inside a Docker container.
+
+    :param src: Absolute path on the host filesystem.
+    :param dest: Absolute path inside the container where the file will appear
+        (mounted read-only).
+    """
+
+    src: str
+    dest: str
+
+
+@dataclass
+class DockerConfig:
+    """Global Docker container configuration for the workflow.
+
+    When set at the top level of ``.workflow.jsonc``, all workflow steps
+    (implementation, review, presubmit, commit, merge) run inside a Docker
+    container.  The container is started once per task, git-clones the repo
+    from the pivot remote, and pushes changes back after validation.
+
+    :param image: Docker image name (e.g. ``"ubuntu:24.04"``).
+    :param pivot_remote: Git remote name to clone from and push to inside the
+        container.  Defaults to ``"origin"``.
+    :param volumes: List of bind-mount strings in standard Docker format
+        (``"src:dest"`` or ``"src:dest:options"``).
+    :param copy_files: Individual files to make available inside the container.
+        Each entry specifies a host ``src`` path and a container ``dest`` path.
+        Files are always mounted read-only.
+    """
+
+    image: str
+    pivot_remote: str = "origin"
+    volumes: List[str] = field(default_factory=list)
+    copy_files: List[DockerCopyFile] = field(default_factory=list)
+
+
+@dataclass
 class AgentConfig:
     """Configuration for a single named agent pool entry.
 
@@ -63,6 +101,7 @@ class AgentConfig:
     model: Optional[str] = None
     steps: List[str] = field(default_factory=lambda: ["all"])
     cargo_target_dir: Optional[str] = None
+    docker_config: Optional[DockerConfig] = None
 
 
 class AgentPoolManager:

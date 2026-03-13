@@ -121,9 +121,16 @@ class AIRunner:
     Subclasses must implement :meth:`run`.
     """
 
-    def __init__(self, model: Optional[str] = None, user: Optional[str] = None) -> None:
+    def __init__(self, model: Optional[str] = None, user: Optional[str] = None, container_name: Optional[str] = None) -> None:
         self.model = model
         self.user = user
+        # When set, all AI CLI commands are wrapped with ``docker exec`` into
+        # this already-running container.  The container lifecycle (start/stop)
+        # is managed by the caller (executor.py), not by the runner.
+        self.container_name: Optional[str] = container_name
+        # Path to the env-file on the host, passed to ``docker exec --env-file``.
+        # Set by the caller after construction via ``runner._container_env_file``.
+        self._container_env_file: str = ""
 
     def _env(self) -> Dict[str, str]:
         """Return the environment dict to pass to subprocesses.
@@ -140,16 +147,47 @@ class AIRunner:
         command is run as that user via a login shell so that their full
         environment (API keys, CLI settings, etc.) is initialised.
 
+        Not called when :attr:`container_name` is set — docker provides
+        isolation instead.
+
         :param cmd: Original command list.
         :returns: Command list, possibly prefixed with ``sudo su``.
         """
+        if self.container_name:
+            return cmd
         if self.user and self.user != os.getenv("USER", ""):
             path = os.environ.get("PATH", "")
             return ["sudo", "-H", "-u", self.user, "--", "bash", "-l", "-c", f"PATH={shlex.quote(path)} {shlex.join(cmd)}"]
         return cmd
 
+    def _build_exec_cmd(self, cmd: List[str]) -> List[str]:
+        """Wrap *cmd* with ``docker exec`` when :attr:`container_name` is set.
+
+        When :attr:`container_name` is set, the command is routed into the
+        already-running container via ``docker exec -i --workdir /workspace``.
+        The :attr:`_container_env_file` path (written by the executor) is
+        passed as ``--env-file`` so the AI CLI receives the necessary
+        environment variables.
+
+        When :attr:`container_name` is not set, *cmd* is returned unchanged.
+
+        :param cmd: Original command list.
+        :returns: ``["docker", "exec", "-i", "--workdir", "/workspace",
+            "--env-file", env_file, container_name] + cmd``, or *cmd* unchanged.
+        """
+        if not self.container_name:
+            return cmd
+        exec_cmd = [
+            "docker", "exec", "-i",
+            "--workdir", "/workspace",
+        ]
+        if self._container_env_file:
+            exec_cmd += ["--env-file", self._container_env_file]
+        exec_cmd += [self.container_name]
+        return exec_cmd + cmd
+
     def _kill_process(self, proc: subprocess.Popen) -> None:  # type: ignore[type-arg]
-        """Kill a timed-out process.  Subclasses may override for graceful shutdown."""
+        """Kill a timed-out or aborted process."""
         proc.kill()
         proc.wait()
 
@@ -184,93 +222,102 @@ class AIRunner:
         :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
         """
         use_stdin = bool(prompt)
-        proc = subprocess.Popen(
-            self._wrap_cmd(cmd),
-            stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            cwd=cwd,
-            env=self._env(),
-            start_new_session=True,
-        )
-        stdout_lines: List[str] = []
-        stderr_lines: List[str] = []
+        actual_cmd = self._build_exec_cmd(self._wrap_cmd(cmd))
+        # When routing through docker exec, --workdir inside the container handles
+        # the working directory; the host cwd for the docker subprocess is irrelevant
+        # and must be a valid host path (cwd may be an in-container path like /workspace).
+        popen_cwd = None if self.container_name else cwd
 
-        if use_stdin:
-            assert proc.stdin is not None
-            proc.stdin.write(prompt)
-            proc.stdin.close()
-
-        def _read_stdout() -> None:
-            assert proc.stdout is not None
-            while True:
-                line = proc.stdout.readline()
-                if not line:
-                    break
-                stripped = line.rstrip("\n")
-                stdout_lines.append(stripped)
-                if stripped.strip():
-                    on_line(stripped)
-                if abort_event and abort_event.is_set():
-                    break
-
-        def _read_stderr() -> None:
-            assert proc.stderr is not None
-            while True:
-                line = proc.stderr.readline()
-                if not line:
-                    break
-                stripped = line.rstrip("\n")
-                stderr_lines.append(stripped)
-                if stripped.strip():
-                    on_line(f"[stderr] {stripped}")
-                if abort_event and abort_event.is_set():
-                    break
-
-        reader = threading.Thread(target=_read_stdout, daemon=True)
-        stderr_reader = threading.Thread(target=_read_stderr, daemon=True)
-        reader.start()
-        stderr_reader.start()
-
-        deadline = time.monotonic() + (timeout if timeout is not None else float("inf"))
-        aborted = False
         try:
-            while reader.is_alive():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self._kill_process(proc)
-                    stderr_reader.join(timeout=5.0)
-                    raise subprocess.TimeoutExpired(cmd, timeout or 0)
-                if abort_event and abort_event.is_set():
-                    self._kill_process(proc)
-                    stderr_reader.join(timeout=5.0)
-                    aborted = True
-                    break
-                reader.join(timeout=min(remaining, 1.0))
-        except KeyboardInterrupt:
-            # Let the subprocess finish naturally; the orchestrator's SIGINT
-            # handler has already flagged a graceful shutdown.
-            reader.join()
+            proc = subprocess.Popen(
+                actual_cmd,
+                stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                cwd=popen_cwd,
+                env=self._env(),
+                start_new_session=True,
+            )
+            stdout_lines: List[str] = []
+            stderr_lines: List[str] = []
 
-        # abort_event may have been set while reader.join() was blocking —
-        # the reader exits cleanly but the process is still running.
-        if not aborted and abort_event and abort_event.is_set():
-            self._kill_process(proc)
-            stderr_reader.join(timeout=5.0)
-            aborted = True
+            if use_stdin:
+                assert proc.stdin is not None
+                proc.stdin.write(prompt)
+                proc.stdin.close()
 
-        if not aborted:
-            stderr_reader.join()
-        proc.wait()
+            def _read_stdout() -> None:
+                assert proc.stdout is not None
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    stripped = line.rstrip("\n")
+                    stdout_lines.append(stripped)
+                    if stripped.strip():
+                        on_line(stripped)
+                    if abort_event and abort_event.is_set():
+                        break
 
-        return subprocess.CompletedProcess(
-            args=cmd,
-            returncode=proc.returncode,
-            stdout="\n".join(stdout_lines),
-            stderr="\n".join(stderr_lines),
-        )
+            def _read_stderr() -> None:
+                assert proc.stderr is not None
+                while True:
+                    line = proc.stderr.readline()
+                    if not line:
+                        break
+                    stripped = line.rstrip("\n")
+                    stderr_lines.append(stripped)
+                    if stripped.strip():
+                        on_line(f"[stderr] {stripped}")
+                    if abort_event and abort_event.is_set():
+                        break
+
+            reader = threading.Thread(target=_read_stdout, daemon=True)
+            stderr_reader = threading.Thread(target=_read_stderr, daemon=True)
+            reader.start()
+            stderr_reader.start()
+
+            deadline = time.monotonic() + (timeout if timeout is not None else float("inf"))
+            aborted = False
+            try:
+                while reader.is_alive():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._kill_process(proc)
+                        stderr_reader.join(timeout=5.0)
+                        raise subprocess.TimeoutExpired(cmd, timeout or 0)
+                    if abort_event and abort_event.is_set():
+                        self._kill_process(proc)
+                        stderr_reader.join(timeout=5.0)
+                        aborted = True
+                        break
+                    reader.join(timeout=min(remaining, 1.0))
+            except KeyboardInterrupt:
+                # Let the subprocess finish naturally; the orchestrator's SIGINT
+                # handler has already flagged a graceful shutdown.
+                reader.join()
+
+            # abort_event may have been set while reader.join() was blocking —
+            # the reader exits cleanly but the process is still running.
+            if not aborted and abort_event and abort_event.is_set():
+                self._kill_process(proc)
+                stderr_reader.join(timeout=5.0)
+                aborted = True
+
+            if not aborted:
+                stderr_reader.join()
+            proc.wait()
+
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=proc.returncode,
+                stdout="\n".join(stdout_lines),
+                stderr="\n".join(stderr_lines),
+            )
+        finally:
+            pass
 
     def _run_streaming_json(
         self,
@@ -294,146 +341,153 @@ class AIRunner:
         :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
         """
         use_stdin = bool(prompt)
-        proc = subprocess.Popen(
-            self._wrap_cmd(cmd),
-            stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            cwd=cwd,
-            env=self._env(),
-            start_new_session=True,
-        )
-        result_text: List[str] = []
 
-        if use_stdin:
-            assert proc.stdin is not None
-            proc.stdin.write(prompt)
-            proc.stdin.close()
+        actual_cmd = self._build_exec_cmd(self._wrap_cmd(cmd))
+        popen_cwd = None if self.container_name else cwd
 
-        def _read_stdout() -> None:
-            assert proc.stdout is not None
-            import json as _json
-            # Buffer for accumulating streaming token deltas into lines.
-            # ``has_deltas`` is set once we see any stream_event and never
-            # cleared — it tells us the CLI is sending partial messages so
-            # the final ``assistant`` and ``result`` messages are duplicates.
-            token_buf = ""
-            has_deltas = False
-            while True:
-                raw_line = proc.stdout.readline()
-                if not raw_line:
-                    break
-                parsed = parse_stream_json_line(raw_line)
-                if parsed is None:
-                    continue
+        try:
+            proc = subprocess.Popen(
+                actual_cmd,
+                stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                cwd=popen_cwd,
+                env=self._env(),
+                start_new_session=True,
+            )
+            result_text: List[str] = []
 
-                # Determine message type from the raw JSON
-                stripped = raw_line.strip()
-                try:
-                    obj = _json.loads(stripped)
-                except _json.JSONDecodeError:
-                    obj = {}
-                msg_type = obj.get("type")
+            if use_stdin:
+                assert proc.stdin is not None
+                proc.stdin.write(prompt)
+                proc.stdin.close()
 
-                if msg_type == "stream_event":
-                    has_deltas = True
-                    token_buf += parsed
-                    # Emit complete lines from the buffer
-                    while "\n" in token_buf:
-                        line, token_buf = token_buf.split("\n", 1)
-                        if line.strip():
-                            result_text.append(line)
-                            on_line(line)
-                elif msg_type == "assistant":
-                    # Flush any remaining token buffer
-                    if token_buf.strip():
-                        result_text.append(token_buf.strip())
-                        on_line(token_buf.strip())
-                    token_buf = ""
-                    if has_deltas:
-                        # Already streamed via deltas — skip duplicate
+            def _read_stdout() -> None:
+                assert proc.stdout is not None
+                import json as _json
+                # Buffer for accumulating streaming token deltas into lines.
+                # ``has_deltas`` is set once we see any stream_event and never
+                # cleared — it tells us the CLI is sending partial messages so
+                # the final ``assistant`` and ``result`` messages are duplicates.
+                token_buf = ""
+                has_deltas = False
+                while True:
+                    raw_line = proc.stdout.readline()
+                    if not raw_line:
+                        break
+                    parsed = parse_stream_json_line(raw_line)
+                    if parsed is None:
                         continue
-                    result_text.append(parsed)
-                    for sub in parsed.splitlines():
-                        if sub.strip():
-                            on_line(sub)
-                elif msg_type == "result":
-                    result_text.append(parsed)
-                    if not has_deltas:
+
+                    # Determine message type from the raw JSON
+                    stripped = raw_line.strip()
+                    try:
+                        obj = _json.loads(stripped)
+                    except _json.JSONDecodeError:
+                        obj = {}
+                    msg_type = obj.get("type")
+
+                    if msg_type == "stream_event":
+                        has_deltas = True
+                        token_buf += parsed
+                        # Emit complete lines from the buffer
+                        while "\n" in token_buf:
+                            line, token_buf = token_buf.split("\n", 1)
+                            if line.strip():
+                                result_text.append(line)
+                                on_line(line)
+                    elif msg_type == "assistant":
+                        # Flush any remaining token buffer
+                        if token_buf.strip():
+                            result_text.append(token_buf.strip())
+                            on_line(token_buf.strip())
+                        token_buf = ""
+                        if has_deltas:
+                            # Already streamed via deltas — skip duplicate
+                            continue
+                        result_text.append(parsed)
                         for sub in parsed.splitlines():
                             if sub.strip():
                                 on_line(sub)
-                else:
-                    # user messages (tool results), etc.
-                    result_text.append(parsed)
-                    for sub in parsed.splitlines():
-                        if sub.strip():
-                            on_line(sub)
-                if abort_event and abort_event.is_set():
-                    break
+                    elif msg_type == "result":
+                        result_text.append(parsed)
+                        if not has_deltas:
+                            for sub in parsed.splitlines():
+                                if sub.strip():
+                                    on_line(sub)
+                    else:
+                        # user messages (tool results), etc.
+                        result_text.append(parsed)
+                        for sub in parsed.splitlines():
+                            if sub.strip():
+                                on_line(sub)
+                    if abort_event and abort_event.is_set():
+                        break
 
-            # Flush any trailing token buffer
-            if token_buf.strip():
-                result_text.append(token_buf.strip())
-                on_line(token_buf.strip())
+                # Flush any trailing token buffer
+                if token_buf.strip():
+                    result_text.append(token_buf.strip())
+                    on_line(token_buf.strip())
 
-        stderr_lines: List[str] = []
+            stderr_lines: List[str] = []
 
-        def _read_stderr() -> None:
-            assert proc.stderr is not None
-            while True:
-                line = proc.stderr.readline()
-                if not line:
-                    break
-                stripped = line.rstrip("\n")
-                stderr_lines.append(stripped)
-                if stripped.strip():
-                    on_line(f"[stderr] {stripped}")
-                if abort_event and abort_event.is_set():
-                    break
+            def _read_stderr() -> None:
+                assert proc.stderr is not None
+                while True:
+                    line = proc.stderr.readline()
+                    if not line:
+                        break
+                    stripped = line.rstrip("\n")
+                    stderr_lines.append(stripped)
+                    if stripped.strip():
+                        on_line(f"[stderr] {stripped}")
+                    if abort_event and abort_event.is_set():
+                        break
 
-        reader = threading.Thread(target=_read_stdout, daemon=True)
-        stderr_reader = threading.Thread(target=_read_stderr, daemon=True)
-        reader.start()
-        stderr_reader.start()
+            reader = threading.Thread(target=_read_stdout, daemon=True)
+            stderr_reader = threading.Thread(target=_read_stderr, daemon=True)
+            reader.start()
+            stderr_reader.start()
 
-        deadline = time.monotonic() + (timeout if timeout is not None else float("inf"))
-        aborted = False
-        try:
-            while reader.is_alive():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self._kill_process(proc)
-                    stderr_reader.join(timeout=5.0)
-                    raise subprocess.TimeoutExpired(cmd, timeout or 0)
-                if abort_event and abort_event.is_set():
-                    self._kill_process(proc)
-                    stderr_reader.join(timeout=5.0)
-                    aborted = True
-                    break
-                reader.join(timeout=min(remaining, 1.0))
-        except KeyboardInterrupt:
-            reader.join()
+            deadline = time.monotonic() + (timeout if timeout is not None else float("inf"))
+            aborted = False
+            try:
+                while reader.is_alive():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._kill_process(proc)
+                        stderr_reader.join(timeout=5.0)
+                        raise subprocess.TimeoutExpired(cmd, timeout or 0)
+                    if abort_event and abort_event.is_set():
+                        self._kill_process(proc)
+                        stderr_reader.join(timeout=5.0)
+                        aborted = True
+                        break
+                    reader.join(timeout=min(remaining, 1.0))
+            except KeyboardInterrupt:
+                reader.join()
 
-        # abort_event may have been set while reader.join() was blocking —
-        # the reader exits cleanly but the process is still running.
-        if not aborted and abort_event and abort_event.is_set():
-            self._kill_process(proc)
-            stderr_reader.join(timeout=5.0)
-            aborted = True
+            # abort_event may have been set while reader.join() was blocking —
+            # the reader exits cleanly but the process is still running.
+            if not aborted and abort_event and abort_event.is_set():
+                self._kill_process(proc)
+                stderr_reader.join(timeout=5.0)
+                aborted = True
 
-        if not aborted:
-            stderr_reader.join()
-        proc.wait()
+            if not aborted:
+                stderr_reader.join()
+            proc.wait()
 
-        return subprocess.CompletedProcess(
-            args=cmd,
-            returncode=proc.returncode,
-            stdout="\n".join(result_text),
-            stderr="\n".join(stderr_lines),
-        )
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=proc.returncode,
+                stdout="\n".join(result_text),
+                stderr="\n".join(stderr_lines),
+            )
+        finally:
+            pass
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
         """Return the CLI command list (without prompt). Subclasses must override."""
@@ -477,8 +531,8 @@ class SessionResumableRunner(AIRunner):
     DEFAULT_SOFT_TIMEOUT = 480
     RESUME_HARD_TIMEOUT = 120
 
-    def __init__(self, model: Optional[str] = None, soft_timeout: Optional[int] = DEFAULT_SOFT_TIMEOUT, user: Optional[str] = None) -> None:
-        super().__init__(model=model, user=user)
+    def __init__(self, model: Optional[str] = None, soft_timeout: Optional[int] = DEFAULT_SOFT_TIMEOUT, user: Optional[str] = None, container_name: Optional[str] = None) -> None:
+        super().__init__(model=model, user=user, container_name=container_name)
         self.soft_timeout = soft_timeout
 
     def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
@@ -750,7 +804,12 @@ class QwenRunner(SessionResumableRunner):
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
-        cmd = ["qwen", "-y", "--output-format", "stream-json", "--include-partial-messages", "--chat-recording"]
+        cmd = ["qwen", "-y", "--output-format", "stream-json", "--include-partial-messages"]
+        # Only enable chat recording when using a session ID (soft-timeout path).
+        # Without a session ID, --chat-recording may cause qwen to enter a
+        # persistent interactive-chat mode that drifts away from the task.
+        if session_id:
+            cmd.append("--chat-recording")
         if self.model:
             cmd += ["-m", self.model]
         if session_id:
@@ -795,8 +854,14 @@ class QwenRunner(SessionResumableRunner):
         timeout: Optional[int] = None,
         abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
-        """Override to use JSONL-parsing streaming instead of plain text."""
-        return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=prompt, abort_event=abort_event)
+        """Override to use JSONL-parsing streaming with prompt as positional arg.
+
+        Passing *prompt* as a positional argument (rather than via stdin)
+        triggers qwen's one-shot task mode.  Piping via stdin enters
+        interactive chat mode where the model responds conversationally
+        instead of executing the task.
+        """
+        return self._run_streaming_json(cmd + [prompt], cwd, on_line, timeout=timeout, prompt="", abort_event=abort_event)
 
     def run(
         self,
@@ -809,6 +874,11 @@ class QwenRunner(SessionResumableRunner):
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run ``qwen -y --output-format stream-json`` and parse the output.
 
+        The prompt is passed as a positional argument (not via stdin) so that
+        qwen runs in one-shot task mode.  Piping via stdin enters interactive
+        chat mode, causing the model to respond conversationally instead of
+        executing the task.
+
         When *soft_timeout* is configured, the process is spawned with a
         unique ``--session-id``.  If the soft timeout elapses before it
         finishes, the session is interrupted and resumed with a "wrap up"
@@ -820,12 +890,16 @@ class QwenRunner(SessionResumableRunner):
         cmd = self.get_cmd(image_paths, session_id=session_id)
 
         if on_line is not None and self.soft_timeout and session_id:
+            # When container_name is set, the container is already running
+            # (started by executor.py for the full task lifetime), so session
+            # files written during the initial run survive the soft-timeout
+            # interrupt and are accessible for the resume run.
             return self._run_with_soft_timeout(cmd, full_prompt, cwd, on_line, session_id, timeout, abort_event=abort_event)
         if on_line is not None:
-            return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=full_prompt, abort_event=abort_event)
+            return self._run_streaming_json(cmd + [full_prompt], cwd, on_line, timeout=timeout, prompt="", abort_event=abort_event)
 
-        # Non-streaming fallback
-        result = subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
+        # Non-streaming fallback: prompt as positional arg, no stdin
+        result = subprocess.run(cmd + [full_prompt], cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
         parsed_lines: List[str] = []
         for line in result.stdout.splitlines():
             parsed = parse_stream_json_line(line)
@@ -937,7 +1011,7 @@ class CopilotRunner(AIRunner):
         raise last_exc if last_exc is not None else RuntimeError("Failed to invoke copilot CLI")
 
 
-def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optional[int] = None, user: Optional[str] = None) -> AIRunner:
+def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optional[int] = None, user: Optional[str] = None, container_name: Optional[str] = None) -> AIRunner:
     """Instantiate the correct AI runner for the given backend name.
 
     :param backend: One of ``"gemini"``, ``"claude"``, ``"copilot"``,
@@ -950,24 +1024,27 @@ def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optiona
     :param user: Optional OS username.  When set (and different from the
         current user), the CLI is prefixed with ``sudo -u <user> --set-home --``
         so that the target user's home-directory config is used.
+    :param container_name: Optional name of an already-running Docker container.
+        When set, all AI CLI commands are routed into the container via
+        ``docker exec``.  The container lifecycle is managed by the caller.
     :returns: An AI runner instance.
     """
     if backend == "claude":
-        return ClaudeRunner(model=model, user=user)
+        return ClaudeRunner(model=model, user=user, container_name=container_name)
     elif backend == "copilot":
-        return CopilotRunner(model=model, user=user)
+        return CopilotRunner(model=model, user=user, container_name=container_name)
     elif backend == "opencode":
-        return OpencodeRunner(model=model, user=user)
+        return OpencodeRunner(model=model, user=user, container_name=container_name)
     elif backend == "cline":
-        return ClineRunner(model=model, user=user)
+        return ClineRunner(model=model, user=user, container_name=container_name)
     elif backend == "aider":
-        return AiderRunner(model=model, user=user)
+        return AiderRunner(model=model, user=user, container_name=container_name)
     elif backend == "codex":
-        return CodexRunner(model=model, user=user)
+        return CodexRunner(model=model, user=user, container_name=container_name)
     elif backend == "qwen":
-        kwargs: Dict[str, Any] = {"model": model, "user": user}
+        kwargs: Dict[str, Any] = {"model": model, "user": user, "container_name": container_name}
         if soft_timeout is not None:
             kwargs["soft_timeout"] = soft_timeout
         return QwenRunner(**kwargs)
     # default: gemini
-    return GeminiRunner(model=model, user=user)
+    return GeminiRunner(model=model, user=user, container_name=container_name)

@@ -50,6 +50,8 @@ You are operating inside of a clean, isolated `git clone` of the repository, che
       - A brief description of what you broke/fixed/added to the **Recent Changelog**.
 
 # CONSTRAINTS
+- **Your task is FULLY SPECIFIED in the Task Requirements section above. All necessary context is provided.**
+- Do NOT read high-level project spec files (e.g., `requirements.md`, `prd.md`, specs). Focus on the existing source code directly relevant to your task.
 - ALWAYS end your turn when your implementation is complete and `./do presubmit` passes.
 - Do NOT commit your code. The orchestrator will handle the git commits.
 - You must write your output using your file editing tools directly. DO NOT output the code into this chat prompt.

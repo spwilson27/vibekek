@@ -1,0 +1,805 @@
+"""Tests for Docker container support (global config, git clone/push lifecycle)."""
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+import subprocess
+import warnings
+import json
+import pytest
+from unittest.mock import patch, MagicMock, call
+
+from workflow_lib.agent_pool import DockerConfig, DockerCopyFile
+from workflow_lib.config import merge_docker_configs
+from workflow_lib.runners import AIRunner, GeminiRunner, QwenRunner, make_runner
+from workflow_lib.executor import (
+    _DOCKER_ENV_SKIP,
+    _docker_exec,
+    _set_cargo_target_dir,
+    _write_container_env_file,
+    _start_task_container,
+    _stop_task_container,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _docker_cfg(image="test-image:latest", volumes=None, copy_files=None, pivot_remote="origin"):
+    return DockerConfig(
+        image=image,
+        pivot_remote=pivot_remote,
+        volumes=volumes or [],
+        copy_files=copy_files or [],
+    )
+
+
+# ---------------------------------------------------------------------------
+# DockerConfig dataclass
+# ---------------------------------------------------------------------------
+
+class TestDockerDataclasses:
+    def test_docker_config_defaults(self):
+        dc = DockerConfig(image="myimage:latest")
+        assert dc.image == "myimage:latest"
+        assert dc.pivot_remote == "origin"
+        assert dc.volumes == []
+        assert dc.copy_files == []
+
+    def test_docker_config_pivot_remote(self):
+        dc = DockerConfig(image="img", pivot_remote="upstream")
+        assert dc.pivot_remote == "upstream"
+
+    def test_docker_copy_file_fields(self):
+        cf = DockerCopyFile(src="/host/file", dest="/container/file")
+        assert cf.src == "/host/file"
+        assert cf.dest == "/container/file"
+
+
+# ---------------------------------------------------------------------------
+# AIRunner._build_exec_cmd
+# ---------------------------------------------------------------------------
+
+class TestBuildExecCmd:
+    def test_no_container_name_returns_cmd_unchanged(self):
+        runner = GeminiRunner()
+        cmd = ["gemini", "--model", "pro"]
+        assert runner._build_exec_cmd(cmd) == cmd
+
+    def test_with_container_name_wraps_with_docker_exec(self):
+        runner = GeminiRunner(container_name="my-ctr")
+        cmd = runner._build_exec_cmd(["gemini", "-y"])
+        assert cmd[:3] == ["docker", "exec", "-i"]
+        assert "--workdir" in cmd
+        assert "/workspace" in cmd
+        assert "my-ctr" in cmd
+        assert cmd[-2:] == ["gemini", "-y"]
+
+    def test_env_file_included_when_set(self):
+        runner = GeminiRunner(container_name="my-ctr")
+        runner._container_env_file = "/tmp/test.env"
+        cmd = runner._build_exec_cmd(["gemini"])
+        assert "--env-file" in cmd
+        assert "/tmp/test.env" in cmd
+
+    def test_no_env_file_when_not_set(self):
+        runner = GeminiRunner(container_name="my-ctr")
+        cmd = runner._build_exec_cmd(["gemini"])
+        assert "--env-file" not in cmd
+
+    def test_original_cmd_appended_at_end(self):
+        runner = GeminiRunner(container_name="ctr")
+        orig = ["qwen", "-y", "--output-format", "stream-json"]
+        result = runner._build_exec_cmd(orig)
+        assert result[-len(orig):] == orig
+
+
+# ---------------------------------------------------------------------------
+# AIRunner._wrap_cmd skips sudo when container_name is set
+# ---------------------------------------------------------------------------
+
+class TestWrapCmdWithDocker:
+    def test_wrap_cmd_skips_sudo_when_container_name_set(self):
+        runner = GeminiRunner(user="otheruser", container_name="my-ctr")
+        cmd = ["gemini", "-y"]
+        assert runner._wrap_cmd(cmd) == cmd  # no sudo wrapping
+
+    def test_wrap_cmd_applies_sudo_when_no_container(self):
+        runner = GeminiRunner(user="otheruser")
+        with patch.dict(os.environ, {"USER": "currentuser"}):
+            cmd = runner._wrap_cmd(["gemini", "-y"])
+        assert "sudo" in cmd
+
+
+# ---------------------------------------------------------------------------
+# make_runner passes container_name
+# ---------------------------------------------------------------------------
+
+class TestMakeRunnerContainerName:
+    def test_make_runner_passes_container_name_gemini(self):
+        runner = make_runner("gemini", container_name="ctr-1")
+        assert runner.container_name == "ctr-1"
+
+    def test_make_runner_passes_container_name_claude(self):
+        runner = make_runner("claude", container_name="ctr-2")
+        assert runner.container_name == "ctr-2"
+
+    def test_make_runner_passes_container_name_qwen(self):
+        runner = make_runner("qwen", container_name="ctr-3")
+        assert runner.container_name == "ctr-3"
+
+    def test_make_runner_no_container_name(self):
+        runner = make_runner("gemini")
+        assert runner.container_name is None
+
+    def test_qwen_soft_timeout_still_enabled_with_container(self):
+        runner = make_runner("qwen", container_name="ctr")
+        assert runner.soft_timeout == QwenRunner.DEFAULT_SOFT_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# _write_container_env_file
+# ---------------------------------------------------------------------------
+
+class TestWriteContainerEnvFile:
+    def test_creates_file(self, tmp_path):
+        path = _write_container_env_file(str(tmp_path))
+        assert os.path.exists(path)
+
+    def test_contains_env_vars(self, tmp_path):
+        with patch.dict(os.environ, {"MY_TEST_VAR": "hello_world"}, clear=False):
+            path = _write_container_env_file(str(tmp_path))
+        with open(path) as f:
+            content = f.read()
+        assert "MY_TEST_VAR=hello_world" in content
+
+    def test_skips_identity_vars(self, tmp_path):
+        with patch.dict(os.environ, {
+            "HOME": "/home/mrwilson",
+            "USER": "mrwilson",
+            "LOGNAME": "mrwilson",
+            "SHELL": "/bin/bash",
+            "PWD": "/home/mrwilson/projects",
+            "OLDPWD": "/tmp",
+        }, clear=False):
+            path = _write_container_env_file(str(tmp_path))
+        with open(path) as f:
+            content = f.read()
+        for var in _DOCKER_ENV_SKIP:
+            assert f"{var}=" not in content, f"{var} must not appear in container env-file"
+
+    def test_skips_vars_with_newlines_in_value(self, tmp_path):
+        with patch.dict(os.environ, {"BAD_VAR": "line1\nline2"}, clear=False):
+            path = _write_container_env_file(str(tmp_path))
+        with open(path) as f:
+            content = f.read()
+        assert "BAD_VAR" not in content
+
+
+# ---------------------------------------------------------------------------
+# _start_task_container
+# ---------------------------------------------------------------------------
+
+class TestStartTaskContainer:
+    def test_calls_docker_run_d(self, tmp_path):
+        dc = _docker_cfg(image="test-img:latest")
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _start_task_container("ai_test_ctr", dc, env_file, print)
+
+        assert calls, "subprocess.run not called"
+        start_cmd = calls[0]
+        assert "docker" in start_cmd
+        assert "run" in start_cmd
+        assert "-d" in start_cmd
+        assert "--name" in start_cmd
+        assert "ai_test_ctr" in start_cmd
+        assert "test-img:latest" in start_cmd
+        assert "sleep" in start_cmd
+        assert "infinity" in start_cmd
+
+    def test_volumes_added(self, tmp_path):
+        dc = _docker_cfg(volumes=["/data:/data:ro"])
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _start_task_container("ctr", dc, env_file, print)
+
+        start_cmd = calls[0]
+        v_args = [start_cmd[i+1] for i in range(len(start_cmd)) if start_cmd[i] == "-v"]
+        assert "/data:/data:ro" in v_args
+
+    def test_copy_files_mounted_readonly(self, tmp_path):
+        src = tmp_path / "creds"
+        src.write_text("secret")
+        dc = _docker_cfg(copy_files=[DockerCopyFile(src=str(src), dest="/root/.creds")])
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _start_task_container("ctr", dc, env_file, print)
+
+        start_cmd = calls[0]
+        v_args = [start_cmd[i+1] for i in range(len(start_cmd)) if start_cmd[i] == "-v"]
+        assert f"{src}:/root/.creds:ro" in v_args
+
+    def test_copy_file_missing_src_raises(self, tmp_path):
+        dc = _docker_cfg(copy_files=[DockerCopyFile(src="/nonexistent/file.txt", dest="/dest")])
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+
+        with pytest.raises(FileNotFoundError, match="docker copy_files src does not exist"):
+            _start_task_container("ctr", dc, env_file, print)
+
+    def test_duplicate_dest_warns_and_skips(self, tmp_path):
+        src = tmp_path / "file.txt"
+        src.write_text("data")
+        dc = _docker_cfg(
+            volumes=["/host/path:/shared/path"],
+            copy_files=[DockerCopyFile(src=str(src), dest="/shared/path")]
+        )
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with patch("subprocess.run", side_effect=fake_run):
+                _start_task_container("ctr", dc, env_file, print)
+
+        assert any("/shared/path" in str(w.message) or "duplicate" in str(w.message).lower() for w in caught)
+        start_cmd = calls[0]
+        v_args = [start_cmd[i+1] for i in range(len(start_cmd)) if start_cmd[i] == "-v"]
+        ro_mounts = [v for v in v_args if ":ro" in v and "/shared/path" in v]
+        assert not ro_mounts, f"Duplicate copy_file was not skipped: {ro_mounts}"
+
+    def test_env_file_passed_to_docker_run(self, tmp_path):
+        dc = _docker_cfg()
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _start_task_container("ctr", dc, env_file, print)
+
+        start_cmd = calls[0]
+        assert "--env-file" in start_cmd
+        idx = start_cmd.index("--env-file")
+        assert start_cmd[idx + 1] == env_file
+
+
+# ---------------------------------------------------------------------------
+# _stop_task_container
+# ---------------------------------------------------------------------------
+
+class TestStopTaskContainer:
+    def test_calls_docker_rm_f(self):
+        calls = []
+        with patch("subprocess.run", side_effect=lambda cmd, **kw: calls.append(cmd) or MagicMock()):
+            _stop_task_container("my-ctr", print)
+        assert any("docker" in c and "rm" in c and "-f" in c and "my-ctr" in c for c in calls)
+
+    def test_noop_for_empty_name(self):
+        with patch("subprocess.run") as mock_run:
+            _stop_task_container("", print)
+        mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# merge_docker_configs
+# ---------------------------------------------------------------------------
+
+class TestMergeDockerConfigs:
+    def _cfg(self, image="img:latest", pivot_remote="origin", volumes=None, copy_files=None):
+        return DockerConfig(
+            image=image,
+            pivot_remote=pivot_remote,
+            volumes=volumes or [],
+            copy_files=copy_files or [],
+        )
+
+    def test_none_base_returns_override(self):
+        override = self._cfg(image="override:latest")
+        assert merge_docker_configs(None, override) is override
+
+    def test_none_override_returns_base(self):
+        base = self._cfg(image="base:latest")
+        assert merge_docker_configs(base, None) is base
+
+    def test_both_none_returns_none(self):
+        assert merge_docker_configs(None, None) is None
+
+    def test_override_image_wins(self):
+        base = self._cfg(image="base:latest")
+        override = self._cfg(image="new:1.0")
+        result = merge_docker_configs(base, override)
+        assert result.image == "new:1.0"
+
+    def test_empty_override_image_falls_back_to_base(self):
+        base = self._cfg(image="base:latest")
+        override = self._cfg(image="")
+        result = merge_docker_configs(base, override)
+        assert result.image == "base:latest"
+
+    def test_override_copy_files_replaces_base(self):
+        base_cf = [DockerCopyFile(src="/host/base.json", dest="/root/base.json")]
+        override_cf = [DockerCopyFile(src="/host/agent.json", dest="/root/agent.json")]
+        base = self._cfg(copy_files=base_cf)
+        override = self._cfg(copy_files=override_cf)
+        result = merge_docker_configs(base, override)
+        assert len(result.copy_files) == 1
+        assert result.copy_files[0].src == "/host/agent.json"
+
+    def test_empty_override_copy_files_falls_back_to_base(self):
+        base_cf = [DockerCopyFile(src="/host/base.json", dest="/root/base.json")]
+        base = self._cfg(copy_files=base_cf)
+        override = self._cfg(copy_files=[])
+        result = merge_docker_configs(base, override)
+        assert result.copy_files[0].src == "/host/base.json"
+
+    def test_override_volumes_replaces_base(self):
+        base = self._cfg(volumes=["/data:/data"])
+        override = self._cfg(volumes=["/other:/other"])
+        result = merge_docker_configs(base, override)
+        assert result.volumes == ["/other:/other"]
+
+    def test_empty_override_volumes_falls_back_to_base(self):
+        base = self._cfg(volumes=["/data:/data"])
+        override = self._cfg(volumes=[])
+        result = merge_docker_configs(base, override)
+        assert result.volumes == ["/data:/data"]
+
+    def test_override_pivot_remote_wins_when_non_default(self):
+        base = self._cfg(pivot_remote="origin")
+        override = self._cfg(pivot_remote="upstream")
+        result = merge_docker_configs(base, override)
+        assert result.pivot_remote == "upstream"
+
+    def test_override_pivot_remote_falls_back_to_base_when_default(self):
+        base = self._cfg(pivot_remote="custom-remote")
+        override = self._cfg(pivot_remote="origin")  # "origin" == default, treated as unset
+        result = merge_docker_configs(base, override)
+        assert result.pivot_remote == "custom-remote"
+
+    def test_mixed_override_partial_fields(self):
+        """Override only copy_files; image and pivot_remote fall back to base."""
+        base_cf = [DockerCopyFile(src="/host/mrwilson.json", dest="/root/creds.json")]
+        sub_cf = [DockerCopyFile(src="/host/sub.json", dest="/root/creds.json")]
+        base = self._cfg(image="axel-de:latest", pivot_remote="origin", copy_files=base_cf)
+        override = self._cfg(image="axel-de:latest", copy_files=sub_cf)
+        result = merge_docker_configs(base, override)
+        assert result.image == "axel-de:latest"
+        assert result.copy_files[0].src == "/host/sub.json"
+
+
+# ---------------------------------------------------------------------------
+# config.py — get_docker_config()
+# ---------------------------------------------------------------------------
+
+class TestConfigParsing:
+    def test_parse_global_docker_block(self, tmp_path, monkeypatch):
+        config = {
+            "docker": {
+                "image": "ubuntu:24.04",
+                "pivot_remote": "upstream",
+                "volumes": ["/data:/data"],
+                "copy_files": [{"src": "/host/creds", "dest": "/container/creds"}]
+            }
+        }
+        cfg_file = tmp_path / ".workflow.jsonc"
+        cfg_file.write_text(json.dumps(config))
+
+        import workflow_lib.config as config_mod
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_ROOT", str(cfg_file))
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_TOOLS", str(cfg_file))
+
+        dc = config_mod.get_docker_config()
+        assert dc is not None
+        assert dc.image == "ubuntu:24.04"
+        assert dc.pivot_remote == "upstream"
+        assert dc.volumes == ["/data:/data"]
+        assert len(dc.copy_files) == 1
+        assert dc.copy_files[0].src == "/host/creds"
+        assert dc.copy_files[0].dest == "/container/creds"
+
+    def test_docker_block_missing_image_raises(self, tmp_path, monkeypatch):
+        config = {"docker": {"volumes": ["/data:/data"]}}
+        cfg_file = tmp_path / ".workflow.jsonc"
+        cfg_file.write_text(json.dumps(config))
+
+        import workflow_lib.config as config_mod
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_ROOT", str(cfg_file))
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_TOOLS", str(cfg_file))
+
+        with pytest.raises(ValueError, match="missing required 'image' field"):
+            config_mod.get_docker_config()
+
+    def test_no_docker_block_returns_none(self, tmp_path, monkeypatch):
+        config = {"agents": [{"name": "a", "backend": "gemini"}]}
+        cfg_file = tmp_path / ".workflow.jsonc"
+        cfg_file.write_text(json.dumps(config))
+
+        import workflow_lib.config as config_mod
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_ROOT", str(cfg_file))
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_TOOLS", str(cfg_file))
+
+        assert config_mod.get_docker_config() is None
+
+    def test_pivot_remote_defaults_to_origin(self, tmp_path, monkeypatch):
+        config = {"docker": {"image": "img:latest"}}
+        cfg_file = tmp_path / ".workflow.jsonc"
+        cfg_file.write_text(json.dumps(config))
+
+        import workflow_lib.config as config_mod
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_ROOT", str(cfg_file))
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_TOOLS", str(cfg_file))
+
+        dc = config_mod.get_docker_config()
+        assert dc.pivot_remote == "origin"
+
+    def test_copy_files_missing_src_raises(self, tmp_path, monkeypatch):
+        config = {
+            "docker": {
+                "image": "ubuntu:24.04",
+                "copy_files": [{"dest": "/container/file"}]
+            }
+        }
+        cfg_file = tmp_path / ".workflow.jsonc"
+        cfg_file.write_text(json.dumps(config))
+
+        import workflow_lib.config as config_mod
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_ROOT", str(cfg_file))
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_TOOLS", str(cfg_file))
+
+        with pytest.raises(ValueError, match="missing required field 'src'"):
+            config_mod.get_docker_config()
+
+    def test_agent_inherits_global_docker_config(self, tmp_path, monkeypatch):
+        """Agent with no docker block inherits the global docker config."""
+        config = {
+            "docker": {"image": "base:latest"},
+            "agents": [{"name": "a", "backend": "gemini"}],
+        }
+        cfg_file = tmp_path / ".workflow.jsonc"
+        cfg_file.write_text(json.dumps(config))
+
+        import workflow_lib.config as config_mod
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_ROOT", str(cfg_file))
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_TOOLS", str(cfg_file))
+
+        agents = config_mod.get_agent_pool_configs()
+        assert agents[0].docker_config is not None
+        assert agents[0].docker_config.image == "base:latest"
+
+    def test_agent_docker_override_replaces_copy_files(self, tmp_path, monkeypatch):
+        """Agent docker block's copy_files replaces the global copy_files."""
+        config = {
+            "docker": {
+                "image": "base:latest",
+                "copy_files": [{"src": "/host/global.json", "dest": "/root/global.json"}],
+            },
+            "agents": [
+                {
+                    "name": "a", "backend": "gemini",
+                    "docker": {
+                        "image": "base:latest",
+                        "copy_files": [{"src": "/host/agent.json", "dest": "/root/agent.json"}],
+                    },
+                }
+            ],
+        }
+        cfg_file = tmp_path / ".workflow.jsonc"
+        cfg_file.write_text(json.dumps(config))
+
+        import workflow_lib.config as config_mod
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_ROOT", str(cfg_file))
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_TOOLS", str(cfg_file))
+
+        agents = config_mod.get_agent_pool_configs()
+        dc = agents[0].docker_config
+        assert len(dc.copy_files) == 1
+        assert dc.copy_files[0].src == "/host/agent.json"
+
+    def test_agent_without_docker_override_has_none_when_no_global(self, tmp_path, monkeypatch):
+        """Agent with no docker block and no global docker has docker_config=None."""
+        config = {"agents": [{"name": "a", "backend": "gemini"}]}
+        cfg_file = tmp_path / ".workflow.jsonc"
+        cfg_file.write_text(json.dumps(config))
+
+        import workflow_lib.config as config_mod
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_ROOT", str(cfg_file))
+        monkeypatch.setattr(config_mod, "_CONFIG_FILE_TOOLS", str(cfg_file))
+
+        agents = config_mod.get_agent_pool_configs()
+        assert agents[0].docker_config is None
+
+
+# ---------------------------------------------------------------------------
+# _docker_exec
+# ---------------------------------------------------------------------------
+
+class TestDockerExec:
+    def test_basic_exec_command(self):
+        calls = []
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _docker_exec("my-ctr", ["echo", "hello"])
+
+        assert calls[0][:3] == ["docker", "exec", "-i"]
+        assert "--workdir" in calls[0]
+        assert "/workspace" in calls[0]
+        assert "my-ctr" in calls[0]
+        assert calls[0][-2:] == ["echo", "hello"]
+
+    def test_env_file_included_when_set(self):
+        calls = []
+        with patch("subprocess.run", side_effect=lambda cmd, **kw: calls.append(cmd) or MagicMock(returncode=0, stdout="", stderr="")):
+            _docker_exec("ctr", ["ls"], env_file="/tmp/test.env")
+        assert "--env-file" in calls[0]
+        assert "/tmp/test.env" in calls[0]
+
+    def test_check_raises_on_nonzero(self):
+        with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="fail")):
+            with pytest.raises(subprocess.CalledProcessError):
+                _docker_exec("ctr", ["false"], check=True)
+
+    def test_check_false_does_not_raise(self):
+        with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="")):
+            result = _docker_exec("ctr", ["false"], check=False)
+        assert result.returncode == 1
+
+    def test_log_called_on_failure_with_stderr(self):
+        """log callback is invoked with error details and stderr when check=True fails."""
+        log_msgs = []
+        with patch("subprocess.run", return_value=MagicMock(returncode=2, stdout="", stderr="some error")):
+            with pytest.raises(subprocess.CalledProcessError):
+                _docker_exec("ctr", ["bad", "cmd"], check=True, log=log_msgs.append)
+        # Two log lines: the rc message + the stderr message
+        assert len(log_msgs) == 2
+        assert "bad cmd" in log_msgs[0]
+        assert "some error" in log_msgs[1]
+
+
+# ---------------------------------------------------------------------------
+# process_task with docker_config
+# ---------------------------------------------------------------------------
+
+def _init_git_repo_for_docker(path: str):
+    """Create a minimal git repo with a dev branch and a task file."""
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "t@t.com",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "t@t.com",
+    }
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True, capture_output=True, env=env)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "init", "-q"], cwd=path, check=True, capture_output=True, env=env)
+    subprocess.run(["git", "branch", "dev"], cwd=path, check=True, capture_output=True, env=env)
+    # Create task file
+    phase_dir = os.path.join(path, "phase_1", "sub")
+    os.makedirs(phase_dir, exist_ok=True)
+    with open(os.path.join(phase_dir, "01_a.md"), "w") as f:
+        f.write("# Task: Docker Test\n")
+
+
+class TestProcessTaskWithDocker:
+    """process_task uses docker when docker_config is provided."""
+
+    def test_process_task_starts_and_stops_container(self, tmp_path):
+        """Container is started at task start and stopped in finally."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo_for_docker(root)
+
+        docker_cfg = DockerConfig(image="test-img:latest")
+        docker_exec_calls = []
+
+        def fake_docker_exec(container_name, cmd, **kwargs):
+            docker_exec_calls.append(cmd)
+            result = MagicMock(returncode=0, stdout="", stderr="")
+            if cmd[:2] == ["git", "status"]:
+                result.stdout = "M file.py"
+            return result
+
+        with patch("workflow_lib.executor._write_container_env_file", return_value="/tmp/test.env"), \
+             patch("workflow_lib.executor._start_task_container") as mock_start, \
+             patch("workflow_lib.executor._stop_task_container") as mock_stop, \
+             patch("workflow_lib.executor._docker_exec", side_effect=fake_docker_exec), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", docker_config=docker_cfg, cleanup=True)
+
+        assert result is True
+        mock_start.assert_called_once()
+        mock_stop.assert_called_once()
+
+    def test_process_task_clone_failure_returns_false(self, tmp_path):
+        """If git clone inside container fails, process_task returns False."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo_for_docker(root)
+
+        docker_cfg = DockerConfig(image="test-img:latest")
+        dashboard = MagicMock()
+
+        def fake_docker_exec(container_name, cmd, **kwargs):
+            if "clone" in cmd:
+                raise subprocess.CalledProcessError(1, cmd, "", "clone failed")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("workflow_lib.executor._write_container_env_file", return_value="/tmp/test.env"), \
+             patch("workflow_lib.executor._start_task_container"), \
+             patch("workflow_lib.executor._stop_task_container") as mock_stop, \
+             patch("workflow_lib.executor._docker_exec", side_effect=fake_docker_exec), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", docker_config=docker_cfg,
+                                  dashboard=dashboard, cleanup=True)
+
+        assert result is False
+        mock_stop.assert_called_once()  # container always cleaned up in finally
+
+    def test_process_task_docker_push_rejected_force_pushes(self, tmp_path):
+        """When git push is rejected in docker mode, force-with-lease is attempted."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo_for_docker(root)
+
+        docker_cfg = DockerConfig(image="test-img:latest")
+        push_count = [0]
+
+        def fake_docker_exec(container_name, cmd, **kwargs):
+            result = MagicMock(returncode=0, stdout="", stderr="")
+            if cmd[:2] == ["git", "status"]:
+                result.stdout = "M file.py"
+            elif cmd[:2] == ["git", "push"] and "--force-with-lease" not in cmd:
+                push_count[0] += 1
+                result.returncode = 1
+                result.stderr = "[rejected] non-fast-forward"
+            return result
+
+        with patch("workflow_lib.executor._write_container_env_file", return_value="/tmp/test.env"), \
+             patch("workflow_lib.executor._start_task_container"), \
+             patch("workflow_lib.executor._stop_task_container"), \
+             patch("workflow_lib.executor._docker_exec", side_effect=fake_docker_exec), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", docker_config=docker_cfg, cleanup=True)
+
+        assert result is True  # force-with-lease succeeded
+        assert push_count[0] == 1  # initial push was rejected
+
+    def test_process_task_docker_presubmit_uses_docker_exec(self, tmp_path):
+        """Presubmit is run via _docker_exec (not subprocess.run) when docker is configured."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo_for_docker(root)
+
+        docker_cfg = DockerConfig(image="test-img:latest")
+        docker_exec_cmds = []
+
+        def fake_docker_exec(container_name, cmd, **kwargs):
+            docker_exec_cmds.append(cmd)
+            result = MagicMock(returncode=0, stdout="", stderr="")
+            if cmd[:2] == ["git", "status"]:
+                result.stdout = ""  # no changes
+            return result
+
+        with patch("workflow_lib.executor._write_container_env_file", return_value="/tmp/test.env"), \
+             patch("workflow_lib.executor._start_task_container"), \
+             patch("workflow_lib.executor._stop_task_container"), \
+             patch("workflow_lib.executor._docker_exec", side_effect=fake_docker_exec), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", docker_config=docker_cfg, cleanup=True)
+
+        assert result is True
+        # Presubmit "echo ok" was run via docker exec
+        assert ["echo", "ok"] in docker_exec_cmds
+        # git add -A was run via docker exec
+        assert ["git", "add", "-A"] in docker_exec_cmds
+
+
+# ---------------------------------------------------------------------------
+# _set_cargo_target_dir
+# ---------------------------------------------------------------------------
+
+class TestSetCargoTargetDir:
+    def test_no_config_file_is_noop(self, tmp_path):
+        """No .cargo/config.toml means the function exits early without error."""
+        logs = []
+        _set_cargo_target_dir(str(tmp_path), "/new/target", logs.append)
+        assert logs == []
+
+    def test_updates_target_dir_in_config(self, tmp_path):
+        """target-dir line is rewritten when config file is present."""
+        cargo_dir = tmp_path / ".cargo"
+        cargo_dir.mkdir()
+        config = cargo_dir / "config.toml"
+        config.write_text('[build]\ntarget-dir = "/old/path"\n')
+        logs = []
+        _set_cargo_target_dir(str(tmp_path), "/new/target", logs.append)
+        assert '"/new/target"' in config.read_text()
+        assert logs  # log message emitted
+
+    def test_no_target_dir_line_leaves_file_unchanged(self, tmp_path):
+        """File without target-dir is left untouched."""
+        cargo_dir = tmp_path / ".cargo"
+        cargo_dir.mkdir()
+        config = cargo_dir / "config.toml"
+        original = "[build]\nincremental = true\n"
+        config.write_text(original)
+        logs = []
+        _set_cargo_target_dir(str(tmp_path), "/new/target", logs.append)
+        assert config.read_text() == original
+        assert logs == []
+
+    def test_oserror_logs_warning(self, tmp_path):
+        """OSError during file read is caught and logged as a warning."""
+        cargo_dir = tmp_path / ".cargo"
+        cargo_dir.mkdir()
+        config = cargo_dir / "config.toml"
+        config.write_text('target-dir = "/old"\n')
+        logs = []
+        with patch("builtins.open", side_effect=OSError("disk full")):
+            _set_cargo_target_dir(str(tmp_path), "/new/target", logs.append)
+        assert any("Warning" in m or "disk full" in m for m in logs)

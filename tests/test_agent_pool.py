@@ -248,7 +248,7 @@ class TestRunAiCommandQuotaDetection:
         mock_runner.run.return_value = sp.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
         captured = {}
-        def fake_make_runner(backend, model=None, soft_timeout=None, user=None):
+        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, container_name=None):
             captured["user"] = user
             return mock_runner
 
@@ -678,8 +678,10 @@ class TestConfigValidation:
     def test_missing_backend_raises(self):
         self._raises({"name": "a", "user": "u"}, "backend")
 
-    def test_missing_user_raises(self):
-        self._raises({"name": "a", "backend": "gemini"}, "user")
+    def test_missing_user_defaults_to_current_user(self):
+        import os
+        cfgs = self._load({"name": "a", "backend": "gemini"})
+        assert cfgs[0].user == os.getenv("USER", "")
 
     # Backend validation
     def test_invalid_backend_raises(self):
@@ -872,7 +874,7 @@ class TestExhaustedCapacityE2E:
 
         call_log: list = []
 
-        def fake_make_runner(backend, model=None, soft_timeout=None, user=None):
+        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, container_name=None):
             mock_runner = MagicMock()
             if backend == "gemini":
                 def gemini_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):

@@ -1581,7 +1581,8 @@ class TestProcessTaskRetryE2E:
         agent_calls = []
 
         def _fake_run_agent(agent_type, prompt_file, context, cwd, backend,
-                            dashboard=None, task_id="", model=None, agent_pool=None):
+                            dashboard=None, task_id="", model=None, agent_pool=None,
+                            container_name=None, container_env_file="", _pre_acquired_agent=None):
             agent_calls.append(agent_type)
             if agent_type == "Implementation":
                 return False  # impl fails
@@ -1614,7 +1615,8 @@ class TestProcessTaskRetryE2E:
         agent_calls = []
 
         def _fake_run_agent(agent_type, prompt_file, context, cwd, backend,
-                            dashboard=None, task_id="", model=None, agent_pool=None):
+                            dashboard=None, task_id="", model=None, agent_pool=None,
+                            container_name=None, container_env_file="", _pre_acquired_agent=None):
             agent_calls.append(agent_type)
             if agent_type == "Review":
                 return False
@@ -1648,7 +1650,8 @@ class TestProcessTaskRetryE2E:
         _init_git_repo(root)
 
         def _fake_run_agent(agent_type, prompt_file, context, cwd, backend,
-                            dashboard=None, task_id="", model=None, agent_pool=None):
+                            dashboard=None, task_id="", model=None, agent_pool=None,
+                            container_name=None, container_env_file="", _pre_acquired_agent=None):
             if "Retry" in agent_type:
                 # Set shutdown after first presubmit failure's review retry
                 executor_mod.shutdown_requested = True

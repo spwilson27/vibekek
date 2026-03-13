@@ -123,6 +123,78 @@ def get_config_defaults() -> Dict[str, Any]:
     return defaults
 
 
+def _parse_docker_dict(d: dict, label: str) -> Any:
+    """Parse a raw docker config dict into a :class:`~workflow_lib.agent_pool.DockerConfig`.
+
+    :param d: Raw dict from JSON (the contents of a ``"docker"`` block).
+    :param label: Human-readable location string used in error messages.
+    :raises ValueError: If ``"image"`` is absent or any ``copy_files`` entry is malformed.
+    :returns: :class:`~workflow_lib.agent_pool.DockerConfig` instance.
+    """
+    from .agent_pool import DockerConfig, DockerCopyFile  # local import to avoid circular deps
+
+    if "image" not in d:
+        raise ValueError(f".workflow.jsonc: {label} docker block missing required 'image' field")
+    copy_files = []
+    for j, cf in enumerate(d.get("copy_files", [])):
+        for cf_field in ("src", "dest"):
+            if cf_field not in cf:
+                raise ValueError(
+                    f".workflow.jsonc: {label} docker.copy_files[{j}] missing required field {cf_field!r}"
+                )
+        copy_files.append(DockerCopyFile(src=cf["src"], dest=cf["dest"]))
+    return DockerConfig(
+        image=d["image"],
+        pivot_remote=d.get("pivot_remote", "origin"),
+        volumes=list(d.get("volumes", [])),
+        copy_files=copy_files,
+    )
+
+
+def merge_docker_configs(base: Any, override: Any) -> Any:
+    """Merge *override* on top of *base*, returning an effective :class:`~workflow_lib.agent_pool.DockerConfig`.
+
+    Fields present in *override* replace the corresponding fields in *base*.
+    ``copy_files`` and ``volumes`` are replaced entirely (not appended) when
+    the override specifies them; otherwise *base* values are kept.
+
+    :param base: Base :class:`~workflow_lib.agent_pool.DockerConfig`, or ``None``.
+    :param override: Override :class:`~workflow_lib.agent_pool.DockerConfig`, or ``None``.
+    :returns: Merged :class:`~workflow_lib.agent_pool.DockerConfig`, or ``None`` if both are ``None``.
+    """
+    if base is None:
+        return override
+    if override is None:
+        return base
+    from .agent_pool import DockerConfig  # local import to avoid circular deps
+
+    return DockerConfig(
+        image=override.image if override.image else base.image,
+        pivot_remote=override.pivot_remote if override.pivot_remote != "origin" else base.pivot_remote,
+        volumes=override.volumes if override.volumes else base.volumes,
+        copy_files=override.copy_files if override.copy_files else base.copy_files,
+    )
+
+
+def get_docker_config() -> Any:
+    """Return global :class:`~workflow_lib.agent_pool.DockerConfig` from ``.workflow.jsonc``.
+
+    Reads the top-level ``"docker"`` block.  When present, all workflow steps
+    (implementation, review, presubmit, commit, merge) run inside a Docker
+    container that git-clones from the configured pivot remote.
+
+    :raises ValueError: If the ``docker`` block is present but missing the
+        required ``"image"`` field, or if any ``copy_files`` entry is missing
+        ``"src"`` or ``"dest"``.
+    :returns: A :class:`~workflow_lib.agent_pool.DockerConfig` instance, or
+        ``None`` when no ``"docker"`` block is configured.
+    """
+    cfg = load_config()
+    if "docker" not in cfg:
+        return None
+    return _parse_docker_dict(cfg["docker"], "global")
+
+
 def get_agent_pool_configs() -> List[Any]:
     """Return the list of agent pool configurations from ``.workflow.jsonc``.
 
@@ -135,18 +207,20 @@ def get_agent_pool_configs() -> List[Any]:
     * ``parallel`` — ``1``
     * ``quota-time`` — ``60``
     * ``steps`` — ``["all"]``
+    * ``user`` — current OS user (``os.getenv("USER", "")``)
 
     Returns an empty list when the ``"agents"`` key is absent, allowing
     callers to fall back to single-backend behaviour.
 
     :raises ValueError: If any agent entry is missing a required field
-        (``name``, ``backend``, ``user``), specifies an unknown ``backend``
-        value, or contains an unsupported ``steps`` value.
+        (``name``, ``backend``), specifies an unknown ``backend`` value, or
+        contains an unsupported ``steps`` value.
     :returns: List of :class:`~workflow_lib.agent_pool.AgentConfig` objects,
         or ``[]`` when no agents are configured.
     """
     from .agent_pool import AgentConfig, VALID_STEPS  # local import to avoid circular deps
     from .runners import VALID_BACKENDS
+    global_docker = get_docker_config()
 
     raw = load_config().get("agents", [])
     configs: List[AgentConfig] = []
@@ -154,7 +228,7 @@ def get_agent_pool_configs() -> List[Any]:
         label = f"agents[{i}]" + (f" (name={entry['name']!r})" if "name" in entry else "")
 
         # Required fields
-        for field in ("name", "backend", "user"):
+        for field in ("name", "backend"):
             if field not in entry:
                 raise ValueError(f".workflow.jsonc {label}: missing required field {field!r}")
 
@@ -176,10 +250,16 @@ def get_agent_pool_configs() -> List[Any]:
                 f"Valid steps: {sorted(VALID_STEPS)}"
             )
 
+        # Per-agent docker override: merge with global (agent fields win)
+        agent_docker = global_docker
+        if "docker" in entry:
+            agent_docker_override = _parse_docker_dict(entry["docker"], label)
+            agent_docker = merge_docker_configs(global_docker, agent_docker_override)
+
         configs.append(AgentConfig(
             name=entry["name"],
             backend=backend,
-            user=entry["user"],
+            user=entry.get("user") or os.getenv("USER", ""),
             parallel=int(entry.get("parallel", 1)),
             priority=int(entry.get("priority", 1)),
             quota_time=int(entry.get("quota-time", 60)),
@@ -187,6 +267,7 @@ def get_agent_pool_configs() -> List[Any]:
             model=entry.get("model") or None,
             steps=steps,
             cargo_target_dir=entry.get("cargo-target-dir") or None,
+            docker_config=agent_docker,
         ))
     return configs
 
