@@ -1534,6 +1534,9 @@ def process_task(
     try:
         stages_to_run = _STAGE_ORDER[_STAGE_ORDER.index(starting_stage):]
         for stage in stages_to_run:
+            if shutdown_requested:
+                _log(f"      [!] Shutdown requested — stopping before {stage} stage.")
+                return False
             extra = _stage_extra_kwargs.get(stage, {})
             if not _stage_fns[stage](**stage_kwargs, **extra):
                 return False
@@ -2221,6 +2224,10 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                     success = future.result()
                     if success:
                         dashboard.log(f"   -> [Implementation] Task {task_id} completed successfully.")
+
+                        if shutdown_requested:
+                            dashboard.log(f"   -> [Shutdown] Skipping merge for {task_id} — will resume on next run.")
+                            continue
 
                         # Build the pending state the merge commit should reflect
                         with state_lock:

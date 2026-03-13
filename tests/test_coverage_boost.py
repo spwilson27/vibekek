@@ -4549,18 +4549,22 @@ class TestCopilotRunnerCoverage:
 # ---------------------------------------------------------------------------
 
 class TestSoftInterrupt:
-    """Verify that shutdown_requested only prevents new tasks from being scheduled.
+    """Verify shutdown_requested behavior across process_task and run_agent.
 
-    In-flight tasks must complete their full workflow (implementation, review,
-    verification, merge) so that work is not lost.  The shutdown guard lives
-    solely in the DAG scheduling loop (_execute_dag_inner), NOT in run_agent.
+    The shutdown guard lives in two places:
+      - process_task stage loop: checked BEFORE each stage starts, so an
+        in-flight stage always completes but the next stage is skipped.
+      - _execute_dag_inner scheduling loop: blocks new tasks from starting.
+
+    run_agent itself has NO shutdown guard — it always proceeds once called.
 
     Tests cover:
       1. run_agent() — proceeds even when shutdown_requested is set
-      2. process_task() — completes full workflow during shutdown
-      3. merge_task() — merge completes during shutdown
-      4. _execute_dag_inner() — DAG scheduling loop blocks new tasks
-      5. signal_handler() — message content
+      2. process_task() — halts before first stage when shutdown pre-set
+      3. process_task() — halts between stages when shutdown fires mid-stage
+      4. merge_task() — merge completes during shutdown
+      5. _execute_dag_inner() — DAG scheduling loop blocks new tasks
+      6. signal_handler() — message content
     """
 
     def setup_method(self):
@@ -4648,9 +4652,8 @@ class TestSoftInterrupt:
     # 2. process_task() — completes full workflow during shutdown
     # ----------------------------------------------------------------
 
-    def test_process_task_completes_full_workflow_during_shutdown(self):
-        """When shutdown is requested, in-flight tasks still run implementation,
-        review, verification, and commit — nothing is skipped."""
+    def test_process_task_halts_before_first_stage_when_shutdown_pre_set(self):
+        """When shutdown is already set before process_task is called, no stages run."""
         self._mod.shutdown_requested = True
 
         agent_calls = []
@@ -4662,23 +4665,22 @@ class TestSoftInterrupt:
             result = self._mod.process_task(
                 "/root", "phase_1/task", "./presubmit", dashboard=MagicMock(),
             )
-        assert result is True
-        assert "Implementation" in agent_calls
-        assert "Review" in agent_calls
+        assert result is False
+        assert agent_calls == []
 
     # ----------------------------------------------------------------
     # 3. process_task() — Review agent runs even after shutdown fires
     # ----------------------------------------------------------------
 
-    def test_process_task_review_runs_after_shutdown_during_implementation(self):
-        """Shutdown fires during Implementation → Review still runs and task completes."""
+    def test_process_task_review_skipped_when_shutdown_fires_during_implementation(self):
+        """Shutdown fires during Implementation → impl stage completes, but Review is skipped."""
         self._mod.shutdown_requested = False
 
         agent_calls = []
         def fake_run_agent(agent_type, *args, **kwargs):
             agent_calls.append(agent_type)
             if agent_type == "Implementation":
-                # Shutdown fires mid-implementation
+                # Shutdown fires mid-implementation (within the impl stage)
                 self._mod.shutdown_requested = True
             return True
 
@@ -4686,25 +4688,22 @@ class TestSoftInterrupt:
             result = self._mod.process_task(
                 "/root", "phase_1/task", "./presubmit", dashboard=MagicMock(),
             )
-        assert result is True
-        assert agent_calls == ["Implementation", "Review"]
+        # Impl stage completes, but shutdown check before review stops progression
+        assert result is False
+        assert agent_calls == ["Implementation"]
 
     # ----------------------------------------------------------------
     # 4. process_task() — Verification loop blocked by shutdown
     # ----------------------------------------------------------------
 
-    def test_process_task_runs_verification_during_shutdown(self):
-        """Verification runs even when shutdown_requested — task completes if presubmit passes.
-
-        Shutdown only prevents new tasks from being scheduled; in-flight tasks
-        must finish verification and merge so work is not lost.
-        """
+    def test_process_task_validate_skipped_when_shutdown_fires_during_review(self):
+        """Shutdown fires during Review → review stage completes, but validate is skipped."""
         self._mod.shutdown_requested = False
 
         call_count = [0]
         def fake_run_agent(agent_type, *args, **kwargs):
             call_count[0] += 1
-            if call_count[0] == 2:  # After Review passes, shutdown fires
+            if call_count[0] == 2:  # During Review agent call, shutdown fires
                 self._mod.shutdown_requested = True
             return True
 
@@ -4712,8 +4711,9 @@ class TestSoftInterrupt:
             result = self._mod.process_task(
                 "/root", "phase_1/task", "./presubmit", dashboard=MagicMock(),
             )
-        assert result is True
-        assert call_count[0] == 2  # Implementation + Review only (no retry needed)
+        # Review stage completes, but shutdown check before validate stops progression
+        assert result is False
+        assert call_count[0] == 2  # Implementation + Review only
 
     # ----------------------------------------------------------------
     # 5. process_task() — Review (Retry) proceeds during shutdown

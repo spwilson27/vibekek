@@ -1055,11 +1055,14 @@ class TestGracefulShutdownExecutorE2E:
             execute_dag(root, dag, state, jobs=1,
                         presubmit_cmd="echo ok", backend="gemini")
 
-        # A must have completed (it was in-flight when shutdown was set)
+        # A must have had process_task run (it was in-flight when shutdown was set)
         assert "phase_1/sub/01_a.md" in processed, (
-            "In-flight task A should have completed"
+            "In-flight task A should have completed its process_task call"
         )
-        assert "phase_1/sub/01_a.md" in state["completed_tasks"]
+        # Merge is skipped on shutdown — task resumes on next run from last stage
+        assert "phase_1/sub/01_a.md" not in state["completed_tasks"], (
+            "Merge skipped on shutdown; task A not in completed_tasks until resumed"
+        )
 
         # B should NOT have been processed (shutdown prevents new spawns)
         assert "phase_1/sub/01_b.md" not in processed, (
@@ -1114,19 +1117,29 @@ class TestGracefulShutdownExecutorE2E:
             execute_dag(root, dag, state, jobs=3,
                         presubmit_cmd="echo ok", backend="gemini")
 
-        # A, B, C were all in-flight and should all complete
+        # A, B, C were all in-flight and should all have process_task run
         for task in ["phase_1/sub/01_a.md", "phase_1/sub/01_b.md",
                      "phase_1/sub/01_c.md"]:
-            assert task in processed, f"{task} should have completed"
-            assert task in state["completed_tasks"]
+            assert task in processed, f"{task} should have completed process_task"
+        # Merge is skipped on shutdown — none are in completed_tasks yet
+        for task in ["phase_1/sub/01_a.md", "phase_1/sub/01_b.md",
+                     "phase_1/sub/01_c.md"]:
+            assert task not in state["completed_tasks"], (
+                f"{task} should not be in completed_tasks (merge skipped on shutdown)"
+            )
 
         # D should never have started
         assert "phase_1/sub/01_d.md" not in processed, (
             "Task D should not start after shutdown"
         )
 
-    def test_state_saved_for_completed_tasks_after_shutdown(self, tmp_path):
-        """Completed tasks are persisted to state even during shutdown."""
+    def test_merge_skipped_on_shutdown_leaves_completed_tasks_empty(self, tmp_path):
+        """When shutdown fires during process_task, merge is skipped.
+
+        completed_tasks is only updated on merge success, so after a shutdown
+        the task is not in completed_tasks — it will resume from the last saved
+        stage on the next run.
+        """
         import time
         from workflow_lib.executor import execute_dag
         import workflow_lib.executor as executor_mod
@@ -1140,17 +1153,12 @@ class TestGracefulShutdownExecutorE2E:
             "phase_1/sub/01_b.md": ["phase_1/sub/01_a.md"],
         }
         state = {"completed_tasks": [], "merged_tasks": []}
-        save_calls = []
 
         def _process(root_dir, task_id, presubmit_cmd, backend,
                      serena=False, **kwargs):
             executor_mod.shutdown_requested = True
             time.sleep(0.1)
             return True
-
-        def _track_save(s):
-            # Snapshot the state at save time
-            save_calls.append(dict(s))
 
         with patch("workflow_lib.executor.process_task",
                    side_effect=_process), \
@@ -1159,18 +1167,16 @@ class TestGracefulShutdownExecutorE2E:
                    return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
-             patch("workflow_lib.executor.save_workflow_state",
-                   side_effect=_track_save), \
+             patch("workflow_lib.executor.save_workflow_state"), \
              patch("subprocess.run",
                    return_value=MagicMock(returncode=0, stdout="",
                                           stderr="")):
             execute_dag(root, dag, state, jobs=1,
                         presubmit_cmd="echo ok", backend="gemini")
 
-        # State was saved with A completed
-        assert len(save_calls) >= 1
-        assert "phase_1/sub/01_a.md" in state["completed_tasks"]
-        # B never ran
+        # Merge was skipped on shutdown — task A not in completed_tasks
+        assert "phase_1/sub/01_a.md" not in state["completed_tasks"]
+        # B never ran (depends on A completing + merging)
         assert "phase_1/sub/01_b.md" not in state["completed_tasks"]
 
 
@@ -1933,7 +1939,7 @@ class TestResumeFromPartialStateE2E:
             "phase_1/sub/01_c.md": ["phase_1/sub/01_a.md"],
         }
 
-        # --- Run 1: process A, then shutdown ---
+        # --- Run 1: process A, merge A, then shutdown (before B/C scheduled) ---
         executor_mod.shutdown_requested = False
         state_run1 = {"completed_tasks": [], "merged_tasks": []}
         processed_run1 = []
@@ -1941,13 +1947,17 @@ class TestResumeFromPartialStateE2E:
         def _process_run1(root_dir, task_id, presubmit_cmd, backend,
                           serena=False, **kwargs):
             processed_run1.append(task_id)
-            # Shutdown after first task
+            return True
+
+        def _merge_run1(root_dir, task_id, *args, **kwargs):
+            # Shutdown after A merges — prevents B/C from being scheduled
             executor_mod.shutdown_requested = True
             return True
 
         with patch("workflow_lib.executor.process_task",
                    side_effect=_process_run1), \
-             patch("workflow_lib.executor.merge_task", return_value=True), \
+             patch("workflow_lib.executor.merge_task",
+                   side_effect=_merge_run1), \
              patch("workflow_lib.executor.get_serena_enabled",
                    return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
@@ -1993,14 +2003,16 @@ class TestResumeFromPartialStateE2E:
 
 
 class TestMergeDuringShutdownE2E:
-    """E2E tests verifying that merges still proceed during graceful shutdown.
+    """E2E tests verifying merge behavior during graceful shutdown.
 
-    When Ctrl-C triggers shutdown_requested, in-flight tasks should still be
-    merged to dev after completion — only new implementation tasks are blocked.
+    When Ctrl-C triggers shutdown_requested, merges are SKIPPED for tasks whose
+    process_task completed while shutdown was set. Each stage pushes its work to
+    the remote branch, so the task resumes from the last completed stage on the
+    next run — nothing is lost.
     """
 
-    def test_merge_proceeds_after_shutdown(self, tmp_path):
-        """A task that completes after shutdown is still merged successfully."""
+    def test_merge_skipped_when_shutdown_fires_during_process_task(self, tmp_path):
+        """process_task returns True but merge is skipped when shutdown was set."""
         import time
         import threading
         from workflow_lib.executor import execute_dag
@@ -2050,20 +2062,19 @@ class TestMergeDuringShutdownE2E:
             execute_dag(root, dag, state, jobs=1,
                         presubmit_cmd="echo ok", backend="gemini")
 
-        # A was processed and merged despite shutdown being set
+        # A ran process_task but merge was skipped (shutdown set during process_task)
         assert "phase_1/sub/01_a.md" in processed
-        assert "phase_1/sub/01_a.md" in merged, (
-            "Task A should still be merged even after shutdown was requested"
+        assert "phase_1/sub/01_a.md" not in merged, (
+            "Merge should be skipped when shutdown fires during process_task"
         )
-        assert "phase_1/sub/01_a.md" in state["completed_tasks"]
-        assert "phase_1/sub/01_a.md" in state["merged_tasks"]
+        assert "phase_1/sub/01_a.md" not in state["completed_tasks"]
 
         # B should not have been processed at all
         assert "phase_1/sub/01_b.md" not in processed
         assert "phase_1/sub/01_b.md" not in merged
 
-    def test_multiple_inflight_tasks_all_merge_on_shutdown(self, tmp_path):
-        """All in-flight tasks that complete are merged, even during shutdown."""
+    def test_multiple_inflight_tasks_all_skip_merge_on_shutdown(self, tmp_path):
+        """All in-flight tasks that complete with shutdown set skip merge."""
         import time
         import threading
         from workflow_lib.executor import execute_dag
@@ -2116,15 +2127,14 @@ class TestMergeDuringShutdownE2E:
             execute_dag(root, dag, state, jobs=3,
                         presubmit_cmd="echo ok", backend="gemini")
 
-        # A, B, C were all in-flight and should all be merged
+        # A, B, C all ran process_task but had merges skipped
         for task in ["phase_1/sub/01_a.md", "phase_1/sub/01_b.md",
                      "phase_1/sub/01_c.md"]:
-            assert task in processed, f"{task} should have completed"
-            assert task in merged, f"{task} should have been merged"
-            assert task in state["completed_tasks"]
-            assert task in state["merged_tasks"]
+            assert task in processed, f"{task} should have completed process_task"
+            assert task not in merged, f"{task} merge should be skipped on shutdown"
+        assert state["completed_tasks"] == []
 
-        # D should never have started or merged
+        # D should never have started
         assert "phase_1/sub/01_d.md" not in processed
         assert "phase_1/sub/01_d.md" not in merged
 
