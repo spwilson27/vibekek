@@ -1555,7 +1555,52 @@ def load_blocked_tasks() -> set:  # type: ignore[type-arg]
     return set()
 
 
-def get_ready_tasks(master_dag: Dict[str, List[str]], completed_tasks: List[str], active_tasks: List[str]) -> List[str]:
+def _get_resumable_tasks(master_dag: Dict[str, List[str]], remote_url: Optional[str], root_dir: str) -> set:
+    """Return the set of task IDs that have an existing implementation branch in origin.
+
+    These tasks were partially processed in a prior run.  ``process_task``
+    will skip re-implementation for them, so they complete much faster and
+    should be scheduled ahead of fresh tasks.
+
+    Makes a single ``git ls-remote --heads`` call and maps each
+    ``ai-phase-<safe_task_id>`` branch back to its task ID.  Returns an empty
+    set on any git failure so the caller degrades gracefully.
+
+    :param master_dag: Full task-ID → prereqs mapping.
+    :param remote_url: Remote URL (or local path) passed to ``git ls-remote``.
+    :param root_dir: Project root used when *remote_url* is ``None``.
+    :returns: Set of task IDs whose branches already exist on the remote.
+    """
+    target = remote_url or root_dir
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--heads", target, "refs/heads/ai-phase-*"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        return set()
+
+    existing_branches: set = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            existing_branches.add(parts[1].replace("refs/heads/", ""))
+
+    resumable: set = set()
+    for task_id in master_dag:
+        _, task_part = task_id.split("/", 1)
+        safe_task_id = task_part.replace("/", "_").replace(".md", "")
+        if f"ai-phase-{safe_task_id}" in existing_branches:
+            resumable.add(task_id)
+    return resumable
+
+
+def get_ready_tasks(
+    master_dag: Dict[str, List[str]],
+    completed_tasks: List[str],
+    active_tasks: List[str],
+    resumable_tasks: Optional[set] = None,
+) -> List[str]:
     """Return tasks whose prerequisites are met and that are not already active or done.
 
     Implements a *phase barrier*: only tasks belonging to the lowest-numbered
@@ -1566,6 +1611,9 @@ def get_ready_tasks(master_dag: Dict[str, List[str]], completed_tasks: List[str]
     eligibility and prerequisite satisfaction checks — a dependency on a
     blocked task is never considered met.
 
+    Tasks in *resumable_tasks* (branch already exists in origin) are sorted
+    before fresh tasks so in-flight work is completed before new work begins.
+
     :param master_dag: Mapping of ``task_id -> [prerequisite_task_ids]`` for
         all tasks across all phases.
     :type master_dag: Dict[str, List[str]]
@@ -1575,9 +1623,14 @@ def get_ready_tasks(master_dag: Dict[str, List[str]], completed_tasks: List[str]
     :param active_tasks: List of task IDs currently being processed by worker
         threads.
     :type active_tasks: List[str]
+    :param resumable_tasks: Optional set of task IDs whose implementation
+        branch already exists in origin.  These are sorted first within each
+        phase so in-progress work is finished before fresh tasks are started.
+    :type resumable_tasks: Optional[set]
     :returns: Sorted list of task IDs ready to be submitted for execution.
     :rtype: List[str]
     """
+    resumable = resumable_tasks or set()
     ready = []
     completed_set = set(completed_tasks)
     blocked_set = load_blocked_tasks()
@@ -1599,7 +1652,7 @@ def get_ready_tasks(master_dag: Dict[str, List[str]], completed_tasks: List[str]
     incomplete_tasks = [tid for tid in master_dag.keys() if tid not in completed_set]
     if not incomplete_tasks:
          return []
-         
+
     incomplete_tasks.sort(key=phase_sort_key)
     active_phase_num = phase_sort_key(incomplete_tasks[0])[0]
 
@@ -1607,9 +1660,15 @@ def get_ready_tasks(master_dag: Dict[str, List[str]], completed_tasks: List[str]
     for task_id in all_ready:
          if phase_sort_key(task_id)[0] == active_phase_num:
              ready.append(task_id)
-            
-    # Sort the final ready list
-    ready.sort(key=phase_sort_key)
+
+    # 4. Sort: resumable tasks (branch already exists) first, then by phase/task number.
+    #    This finishes in-progress work before starting fresh tasks, unblocking
+    #    downstream dependencies sooner.
+    def _sort_key(task_id: str) -> tuple:
+        is_fresh = 0 if task_id in resumable else 1
+        return (is_fresh,) + phase_sort_key(task_id)
+
+    ready.sort(key=_sort_key)
     return ready
 
 
@@ -1715,6 +1774,12 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
     failed_tasks: set = set()
     state_lock = threading.Lock()
 
+    # Discover tasks that already have an implementation branch in origin so
+    # they can be prioritised ahead of fresh tasks in the scheduling loop.
+    resumable_tasks = _get_resumable_tasks(master_dag, remote_url, root_dir)
+    if resumable_tasks:
+        dashboard.log(f"=> Resumable tasks found ({len(resumable_tasks)}): will be scheduled before fresh tasks.")
+
     dashboard.log("=> Starting Parallel DAG Execution Loop...")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
@@ -1726,7 +1791,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
             ready_tasks = []
             if not shutdown_requested and not failed_tasks:
                 with state_lock:
-                    ready_tasks = get_ready_tasks(master_dag, state["completed_tasks"], list(active_tasks))
+                    ready_tasks = get_ready_tasks(master_dag, state["completed_tasks"], list(active_tasks), resumable_tasks=resumable_tasks)
 
             # Submit ready tasks if we have capacity
             for task_id in ready_tasks:

@@ -433,14 +433,76 @@ def test_get_ready_tasks():
     # a is ready, b is not, c is ready but blocked by phase
     ready = get_ready_tasks(dag, [], [])
     assert ready == ["phase_1/01_a"]
-    
+
     # now a is complete
     ready = get_ready_tasks(dag, ["phase_1/01_a"], [])
     assert "phase_1/01_b" in ready
-    
+
     # now a and b complete
     ready = get_ready_tasks(dag, ["phase_1/01_a", "phase_1/01_b"], [])
     assert ready == ["phase_2/01_c"]
+
+
+def test_get_ready_tasks_resumable_sorted_first():
+    """Resumable tasks (branch exists) are returned before fresh tasks."""
+    dag = {
+        "phase_1/01_a": [],
+        "phase_1/02_b": [],
+        "phase_1/03_c": [],
+    }
+    # Without resumable_tasks: natural phase/task order (01, 02, 03)
+    ready = get_ready_tasks(dag, [], [])
+    assert ready == ["phase_1/01_a", "phase_1/02_b", "phase_1/03_c"]
+
+    # With 03_c resumable: it should come first
+    ready = get_ready_tasks(dag, [], [], resumable_tasks={"phase_1/03_c"})
+    assert ready[0] == "phase_1/03_c"
+    assert set(ready) == {"phase_1/01_a", "phase_1/02_b", "phase_1/03_c"}
+
+    # Multiple resumable tasks: all resumable before all fresh, each group sorted within
+    ready = get_ready_tasks(dag, [], [], resumable_tasks={"phase_1/03_c", "phase_1/01_a"})
+    assert ready[0] in {"phase_1/01_a", "phase_1/03_c"}
+    assert ready[1] in {"phase_1/01_a", "phase_1/03_c"}
+    assert ready[2] == "phase_1/02_b"
+
+
+def test_get_ready_tasks_resumable_ignores_completed():
+    """A resumable task that's already completed is excluded as normal."""
+    dag = {
+        "phase_1/01_a": [],
+        "phase_1/02_b": [],
+    }
+    ready = get_ready_tasks(
+        dag, ["phase_1/01_a"], [],
+        resumable_tasks={"phase_1/01_a", "phase_1/02_b"},
+    )
+    assert ready == ["phase_1/02_b"]
+
+
+def test_get_resumable_tasks_maps_branches():
+    """_get_resumable_tasks returns task IDs whose branches exist in origin."""
+    from workflow_lib.executor import _get_resumable_tasks
+    dag = {
+        "phase_5/02_frame_loop/05_dpi_scaling.md": [],
+        "phase_5/02_frame_loop/06_other.md": [],
+    }
+    ls_remote_output = (
+        "abc123\trefs/heads/ai-phase-02_frame_loop_05_dpi_scaling\n"
+    )
+    with patch("workflow_lib.executor.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(stdout=ls_remote_output, returncode=0)
+        result = _get_resumable_tasks(dag, "origin", "/repo")
+    assert "phase_5/02_frame_loop/05_dpi_scaling.md" in result
+    assert "phase_5/02_frame_loop/06_other.md" not in result
+
+
+def test_get_resumable_tasks_returns_empty_on_git_failure():
+    """_get_resumable_tasks degrades gracefully when git ls-remote fails."""
+    from workflow_lib.executor import _get_resumable_tasks
+    dag = {"phase_1/01_a": []}
+    with patch("workflow_lib.executor.subprocess.run", side_effect=Exception("network error")):
+        result = _get_resumable_tasks(dag, "origin", "/repo")
+    assert result == set()
 
 def test_execute_dag():
     import workflow_lib.executor as executor_mod

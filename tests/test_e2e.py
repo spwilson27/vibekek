@@ -655,7 +655,7 @@ class TestImplementationE2E:
 
         ready_calls = [0]
 
-        def _get_ready(master_dag, completed, active):
+        def _get_ready(master_dag, completed, active, **kwargs):
             ready_calls[0] += 1
             if ready_calls[0] == 1:
                 return ["phase_1/sub/01_a.md"]
@@ -692,7 +692,7 @@ class TestImplementationE2E:
 
         ready_calls = [0]
 
-        def _get_ready(master_dag, completed, active):
+        def _get_ready(master_dag, completed, active, **kwargs):
             ready_calls[0] += 1
             if ready_calls[0] == 1:
                 return ["phase_1/sub/01_a.md"]

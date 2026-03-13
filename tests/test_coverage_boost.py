@@ -762,7 +762,7 @@ class TestExecuteDag:
         dag = {"phase_1/task.md": []}
         state = {"completed_tasks": [], "merged_tasks": []}
         ready_calls = [0]
-        def ready_side(master_dag, completed, active):
+        def ready_side(master_dag, completed, active, **kwargs):
             ready_calls[0] += 1
             if ready_calls[0] == 1:
                 return ["phase_1/task.md"]
@@ -1003,7 +1003,7 @@ class TestExecuteDagWithLogFile:
         dag = {"phase_1/task.md": []}
         state = {"completed_tasks": [], "merged_tasks": []}
         ready_calls = [0]
-        def ready_side(master_dag, completed, active):
+        def ready_side(master_dag, completed, active, **kwargs):
             ready_calls[0] += 1
             if ready_calls[0] == 1:
                 return ["phase_1/task.md"]
@@ -1022,7 +1022,7 @@ class TestExecuteDagWithLogFile:
         dag = {"phase_1/task.md": []}
         state = {"completed_tasks": [], "merged_tasks": []}
         ready_calls = [0]
-        def ready_side(master_dag, completed, active):
+        def ready_side(master_dag, completed, active, **kwargs):
             ready_calls[0] += 1
             if ready_calls[0] == 1:
                 return ["phase_1/task.md"]
