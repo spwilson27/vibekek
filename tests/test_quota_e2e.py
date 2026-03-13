@@ -112,6 +112,38 @@ class TestTransientQuota:
         rc, _ = _run(["[stderr] exhausted your capacity. Retry after 2000ms."])
         assert rc != QUOTA_RETURN_CODE
 
+    def test_retrying_with_backoff_suppresses_kill(self):
+        """'Retrying with backoff' on same line as quota pattern."""
+        line = "[stderr] Attempt 1 failed with status 429. Retrying with backoff... No capacity available for model gemini-flash"
+        rc, _ = _run([line])
+        assert rc != QUOTA_RETURN_CODE
+
+    def test_multiline_gemini_retry_block_suppresses_kill(self):
+        """
+        Real Gemini CLI output: 'Retrying with backoff' on line 1,
+        'No capacity available' on line 4. Cross-line window must suppress.
+        """
+        lines = [
+            '[stderr] Attempt 1 failed with status 429. Retrying with backoff... GaxiosError: [{',
+            '[stderr]   "error": {',
+            '[stderr]     "code": 429,',
+            '[stderr]     "message": "No capacity available for model gemini-3-flash-preview on the server",',
+            '[stderr]   }',
+            '[stderr] }]',
+        ]
+        rc, _ = _run(lines)
+        assert rc != QUOTA_RETURN_CODE
+
+    def test_quota_after_transient_window_expires_kills(self):
+        """After 15+ normal lines past the retry indicator, a new quota error IS fatal."""
+        lines = (
+            ["[stderr] Retrying with backoff... something"]
+            + ["[stdout] normal output line"] * 16  # exhaust the 15-line window
+            + ["[stderr] No capacity available for model gemini-flash"]
+        )
+        rc, _ = _run(lines)
+        assert rc == QUOTA_RETURN_CODE
+
     def test_will_retry_suppresses_kill(self):
         rc, _ = _run(["[stderr] exhausted your capacity on this model. Will retry in 3s."])
         assert rc != QUOTA_RETURN_CODE

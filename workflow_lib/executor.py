@@ -405,20 +405,34 @@ def run_ai_command(
     quota_transient_lower = [p.lower() for p in QUOTA_TRANSIENT_PATTERNS]
     abort_event = threading.Event()
 
+    # Cross-line window: some CLIs (e.g. Gemini) output "Retrying with backoff"
+    # on one line and the quota detail ("No capacity available...") on a later
+    # line of the same multi-line error block.  We track how recently a transient
+    # retry indicator was seen so quota patterns in subsequent lines are suppressed.
+    _transient_lines_remaining = [0]
+    _TRANSIENT_WINDOW = 15  # lines after a retry indicator to stay suppressed
+
     def output_line(line: str) -> None:
         line_lower = line.lower()
+
+        # Detect a transient-retry indicator on this line and open a suppression window.
+        if any(t in line_lower for t in quota_transient_lower):
+            _transient_lines_remaining[0] = _TRANSIENT_WINDOW
+        elif _transient_lines_remaining[0] > 0:
+            _transient_lines_remaining[0] -= 1
+
         if any(p in line_lower for p in quota_patterns_lower):
-            # Check if the CLI is already retrying (e.g. "Retrying after 5306ms").
-            if any(t in line_lower for t in quota_transient_lower):
-                return  # let the CLI recover on its own
-            # Parse the advertised reset time.  If it's within the agent's
-            # spawn window (spawn_rate), the quota will lift before we'd start
-            # the next task anyway — no point killing and rotating.
-            reset_secs = parse_quota_reset_seconds(line)
-            if reset_secs is not None and reset_secs <= spawn_rate:
-                return  # short reset, wait it out
-            quota_detected[0] = True
-            abort_event.set()
+            # Suppress abort if the CLI signalled a retry on this or a recent line.
+            if _transient_lines_remaining[0] > 0:
+                pass  # let the CLI recover on its own
+            else:
+                # Parse the advertised reset time.  If it's within the agent's
+                # spawn window (spawn_rate), the quota will lift before we'd start
+                # the next task anyway — no point killing and rotating.
+                reset_secs = parse_quota_reset_seconds(line)
+                if reset_secs is None or reset_secs > spawn_rate:
+                    quota_detected[0] = True
+                    abort_event.set()
         if on_line:
             on_line(line)
         else:

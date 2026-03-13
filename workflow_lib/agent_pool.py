@@ -44,6 +44,8 @@ QUOTA_TRANSIENT_PATTERNS: List[str] = [
     "retrying after",
     "retry after",
     "will retry",
+    "retrying with backoff",
+    "with backoff",
 ]
 
 # Regex that matches "reset after <duration>" in a quota message.
