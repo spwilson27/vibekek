@@ -18,6 +18,16 @@ You are an expert AI Developer. Your task is to implement a specific sub-epic/fe
 {description_ctx}
 </context>
 
+## Planning Documents (PRD & TAS)
+<specs>
+{spec_ctx}
+</specs>
+
+## Shared Components & Interface Contracts
+<shared_components>
+{shared_components_ctx}
+</shared_components>
+
 ## Architectural Memory
 <memory>
 {memory_ctx}
@@ -44,10 +54,8 @@ You are operating inside of a clean, isolated `git clone` of the repository, che
     - Run `./do presubmit`. 
     - If it fails, fix the issues until it passes cleanly.
 5.  **Document:**
-    - Update `./.agent/MEMORY.md` (relative to your current working directory) with:
-      - Any new **Architectural Decisions** you made (patterns, conventions).
-      - Any **Brittle Areas** you discovered.
-      - A brief description of what you broke/fixed/added to the **Recent Changelog**.
+    - If you made a durable architectural decision (a pattern, interface choice, or invariant future tasks must respect), add it to `./.agent/DECISIONS.md` 
+    - Update `./.agent/MEMORY.md` with any **Brittle Areas** you discovered and a one-line entry in the **Recent Changelog**.
 
 # CONSTRAINTS
 - **Your task is FULLY SPECIFIED in the Task Requirements section above. All necessary context is provided.**

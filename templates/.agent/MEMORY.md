@@ -1,9 +1,24 @@
-# Agent Long-Term Memory
+# Agent Working Memory
 
-Shared long-term memory for architectural decisions, conventions, and brittle areas.
-*Self-maintenance: If >200 lines, summarize or move older entries to `memory_archive.md`.*
+Short-lived memory: changelog, brittle areas, and observations from recent tasks.
+Durable architectural decisions live in `DECISIONS.md` — update that file instead
+when you make a decision that should outlast the current task.
 
-## 🏛️ Architectural Decisions
-- TODO: Note any architectural decisions here.
+*Self-maintenance: Keep at most 20 changelog entries. Move older ones to
+`memory_archive.md`. Condense related entries into higher-level summaries.*
 
-## ⚠️ Brittle Areas
+---
+
+## Brittle Areas
+
+Code areas that are easy to break accidentally. Flag before touching.
+
+- (none yet)
+
+---
+
+## Recent Changelog
+
+Brief record of what each task built, fixed, or changed.
+
+- (none yet)

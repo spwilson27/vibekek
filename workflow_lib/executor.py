@@ -43,7 +43,7 @@ _PST = ZoneInfo("America/Los_Angeles")
 from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR, REPLAN_STATE_FILE, STATE_DIR, WORKFLOW_STATE_FILE
 from .context import ProjectContext
 from .runners import IMAGE_EXTENSIONS, make_runner
-from .state import save_workflow_state
+from .state import save_workflow_state, load_dags, get_tasks_dir
 from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config
 from .discord import notify_failure
 from .dashboard import make_dashboard
@@ -484,17 +484,51 @@ def get_task_details(full_task_id: str) -> str:
 
 
 def get_memory_context(root_dir: str) -> str:
-    """Return the contents of the agent MEMORY.md file, or an empty string.
+    """Return combined contents of MEMORY.md and DECISIONS.md from the agent directory.
+
+    MEMORY.md holds ephemeral observations (changelog, brittle areas).
+    DECISIONS.md holds durable architectural decisions.  Both are injected
+    together so agents have the full picture without separate template slots.
 
     :param root_dir: Absolute path to the project root.
     :type root_dir: str
-    :returns: Memory file contents, or ``""`` when not found.
+    :returns: Concatenated file contents, or ``""`` when neither file exists.
     :rtype: str
     """
-    memory_file = os.path.join(root_dir, ".agent", "MEMORY.md")
-    if os.path.exists(memory_file):
-        with open(memory_file, "r", encoding="utf-8") as f:
-            return f.read()
+    agent_dir = os.path.join(root_dir, ".agent")
+    parts = []
+    for filename in ("MEMORY.md", "DECISIONS.md"):
+        path = os.path.join(agent_dir, filename)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                parts.append(f.read())
+    return "\n\n---\n\n".join(parts)
+
+
+def get_file_tree_context(clone_dir: str) -> str:
+    """Return a sorted file tree of the repository clone, excluding .git.
+
+    Gives agents an immediate structural overview of the codebase without
+    requiring them to spend tool calls on filesystem exploration.
+
+    :param clone_dir: Absolute path to the cloned repository directory.
+    :type clone_dir: str
+    :returns: Newline-separated relative file paths, or ``""`` on failure.
+    :rtype: str
+    """
+    try:
+        result = subprocess.run(
+            ["find", ".", "-type", "f", "-not", "-path", "./.git/*"],
+            cwd=clone_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            lines = sorted(result.stdout.splitlines())
+            return "\n".join(lines)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
     return ""
 
 
@@ -546,6 +580,51 @@ def get_project_images() -> List[str]:
         if os.path.isfile(os.path.join(input_dir, f))
         and os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS
     )
+
+
+def get_spec_context() -> str:
+    """Return PRD and TAS planning documents for implementation/review agent context.
+
+    Prefers summaries (``docs/plan/summaries/``) over full specs to stay within
+    token budgets.  Returns an empty string when neither file exists.
+
+    :returns: XML-tagged content for PRD and TAS documents.
+    :rtype: str
+    """
+    plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
+    parts = []
+    for doc_id, name in [("1_prd", "PRD"), ("2_tas", "TAS")]:
+        summary_path = os.path.join(plan_dir, "summaries", f"{doc_id}.md")
+        full_path = os.path.join(plan_dir, "specs", f"{doc_id}.md")
+        for path in (summary_path, full_path):
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    parts.append(f'<spec name="{name}">\n{f.read().strip()}\n</spec>')
+                break
+    return "\n\n".join(parts)
+
+
+def get_shared_components_context() -> str:
+    """Return shared components and interface contracts documents if they exist.
+
+    Reads ``docs/plan/shared_components.md`` and
+    ``docs/plan/specs/interface_contracts.md``.  Returns an empty string when
+    neither file exists.
+
+    :returns: XML-tagged content for each document found.
+    :rtype: str
+    """
+    plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
+    candidates = [
+        (os.path.join(plan_dir, "shared_components.md"), "Shared Components"),
+        (os.path.join(plan_dir, "specs", "interface_contracts.md"), "Interface Contracts"),
+    ]
+    parts = []
+    for path, label in candidates:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                parts.append(f'<doc name="{label}">\n{f.read().strip()}\n</doc>')
+    return "\n\n".join(parts)
 
 
 def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "", model: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None, container_name: Optional[str] = None, container_env_file: str = "", _pre_acquired_agent: Optional[Any] = None) -> bool:
@@ -947,7 +1026,7 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
         task_details = get_task_details(full_task_id)
         description_ctx = get_project_context()
         memory_ctx = get_memory_context(root_dir)
-        
+
         context = {
             "phase_filename": phase_id,
             "task_name": task_id,
@@ -955,7 +1034,10 @@ def process_task(root_dir: str, full_task_id: str, presubmit_cmd: str, backend: 
             "task_details": task_details,
             "description_ctx": description_ctx,
             "memory_ctx": memory_ctx,
-            "clone_dir": tmpdir
+            "clone_dir": tmpdir,
+            "spec_ctx": get_spec_context(),
+            "shared_components_ctx": get_shared_components_context(),
+            #"file_tree_ctx": get_file_tree_context(tmpdir),
         }
 
         _run_agent_kwargs = dict(

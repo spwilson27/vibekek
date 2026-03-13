@@ -19,6 +19,17 @@ Your task is to review, refactor, and fix code submitted by an implementation ag
 {description_ctx}
 </context>
 
+## Planning Documents (PRD & TAS)
+<specs>
+{spec_ctx}
+</specs>
+
+## Shared Components & Interface Contracts
+<shared_components>
+{shared_components_ctx}
+</shared_components>
+
+
 ## Architectural Memory
 <memory>
 {memory_ctx}
@@ -41,17 +52,13 @@ You are operating inside of a clean, isolated `git clone` of the repository. The
 3.  **Ensure Presubmit Passes:**
     - Run `./do presubmit`.
     - If it fails, fix the code or the tests until it passes perfectly.
-4.  **Append to Memory:**
-    - Update `./.agent/MEMORY.md` (relative to your current working directory) with:
-      - Any new **Architectural Decisions** you made (patterns, conventions).
+4.  **Update Memory:**
+    - If you made or confirmed a durable architectural decision (a pattern, interface choice, or invariant), update `./.agent/DECISIONS.md`. 
+    - Update `./.agent/MEMORY.md` with:
       - Any **Brittle Areas** you discovered.
-      - A brief description of what you broke/fixed/added to the **Recent Changelog**.
-      - **Archive** The changelog should have at most 20 recent entries. Any older ones should be archived in `./.agent/memory_archive.md`. 
-      - **Condense** Group related modules (e.g., all "Plugin Sandboxing" or
-      "Automation/DSP" entries) into higher-level summaries, focusing on core
-      invariants and security constraints while removing low-level
-      implementation details (like specific SQL strings or transient method
-      signatures).
+      - A one-line entry in **Recent Changelog** describing what was built/fixed.
+      - **Archive** The changelog should have at most 20 recent entries. Any older ones should be archived in `./.agent/memory_archive.md`.
+      - **Condense** Group related modules into higher-level summaries, focusing on core invariants and security constraints while removing transient low-level details.
 
 # CONSTRAINTS
 - **Your task is FULLY SPECIFIED in the Task Requirements section above. All necessary context is provided.**
