@@ -139,6 +139,9 @@ class AgentConfig:
     :param steps: List of workflow steps this agent may perform.  Allowed values
         are ``"develop"``, ``"review"``, ``"merge"``, and ``"all"`` (the default,
         which matches any step).
+    :param context_limit: Optional per-agent context limit in words.  When set,
+        overrides the global ``"context_limit"`` from ``.workflow.jsonc`` but is
+        itself overridden by the CLI ``--context-limit`` flag.
     """
 
     name: str
@@ -152,6 +155,7 @@ class AgentConfig:
     steps: List[str] = field(default_factory=lambda: ["all"])
     cargo_target_dir: Optional[str] = None
     docker_config: Optional[DockerConfig] = None
+    context_limit: Optional[int] = None
 
 
 class AgentPoolManager:

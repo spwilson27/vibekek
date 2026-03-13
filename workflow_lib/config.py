@@ -208,6 +208,7 @@ def get_agent_pool_configs() -> List[Any]:
     * ``quota-time`` — ``60``
     * ``steps`` — ``["all"]``
     * ``user`` — current OS user (``os.getenv("USER", "")``)
+    * ``context_limit`` (or ``context-limit``) — ``None`` (inherits global setting)
 
     Returns an empty list when the ``"agents"`` key is absent, allowing
     callers to fall back to single-backend behaviour.
@@ -256,6 +257,9 @@ def get_agent_pool_configs() -> List[Any]:
             agent_docker_override = _parse_docker_dict(entry["docker"], label)
             agent_docker = merge_docker_configs(global_docker, agent_docker_override)
 
+        raw_ctx_limit = entry.get("context_limit") or entry.get("context-limit")
+        agent_context_limit = int(raw_ctx_limit) if raw_ctx_limit is not None else None
+
         configs.append(AgentConfig(
             name=entry["name"],
             backend=backend,
@@ -268,20 +272,22 @@ def get_agent_pool_configs() -> List[Any]:
             steps=steps,
             cargo_target_dir=entry.get("cargo-target-dir") or None,
             docker_config=agent_docker,
+            context_limit=agent_context_limit,
         ))
     return configs
 
 
 _DEFAULT_CONTEXT_LIMIT = 126_000
 _context_limit_override: int | None = None
+_agent_context_limit: int | None = None
 
 
 def set_context_limit_override(value: int) -> None:
     """Override the context limit for the current process.
 
-    Takes precedence over both the ``.workflow.jsonc`` setting and the
-    built-in default.  Intended to be called once at startup when the user
-    passes ``--context-limit`` on the command line.
+    Takes precedence over all other context limit settings.  Intended to be
+    called once at startup when the user passes ``--context-limit`` on the
+    command line.
 
     :param value: Maximum prompt size in words to enforce.
     :type value: int
@@ -290,18 +296,40 @@ def set_context_limit_override(value: int) -> None:
     _context_limit_override = value
 
 
+def set_agent_context_limit(value: int | None) -> None:
+    """Set the active agent's context limit.
+
+    Takes precedence over the global ``"context_limit"`` in ``.workflow.jsonc``
+    and the built-in default, but is overridden by the CLI
+    ``--context-limit`` flag.  Intended to be called when an agent with a
+    per-agent ``"context_limit"`` setting is selected for execution.
+
+    Pass ``None`` to clear any previously set agent-level limit.
+
+    :param value: Maximum prompt size in words for the active agent, or
+        ``None`` to clear.
+    :type value: int or None
+    """
+    global _agent_context_limit
+    _agent_context_limit = value
+
+
 def get_context_limit() -> int:
     """Return the configured context limit in words.
 
     Resolution order (first match wins):
 
     1. CLI ``--context-limit`` override set via :func:`set_context_limit_override`.
-    2. ``"context_limit"`` key in ``.workflow.jsonc``.
-    3. Built-in default of 126 000.
+    2. Per-agent limit set via :func:`set_agent_context_limit` (from the
+       active agent's ``"context_limit"`` pool definition).
+    3. ``"context_limit"`` key in ``.workflow.jsonc``.
+    4. Built-in default of 126 000.
 
     :returns: Maximum prompt size in words.
     :rtype: int
     """
     if _context_limit_override is not None:
         return _context_limit_override
+    if _agent_context_limit is not None:
+        return _agent_context_limit
     return int(load_config().get("context_limit", _DEFAULT_CONTEXT_LIMIT))

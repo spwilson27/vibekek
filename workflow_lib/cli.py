@@ -71,7 +71,7 @@ from .context import ProjectContext
 from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_add_feature, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade, cmd_fixup
 from .executor import execute_dag, Logger, signal_handler
 from .dashboard import make_dashboard, _DashboardStream
-from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override
+from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override, set_agent_context_limit
 from .agent_pool import AgentPoolManager
 from .state import load_workflow_state, load_dags, get_tasks_dir, restore_state_from_branch
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner, QwenRunner, VALID_BACKENDS
@@ -171,6 +171,16 @@ def cmd_plan(args: argparse.Namespace) -> None:
     log_stream = open(log_file, "a", encoding="utf-8")
 
     runner = _make_runner(args.backend, model=args.model)
+
+    # Apply per-agent context_limit when the selected backend matches a pool
+    # definition.  The CLI --context-limit flag (already applied in main()) takes
+    # precedence over this, so set_agent_context_limit only has effect when no
+    # CLI override was given.
+    agent_configs = get_agent_pool_configs()
+    for _ac in agent_configs:
+        if _ac.backend == args.backend and _ac.context_limit is not None:
+            set_agent_context_limit(_ac.context_limit)
+            break
 
     with make_dashboard(log_file=log_stream) as dashboard:
         original_stdout = sys.stdout

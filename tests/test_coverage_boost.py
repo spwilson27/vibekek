@@ -3022,6 +3022,7 @@ class TestCLICoverage:
         mock_dash.__enter__ = MagicMock(return_value=mock_dash)
         mock_dash.__exit__ = MagicMock(return_value=False)
         with patch("workflow_lib.cli._make_runner", return_value=MagicMock()), \
+             patch("workflow_lib.cli.get_agent_pool_configs", return_value=[]), \
              patch("workflow_lib.cli.ProjectContext", return_value=ctx), \
              patch("workflow_lib.cli.Orchestrator", return_value=mock_orc), \
              patch("workflow_lib.cli.make_dashboard", return_value=mock_dash), \
@@ -3040,6 +3041,7 @@ class TestCLICoverage:
         mock_dash.__enter__ = MagicMock(return_value=mock_dash)
         mock_dash.__exit__ = MagicMock(return_value=False)
         with patch("workflow_lib.cli._make_runner", return_value=MagicMock()), \
+             patch("workflow_lib.cli.get_agent_pool_configs", return_value=[]), \
              patch("workflow_lib.cli.ProjectContext", return_value=ctx), \
              patch("workflow_lib.cli.Orchestrator", return_value=mock_orc), \
              patch("workflow_lib.cli.make_dashboard", return_value=mock_dash), \
@@ -3057,6 +3059,7 @@ class TestCLICoverage:
         mock_dash.__enter__ = MagicMock(return_value=mock_dash)
         mock_dash.__exit__ = MagicMock(return_value=False)
         with patch("workflow_lib.cli._make_runner", return_value=MagicMock()), \
+             patch("workflow_lib.cli.get_agent_pool_configs", return_value=[]), \
              patch("workflow_lib.cli.ProjectContext", return_value=ctx), \
              patch("workflow_lib.cli.Orchestrator", return_value=mock_orc), \
              patch("workflow_lib.cli.make_dashboard", return_value=mock_dash), \
@@ -3094,6 +3097,171 @@ class TestConfigCoverage:
             with pytest.raises(json.JSONDecodeError):
                 load_config()
 
+
+    # ------------------------------------------------------------------
+    # context_limit resolution order
+    # ------------------------------------------------------------------
+
+    def _reset_context_limit_state(self):
+        """Reset both module-level overrides to a clean slate."""
+        import workflow_lib.config as cfg
+        cfg._context_limit_override = None
+        cfg._agent_context_limit = None
+
+    def test_context_limit_default(self):
+        """Falls back to 126 000 when nothing is configured."""
+        self._reset_context_limit_state()
+        with patch("os.path.exists", return_value=False):
+            from workflow_lib.config import get_context_limit
+            assert get_context_limit() == 126_000
+
+    def test_context_limit_global_config_overrides_default(self):
+        """Global config value overrides the built-in default."""
+        self._reset_context_limit_state()
+        jsonc = '{"context_limit": 60000}'
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data=jsonc)):
+            from workflow_lib.config import get_context_limit
+            assert get_context_limit() == 60_000
+
+    def test_context_limit_agent_overrides_global_config(self):
+        """Per-agent limit overrides the global config value."""
+        self._reset_context_limit_state()
+        jsonc = '{"context_limit": 60000}'
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data=jsonc)):
+            from workflow_lib.config import get_context_limit, set_agent_context_limit
+            set_agent_context_limit(40_000)
+            try:
+                assert get_context_limit() == 40_000
+            finally:
+                set_agent_context_limit(None)
+
+    def test_context_limit_cli_overrides_agent(self):
+        """CLI flag takes top precedence over per-agent and global limits."""
+        self._reset_context_limit_state()
+        jsonc = '{"context_limit": 60000}'
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data=jsonc)):
+            from workflow_lib.config import (
+                get_context_limit,
+                set_agent_context_limit,
+                set_context_limit_override,
+            )
+            set_agent_context_limit(40_000)
+            set_context_limit_override(20_000)
+            try:
+                assert get_context_limit() == 20_000
+            finally:
+                set_context_limit_override(None)
+                set_agent_context_limit(None)
+
+    def test_get_agent_pool_configs_parses_context_limit(self):
+        """context_limit key in an agent entry is parsed into AgentConfig."""
+        jsonc = '''{
+            "agents": [
+                {
+                    "name": "flash",
+                    "backend": "gemini",
+                    "context_limit": 50000
+                }
+            ]
+        }'''
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data=jsonc)):
+            from workflow_lib.config import get_agent_pool_configs
+            configs = get_agent_pool_configs()
+        assert len(configs) == 1
+        assert configs[0].context_limit == 50_000
+
+    def test_get_agent_pool_configs_parses_context_limit_kebab(self):
+        """context-limit (kebab-case) key is also accepted."""
+        jsonc = '''{
+            "agents": [
+                {
+                    "name": "flash",
+                    "backend": "gemini",
+                    "context-limit": 45000
+                }
+            ]
+        }'''
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data=jsonc)):
+            from workflow_lib.config import get_agent_pool_configs
+            configs = get_agent_pool_configs()
+        assert configs[0].context_limit == 45_000
+
+    def test_get_agent_pool_configs_context_limit_defaults_to_none(self):
+        """Agents without context_limit get None (inherit global/default)."""
+        jsonc = '''{
+            "agents": [
+                {"name": "flash", "backend": "gemini"}
+            ]
+        }'''
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", mock_open(read_data=jsonc)):
+            from workflow_lib.config import get_agent_pool_configs
+            configs = get_agent_pool_configs()
+        assert configs[0].context_limit is None
+
+    def test_cmd_plan_applies_agent_context_limit(self):
+        """cmd_plan sets the agent context limit when a matching pool agent is found."""
+        import workflow_lib.config as cfg
+        self._reset_context_limit_state()
+        from workflow_lib.agent_pool import AgentConfig
+        agent = AgentConfig(
+            name="flash", backend="gemini", user="u",
+            parallel=1, priority=1, quota_time=60,
+            context_limit=55_000,
+        )
+        ctx = MagicMock()
+        ctx.state = {}
+        args = MagicMock(phase=None, force=False, backend="gemini", jobs=1)
+        mock_dash = MagicMock()
+        mock_dash.__enter__ = MagicMock(return_value=mock_dash)
+        mock_dash.__exit__ = MagicMock(return_value=False)
+        with patch("workflow_lib.cli._make_runner", return_value=MagicMock()), \
+             patch("workflow_lib.cli.get_agent_pool_configs", return_value=[agent]), \
+             patch("workflow_lib.cli.ProjectContext", return_value=ctx), \
+             patch("workflow_lib.cli.Orchestrator", return_value=MagicMock()), \
+             patch("workflow_lib.cli.make_dashboard", return_value=mock_dash), \
+             patch("workflow_lib.cli._DashboardStream", side_effect=lambda d, s: s), \
+             patch("builtins.open", mock_open()):
+            from workflow_lib.cli import cmd_plan
+            cmd_plan(args)
+        assert cfg._agent_context_limit == 55_000
+        self._reset_context_limit_state()
+
+    def test_cmd_plan_skips_agent_context_limit_when_cli_override_set(self):
+        """CLI --context-limit takes precedence; agent limit does not overwrite it."""
+        import workflow_lib.config as cfg
+        self._reset_context_limit_state()
+        cfg._context_limit_override = 20_000  # simulate CLI flag already applied
+        from workflow_lib.agent_pool import AgentConfig
+        agent = AgentConfig(
+            name="flash", backend="gemini", user="u",
+            parallel=1, priority=1, quota_time=60,
+            context_limit=55_000,
+        )
+        ctx = MagicMock()
+        ctx.state = {}
+        args = MagicMock(phase=None, force=False, backend="gemini", jobs=1)
+        mock_dash = MagicMock()
+        mock_dash.__enter__ = MagicMock(return_value=mock_dash)
+        mock_dash.__exit__ = MagicMock(return_value=False)
+        with patch("workflow_lib.cli._make_runner", return_value=MagicMock()), \
+             patch("workflow_lib.cli.get_agent_pool_configs", return_value=[agent]), \
+             patch("workflow_lib.cli.ProjectContext", return_value=ctx), \
+             patch("workflow_lib.cli.Orchestrator", return_value=MagicMock()), \
+             patch("workflow_lib.cli.make_dashboard", return_value=mock_dash), \
+             patch("workflow_lib.cli._DashboardStream", side_effect=lambda d, s: s), \
+             patch("builtins.open", mock_open()):
+            from workflow_lib.cli import cmd_plan
+            cmd_plan(args)
+        # CLI override wins regardless of the agent's limit
+        from workflow_lib.config import get_context_limit
+        assert get_context_limit() == 20_000
+        self._reset_context_limit_state()
 
     def test_get_dev_branch_default(self):
         """get_dev_branch returns 'dev' when no config file exists."""
