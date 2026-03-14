@@ -11,7 +11,7 @@ You are a Project Architect. Your job is to take the master `requirements.md` an
 4. Because there may be many requirements, take multiple turns to do this (e.g., process a chunk of requirements, update the file, and continue in the next turn) so you do not run into output context limits.
 5. Add a "Dependencies" section for each requirement where applicable.
 6. Write the reordered requirements to a NEW file named `ordered_requirements.md`.
-7. You MUST verify your work by running `python .tools/verify_requirements.py --verify-ordered requirements.md ordered_requirements.md`.
+7. You MUST verify your work by running `python .tools/verify.py ordered requirements.md ordered_requirements.md`.
 8. If the script reports missing or extra requirements, you MUST continually fix `ordered_requirements.md` and run the validation again until it succeeds perfectly.
 
 # ORDERING ALGORITHM

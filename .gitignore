@@ -9,3 +9,4 @@ __pycache__/
 .DS_Store
 .coverage*
 .coverage_report.json
+rag

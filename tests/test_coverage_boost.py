@@ -2122,7 +2122,9 @@ class TestPhase7AExecute:
              patch("os.listdir", return_value=["phase_1"]), \
              patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
              patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
-             patch("concurrent.futures.as_completed", return_value=[mock_future]):
+             patch("concurrent.futures.as_completed", return_value=[mock_future]), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             Phase7ADAGGeneration().execute(ctx)
         assert ctx.state.get("dag_completed") is True
 
@@ -2143,7 +2145,9 @@ class TestPhase7AExecute:
              patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=dag), \
              patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
              patch("concurrent.futures.as_completed", return_value=[mock_future]), \
-             patch("builtins.open", mock_open()):
+             patch("builtins.open", mock_open()), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             Phase7ADAGGeneration().execute(ctx)
         assert ctx.state.get("dag_completed") is True
 
@@ -2164,7 +2168,9 @@ class TestPhase7AExecute:
              patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=None), \
              patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
              patch("concurrent.futures.as_completed", return_value=[mock_future]), \
-             patch("builtins.open", mock_open(read_data="task content")):
+             patch("builtins.open", mock_open(read_data="task content")), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             Phase7ADAGGeneration().execute(ctx)
 
 
@@ -2388,6 +2394,56 @@ class TestReplanCmdsCoverage:
                    return_value={"replan_history": []}), \
              patch("workflow_lib.replan.save_replan_state"):
             cmd_modify_req(self._make_args(edit_req=False, remove_req=None, add_req="New req", dry_run=False))
+
+    def test_fix_description_length_req_file_not_found(self):
+        from workflow_lib.replan import _fix_description_length
+        ctx = self._mock_ctx()
+        with patch("os.path.exists", return_value=False), \
+             patch("builtins.print"):
+            result = _fix_description_length(ctx, dry_run=False)
+        assert result is False
+
+    def test_fix_description_length_no_issues(self):
+        from workflow_lib.replan import _fix_description_length
+        ctx = self._mock_ctx()
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+        with patch("os.path.exists", return_value=True), \
+             patch("subprocess.run", return_value=mock_result), \
+             patch("builtins.print"):
+            result = _fix_description_length(ctx, dry_run=False)
+        assert result is False
+
+    def test_fix_description_length_dry_run(self):
+        from workflow_lib.replan import _fix_description_length
+        ctx = self._mock_ctx()
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = "  - [REQ-001] (5 words)\n"
+        mock_result.stderr = ""
+        with patch("os.path.exists", return_value=True), \
+             patch("subprocess.run", return_value=mock_result), \
+             patch("builtins.open", mock_open(read_data="### **[REQ-001]** short\n")), \
+             patch("builtins.print"):
+            result = _fix_description_length(ctx, dry_run=True)
+        assert result is True
+
+    def test_fix_description_length_ai_failure(self):
+        from workflow_lib.replan import _fix_description_length
+        ctx = self._mock_ctx()
+        ctx.run_ai.return_value = MagicMock(returncode=1, stdout="error", stderr="err")
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = "  - [REQ-001] (5 words)\n"
+        mock_result.stderr = ""
+        with patch("os.path.exists", return_value=True), \
+             patch("subprocess.run", return_value=mock_result), \
+             patch("builtins.open", mock_open(read_data="### **[REQ-001]** short\n")), \
+             patch("builtins.print"):
+            result = _fix_description_length(ctx, dry_run=False)
+        assert result is False
 
     def test_cmd_regen_dag_dry_run_single_phase(self):
         from workflow_lib.replan import cmd_regen_dag
@@ -2706,7 +2762,9 @@ class TestPhase7AInner:
              patch("os.listdir", return_value=["phase_1"]), \
              patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
              patch.object(Phase7ADAGGeneration, "_validate_dag", return_value=[]), \
-             patch("builtins.open", mock_open(read_data='{"sub/01.md": []}')):
+             patch("builtins.open", mock_open(read_data='{"sub/01.md": []}')), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             Phase7ADAGGeneration().execute(ctx)
         assert ctx.state.get("dag_completed") is True
 
@@ -2731,7 +2789,9 @@ class TestPhase7AInner:
                  [],  # after rebuild: valid
              ]), \
              patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=fresh_dag), \
-             patch("builtins.open", mock_open(read_data='{"sub/01_a.md": []}')):
+             patch("builtins.open", mock_open(read_data='{"sub/01_a.md": []}')), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             Phase7ADAGGeneration().execute(ctx)
         assert ctx.state.get("dag_completed") is True
 
@@ -2752,7 +2812,9 @@ class TestPhase7AInner:
              patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
              patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=dag), \
              patch.object(Phase7ADAGGeneration, "_validate_dag", return_value=[]), \
-             patch("builtins.open", mock_open()):
+             patch("builtins.open", mock_open()), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             Phase7ADAGGeneration().execute(ctx)
         assert ctx.state.get("dag_completed") is True
 
@@ -2784,7 +2846,9 @@ class TestPhase7AInner:
                  ["File on disk not in DAG: sub/02_extra.md"],  # programmatic fails
                  [],  # AI fallback succeeds
              ]), \
-             patch("builtins.open", mock_open(read_data='{"sub/01_a.md": []}')):
+             patch("builtins.open", mock_open(read_data='{"sub/01_a.md": []}')), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             Phase7ADAGGeneration().execute(ctx)
         assert ctx.state.get("dag_completed") is True
         assert ctx.run_gemini.called  # fell back to AI
@@ -2813,7 +2877,9 @@ class TestPhase7AInner:
              patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=None), \
              patch("builtins.open", mock_open(read_data='{"sub/01_a.md": []}')), \
              patch.object(Phase7ADAGGeneration, "_validate_dag", return_value=[]), \
-             patch("os.remove"):
+             patch("os.remove"), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             Phase7ADAGGeneration().execute(ctx)
         assert ctx.state.get("dag_completed") is True
 
@@ -2834,11 +2900,100 @@ class TestPhase7AInner:
                  ["phase_1"] if "tasks" in p and "phase_1" not in p else []
              )), \
              patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
-             patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=None):
+             patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=None), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             Phase7ADAGGeneration().execute(ctx)
         # no sub_epics -> process returns True -> stage + save
         assert ctx.state.get("dag_completed") is True
 
+    def test_ai_dag_json_decode_error_triggers_retry(self):
+        """Test that invalid JSON from AI triggers retry."""
+        ctx = _mock_ctx_for_phases()
+        ctx.load_prompt.return_value = "dag tmpl"
+        call_count = [0]
+
+        def exists_side(p):
+            if "dag.json" in p and "reviewed" not in p:
+                call_count[0] += 1
+                return call_count[0] > 2  # exists after 2nd attempt
+            return True
+
+        def run_gemini_side(*a, **kw):
+            # First call writes invalid JSON, second call writes valid
+            if call_count[0] == 1:
+                with patch("builtins.open", mock_open()) as mock_file:
+                    pass
+            return MagicMock(returncode=0)
+
+        ctx.run_gemini.side_effect = run_gemini_side
+
+        with patch("os.path.exists", side_effect=exists_side), \
+             patch("os.listdir", side_effect=lambda p: (
+                 ["phase_1"] if "tasks" in p and "phase_1" not in p else
+                 ["sub"] if "phase_1" in p else []
+             )), \
+             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
+             patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=None), \
+             patch.object(Phase7ADAGGeneration, "_validate_dag", return_value=[]), \
+             patch("builtins.open", mock_open(read_data="invalid json{")), \
+             patch("json.load", side_effect=[json.JSONDecodeError("msg", "doc", 0), None]), \
+             patch("os.remove"), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            Phase7ADAGGeneration().execute(ctx)
+        assert ctx.state.get("dag_completed") is True
+
+    def test_ai_dag_generation_all_attempts_fail(self):
+        """Test that all 3 AI attempts failing results in failure."""
+        ctx = _mock_ctx_for_phases()
+        ctx.load_prompt.return_value = "dag tmpl"
+        # AI returns failure for all 3 attempts
+        ctx.run_gemini.return_value = MagicMock(returncode=1, stdout="err", stderr="err")
+
+        mock_future = MagicMock()
+        mock_future.result.return_value = False  # Indicate failure
+        mock_executor = MagicMock()
+        mock_executor.__enter__ = MagicMock(return_value=mock_executor)
+        mock_executor.__exit__ = MagicMock(return_value=False)
+        mock_executor.submit.return_value = mock_future
+
+        with patch("os.path.exists", side_effect=lambda p: "tasks" in p), \
+             patch("os.listdir", return_value=["phase_1"]), \
+             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
+             patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=None), \
+             patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
+             patch("concurrent.futures.as_completed", return_value=[mock_future]), \
+             patch("builtins.open", mock_open()), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            with pytest.raises(SystemExit):
+                Phase7ADAGGeneration().execute(ctx)
+
+
+
+class TestExecutorFunctions:
+    """Tests for executor.py helper functions."""
+
+    def test_compact_task_id_short(self):
+        from workflow_lib.executor import _compact_task_id
+        result = _compact_task_id("phase_1", "short")
+        # Function compacts phase_id to p1
+        assert "p1" in result
+        assert "short" in result
+
+    def test_compact_task_id_long(self):
+        from workflow_lib.executor import _compact_task_id
+        long_name = "very_long_task_name_that_exceeds_limit"
+        result = _compact_task_id("phase_1", long_name)
+        assert len(result) <= 50
+
+    def test_step_for_agent_type(self):
+        from workflow_lib.executor import _step_for_agent_type
+        # Function returns 'all' for all agent types
+        assert _step_for_agent_type("claude") == "all"
+        assert _step_for_agent_type("gemini") == "all"
+        assert _step_for_agent_type("copilot") == "all"
 
 
 class TestPhase6BInner:

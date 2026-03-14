@@ -11,8 +11,8 @@ You are a Lead Product Manager. Your job is to read a specific project document 
 1. Extract the core requirements from the document into a new file at '{target_path}'.
 2. IMPORTANT: If the original document ('{document_path}') contains requirements that do not have `[REQ-...]` or `[TAS-...]` IDs, you MUST trace those requirements and edit '{document_path}' to insert these new tags natively into the source file.
 3. CRITICAL: Each requirement description MUST be at least 10 words long. Descriptions that are too short (e.g., "-", "TBD", "See source", or single phrases) are NOT acceptable. You MUST expand each description to be a meaningful, self-contained summary of the requirement.
-4. You MUST verify your extraction and tagging by running `python .tools/verify_requirements.py --verify-doc {document_path} {target_path}`.
-5. You MUST also verify description length by running `python .tools/verify_requirements.py --verify-desc-length {target_path}`.
+4. You MUST verify your extraction and tagging by running `python .tools/verify.py doc {document_path} {target_path}`.
+5. You MUST also verify description length by running `python .tools/verify.py req-desc-length {target_path}`.
 6. If either script reports issues (missing requirements or short descriptions), you MUST continually fix '{document_path}' and '{target_path}' and run the validations again until both succeed perfectly.
 
 # CHAIN OF THOUGHT

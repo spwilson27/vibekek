@@ -1,4 +1,4 @@
-"""Tests for verify_requirements.py — specifically verify_tasks exclusion of phase_removed.md.
+"""Tests for verify.py — specifically verify_tasks exclusion of phase_removed.md.
 
 Regression coverage for the bug where verify_tasks() included phase_removed.md
 in its phase-requirement scan, causing all removed/aliased requirements to be
@@ -12,7 +12,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import verify_requirements
+from verify import parse_requirements, verify_tasks, verify_req_desc_length
 
 
 def _write(path, content):
@@ -36,7 +36,7 @@ class TestVerifyTasksExcludesPhaseRemoved(unittest.TestCase):
             _write(os.path.join(tasks_dir, "phase_0", "sub", "01_task.md"),
                    "[ACT-001]\n")
 
-            result = verify_requirements.verify_tasks(phases_dir, tasks_dir)
+            result = verify_tasks(phases_dir, tasks_dir)
             self.assertEqual(result, 0, "verify_tasks should pass — REM-001 is removed")
 
     def test_active_reqs_still_enforced(self):
@@ -50,7 +50,7 @@ class TestVerifyTasksExcludesPhaseRemoved(unittest.TestCase):
             # No task covers ACT-001
             os.makedirs(os.path.join(tasks_dir, "phase_0", "sub"), exist_ok=True)
 
-            result = verify_requirements.verify_tasks(phases_dir, tasks_dir)
+            result = verify_tasks(phases_dir, tasks_dir)
             self.assertEqual(result, 1, "verify_tasks should fail — ACT-001 is unmapped")
 
     def test_all_active_reqs_covered_across_multiple_phases(self):
@@ -66,7 +66,7 @@ class TestVerifyTasksExcludesPhaseRemoved(unittest.TestCase):
             _write(os.path.join(tasks_dir, "phase_1", "sub", "01.md"), "[ACT-002]\n")
             # Deliberately no tasks for REM-001 or REM-002
 
-            result = verify_requirements.verify_tasks(phases_dir, tasks_dir)
+            result = verify_tasks(phases_dir, tasks_dir)
             self.assertEqual(result, 0)
 
     def test_no_phases_dir_returns_error(self):
@@ -74,7 +74,7 @@ class TestVerifyTasksExcludesPhaseRemoved(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tasks_dir = os.path.join(tmp, "tasks")
             os.makedirs(tasks_dir)
-            result = verify_requirements.verify_tasks(
+            result = verify_tasks(
                 os.path.join(tmp, "nonexistent_phases"), tasks_dir
             )
             self.assertEqual(result, 1)
@@ -85,14 +85,14 @@ class TestVerifyTasksExcludesPhaseRemoved(unittest.TestCase):
             phases_dir = os.path.join(tmp, "phases")
             os.makedirs(phases_dir)
             _write(os.path.join(phases_dir, "phase_0.md"), "[ACT-001]\n")
-            result = verify_requirements.verify_tasks(
+            result = verify_tasks(
                 phases_dir, os.path.join(tmp, "nonexistent_tasks")
             )
             self.assertEqual(result, 1)
 
 
 class TestVerifyDescriptionLength(unittest.TestCase):
-    """Tests for verify_description_length() - validates requirement descriptions are 10+ words."""
+    """Tests for verify_req_desc_length() - validates requirement descriptions are 10+ words."""
 
     def test_passes_with_long_enough_descriptions(self):
         """Requirements with descriptions of 10+ words should pass."""
@@ -111,7 +111,7 @@ class TestVerifyDescriptionLength(unittest.TestCase):
 - **Dependencies:** None
 """)
             f.flush()
-            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            result = verify_req_desc_length(f.name, min_words=10)
             self.assertEqual(result, 0)
             os.unlink(f.name)
 
@@ -132,7 +132,7 @@ class TestVerifyDescriptionLength(unittest.TestCase):
 - **Dependencies:** None
 """)
             f.flush()
-            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            result = verify_req_desc_length(f.name, min_words=10)
             self.assertEqual(result, 1)
             os.unlink(f.name)
 
@@ -147,7 +147,7 @@ class TestVerifyDescriptionLength(unittest.TestCase):
 - **Dependencies:** None
 """)
             f.flush()
-            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            result = verify_req_desc_length(f.name, min_words=10)
             self.assertEqual(result, 1)
             os.unlink(f.name)
 
@@ -162,7 +162,7 @@ class TestVerifyDescriptionLength(unittest.TestCase):
 - **Dependencies:** None
 """)
             f.flush()
-            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            result = verify_req_desc_length(f.name, min_words=10)
             self.assertEqual(result, 1)
             os.unlink(f.name)
 
@@ -177,7 +177,7 @@ class TestVerifyDescriptionLength(unittest.TestCase):
 - **Dependencies:** None
 """)
             f.flush()
-            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            result = verify_req_desc_length(f.name, min_words=10)
             self.assertEqual(result, 1)
             os.unlink(f.name)
 
@@ -192,7 +192,7 @@ class TestVerifyDescriptionLength(unittest.TestCase):
 - **Dependencies:** None
 """)
             f.flush()
-            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            result = verify_req_desc_length(f.name, min_words=10)
             self.assertEqual(result, 0)
             os.unlink(f.name)
 
@@ -207,7 +207,7 @@ class TestVerifyDescriptionLength(unittest.TestCase):
 - **Dependencies:** None
 """)
             f.flush()
-            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            result = verify_req_desc_length(f.name, min_words=10)
             self.assertEqual(result, 1)
             os.unlink(f.name)
 
@@ -223,16 +223,16 @@ class TestVerifyDescriptionLength(unittest.TestCase):
 """)
             f.flush()
             # Should fail with min_words=10
-            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            result = verify_req_desc_length(f.name, min_words=10)
             self.assertEqual(result, 1)
             # Should pass with min_words=5
-            result = verify_requirements.verify_description_length(f.name, min_words=5)
+            result = verify_req_desc_length(f.name, min_words=5)
             self.assertEqual(result, 0)
             os.unlink(f.name)
 
     def test_file_not_found(self):
         """Non-existent file should return error code 1."""
-        result = verify_requirements.verify_description_length("/nonexistent/file.md", min_words=10)
+        result = verify_req_desc_length("/nonexistent/file.md", min_words=10)
         self.assertEqual(result, 1)
 
     def test_multiple_short_descriptions_reported(self):
@@ -258,7 +258,7 @@ class TestVerifyDescriptionLength(unittest.TestCase):
 - **Dependencies:** None
 """)
             f.flush()
-            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            result = verify_req_desc_length(f.name, min_words=10)
             self.assertEqual(result, 1)
             os.unlink(f.name)
 
@@ -275,7 +275,7 @@ class TestVerifyDescriptionLength(unittest.TestCase):
 - **Dependencies:** None
 """)
             f.flush()
-            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            result = verify_req_desc_length(f.name, min_words=10)
             self.assertEqual(result, 0)
             os.unlink(f.name)
 

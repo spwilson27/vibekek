@@ -93,13 +93,13 @@ def _create_tools_layout(root: Path) -> Path:
     for name in PROMPT_NAMES:
         (tools / "prompts" / name).write_text(STUB_PROMPT)
 
-    # verify_requirements.py is imported by constants.py; the real file must
+    # verify.py is imported by constants.py; the real file must
     # be reachable.  We just need it to exist at TOOLS_DIR level.
-    # constants.py does: sys.path.insert(0, TOOLS_DIR); from verify_requirements import …
+    # constants.py does: sys.path.insert(0, TOOLS_DIR); from verify import …
     # The real file lives next to this test suite, so we symlink it.
-    real_verify = Path(__file__).parent.parent / "verify_requirements.py"
+    real_verify = Path(__file__).parent.parent / "verify.py"
     if real_verify.exists():
-        link = tools / "verify_requirements.py"
+        link = tools / "verify.py"
         if not link.exists():
             link.symlink_to(real_verify)
 

@@ -54,6 +54,14 @@ import re
 import threading
 from typing import List, Dict, Any, Optional
 
+# ANSI color codes for terminal output
+RED = "\033[91m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+BLUE = "\033[94m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+
 from .constants import TOOLS_DIR, DOCS, parse_requirements
 from .context import ProjectContext
 
@@ -467,7 +475,7 @@ class Phase4AExtractRequirements(BasePhase):
     Produces ``docs/plan/requirements/<doc_id>.md``.  Skipped for research
     documents and for docs already recorded in
     ``ctx.state["extracted_requirements"]``.  Runs automated verification
-    via ``verify_requirements.py --verify-doc`` after each extraction.
+    via ``verify.py --verify-doc`` after each extraction.
 
     :param doc: Document descriptor dict.
     :type doc: dict
@@ -532,7 +540,7 @@ class Phase4AExtractRequirements(BasePhase):
         
         print(f"   -> Verifying extraction for {self.doc['name']}...")
         verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify_requirements.py"), "--verify-doc", doc_path, expected_file],
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "doc", doc_path, expected_file],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
@@ -543,7 +551,7 @@ class Phase4AExtractRequirements(BasePhase):
         # Verify description length (minimum 10 words)
         print(f"   -> Verifying description length for {self.doc['name']}...")
         desc_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify_requirements.py"), "--verify-desc-length", expected_file],
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "req-desc-length", expected_file],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if desc_res.returncode != 0:
@@ -558,7 +566,7 @@ class Phase4AExtractRequirements(BasePhase):
 class Phase4BMergeRequirements(BasePhase):
     """Consolidate all per-document requirement files into ``requirements.md``.
 
-    Runs ``verify_requirements.py --verify-master`` after merging.  Idempotent
+    Runs ``verify.py --verify-master`` after merging.  Idempotent
     via ``ctx.state["requirements_merged"]``.
     """
 
@@ -591,7 +599,7 @@ class Phase4BMergeRequirements(BasePhase):
             
         print("\n   -> Verifying merged requirements.md...")
         verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify_requirements.py"), "--verify-master"],
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "master"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
@@ -602,7 +610,7 @@ class Phase4BMergeRequirements(BasePhase):
         # Verify description length (minimum 10 words)
         print("\n   -> Verifying description length in requirements.md...")
         desc_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify_requirements.py"), "--verify-desc-length", "requirements.md"],
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "req-desc-length", "requirements.md"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if desc_res.returncode != 0:
@@ -683,7 +691,7 @@ class Phase4COrderRequirements(BasePhase):
     """Sequence and prioritise requirements by dependency and implementation order.
 
     Produces ``ordered_requirements.md``, verifies it with
-    ``verify_requirements.py --verify-ordered``, then renames it to
+    ``verify.py --verify-ordered``, then renames it to
     ``requirements.md``.  Idempotent via ``ctx.state["requirements_ordered"]``.
     """
 
@@ -714,7 +722,7 @@ class Phase4COrderRequirements(BasePhase):
             
         print("\n   -> Verifying ordered_requirements.md against active requirements in requirements.md...")
         verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify_requirements.py"), "--verify-ordered", "requirements.md", "ordered_requirements.md"],
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "ordered", "requirements.md", "ordered_requirements.md"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
@@ -738,7 +746,7 @@ class Phase5GenerateEpics(BasePhase):
     """Generate the ``docs/plan/phases/`` epic/phase documents.
 
     Each phase file groups related requirements into an implementation epic.
-    Runs ``verify_requirements.py --verify-phases`` after generation.
+    Runs ``verify.py --verify-phases`` after generation.
     Idempotent via ``ctx.state["phases_completed"]``.
     """
 
@@ -771,7 +779,7 @@ class Phase5GenerateEpics(BasePhase):
             
         print("\n   -> Verifying phases/ covers all requirements...")
         verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify_requirements.py"), "--verify-phases", "requirements.md", "docs/plan/phases/"],
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "phases", "requirements.md", "docs/plan/phases/"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
@@ -839,7 +847,7 @@ class Phase6BreakDownTasks(BasePhase):
     The task-generation pass runs in parallel across sub-epics up to
     ``ctx.jobs`` workers.
 
-    Runs ``verify_requirements.py --verify-tasks`` at the end.  Idempotent
+    Runs ``verify.py --verify-tasks`` at the end.  Idempotent
     via ``ctx.state["tasks_completed"]``.
     """
 
@@ -975,7 +983,7 @@ class Phase6BreakDownTasks(BasePhase):
             
         print("\n   -> Verifying tasks/ covers all requirements from phases/...")
         verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify_requirements.py"), "--verify-tasks", "docs/plan/phases/", "docs/plan/tasks/"],
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "tasks", "docs/plan/phases/", "docs/plan/tasks/"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
@@ -1698,6 +1706,45 @@ class Phase7ADAGGeneration(BasePhase):
                 if not future.result():
                     print("\n[!] Error encountered in parallel DAG generation. Exiting.")
                     os._exit(1)
+
+        # Post-generation validation: verify depends_on metadata format
+        # Only run if we actually generated/validated DAGs (not in test scenarios with fake paths)
+        if os.path.exists(tasks_dir):
+            print("\n" + "="*60)
+            print("=> [Phase 7A: Post-Validation] Validating depends_on metadata...")
+            print("="*60 + "\n")
+
+            validation_script = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "verify.py"
+            )
+
+            import subprocess
+            result = subprocess.run(
+                [sys.executable, validation_script, "depends-on", tasks_dir],
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode != 0:
+                print(result.stdout)
+                print(result.stderr)
+                print("\n" + "="*60)
+                print(f"{RED}[!] VALIDATION FAILED{RESET}")
+                print("="*60)
+                print("\nThe depends_on metadata in task files has formatting issues.")
+                print("To fix these issues, you have two options:\n")
+                print("1. Manual fix:")
+                print("   - Review the errors above")
+                print("   - Edit the task files to fix the depends_on lines")
+                print("   - Re-run: python .tools/verify.py depends-on docs/plan/tasks/\n")
+                print("2. Automatic fix:")
+                print("   - Run: python .tools/verify.py depends-on --fix docs/plan/tasks/\n")
+                print("After fixing, re-run Phase 7A to regenerate DAGs.\n")
+                sys.exit(1)
+            else:
+                print(result.stdout)
+                print(f"{GREEN}✓ All depends_on metadata is valid{RESET}\n")
 
         ctx.stage_changes([tasks_dir])
         ctx.state["dag_completed"] = True

@@ -50,7 +50,7 @@ After updating the descriptions, you MUST verify your work is complete:
 
 **Step 1: Run the description length verification script**
 ```bash
-python .tools/verify_requirements.py --verify-desc-length requirements.md
+python .tools/verify.py req-desc-length requirements.md
 ```
 
 **Step 2: Check the output**
@@ -67,7 +67,7 @@ python .tools/verify_requirements.py --verify-desc-length requirements.md
 - The script must exit with code 0
 
 **Step 5: Final checklist before ending your turn**
-- [ ] Verification script passes: `python .tools/verify_requirements.py --verify-desc-length requirements.md`
+- [ ] Verification script passes: `python .tools/verify.py req-desc-length requirements.md`
 - [ ] All requirements listed in the original input now have 10+ word descriptions
 - [ ] No new validation errors were introduced
 - [ ] Original requirement intent preserved (no scope changes)

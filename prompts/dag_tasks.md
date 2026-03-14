@@ -80,18 +80,47 @@ Your final response MUST be enclosed within a json codeblock. No other text.
 
 After writing the DAG JSON file, you MUST verify your work is complete by running these checks:
 
-**Step 1: Validate JSON syntax**
+## Step 1: Validate JSON syntax
 ```bash
 python -c "import json; json.load(open('{target_path}'))"
 ```
 If this fails, fix the JSON syntax error.
 
-**Step 2: Run the DAG verification script**
+## Step 2: Validate depends_on metadata format
+Before verifying the DAG, ensure all task files have properly formatted `depends_on` metadata:
+
 ```bash
-python .tools/verify_requirements.py --verify-dags docs/plan/tasks/
+python .tools/verify.py depends-on docs/plan/tasks/{phase_filename}/
 ```
 
-**Step 3: Check for these specific errors and fix them:**
+**This validation checks:**
+- Every task file has a `depends_on` metadata field
+- Paths are in a consistent, parseable format
+- No problematic patterns (multi-line arrays, inconsistent quoting, etc.)
+
+**If validation fails:**
+1. Read each error carefully
+2. Fix the `depends_on` lines in the task files
+3. Re-run validation until it passes
+
+**Common issues and fixes:**
+
+| Issue | Bad Example | Good Example |
+|-------|-------------|--------------|
+| Missing metadata | (no depends_on line) | `- depends_on: [01_prerequisite.md]` |
+| Relative paths | `../other_epic/01_file.md` | `other_epic/01_file.md` |
+| Full paths | `docs/plan/tasks/phase_X/...` | `phase_X/sub_epic/file.md` |
+| Inconsistent quotes | `[file1.md, "file2.md"]` | `["file1.md", "file2.md"]` |
+| Multi-line array | `depends_on: [\n  file1.md\n]` | `depends_on: [file1.md, file2.md]` |
+
+**Auto-fix:** You can also run `python .tools/verify.py depends-on --fix docs/plan/tasks/` to automatically fix formatting issues.
+
+## Step 3: Run the DAG verification script
+```bash
+python .tools/verify.py dags docs/plan/tasks/
+```
+
+## Step 4: Check for these specific errors and fix them:
 
 | Error | What it means | How to fix |
 |-------|---------------|------------|
@@ -100,18 +129,19 @@ python .tools/verify_requirements.py --verify-dags docs/plan/tasks/
 | `Cycle detected in DAG` | You created a circular dependency (A→B→A) | Remove one of the circular dependencies |
 | `FAILED: X has no DAG file` | The dag.json file wasn't written properly | Re-write the file ensuring it's valid JSON |
 
-**Step 4: Re-run verification until it passes**
+## Step 5: Re-run verification until it passes
 - If ANY check fails, read the error output carefully and fix the specific issues
 - Re-run the verification script after each fix
 - Do NOT consider your work complete until the verification script prints: `Success: All DAGs are valid`
 
-**Step 5: Final checklist before ending your turn**
+## Step 6: Final checklist before ending your turn
 - [ ] JSON file exists at `{target_path}`
 - [ ] JSON is valid (passes `python -c "import json; json.load(...)"`)
+- [ ] `verify.py depends-on` passes with exit code 0
+- [ ] `verify.py dags` passes with exit code 0
 - [ ] Every task file in `docs/plan/tasks/{phase_filename}/` has a corresponding key in the JSON
 - [ ] Every key in the JSON corresponds to an actual file on disk
 - [ ] No circular dependencies exist
-- [ ] Verification script passes with exit code 0
 
 # ERROR HANDLING
 - If a required input file is missing, print the exact path that was expected, then exit with a non-zero status. Do NOT create placeholder files or guess at content.

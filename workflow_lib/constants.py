@@ -2,7 +2,7 @@
 
 Defines file-system paths derived from the location of this package, the
 master document catalogue (``DOCS``), and imports the requirement-parsing
-utilities from the project-level ``verify_requirements`` script.
+utilities from the project-level ``verify`` script.
 
 Module-level constants
 -----------------------
@@ -37,7 +37,7 @@ import sys
 TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT_DIR = os.path.dirname(TOOLS_DIR)
 sys.path.insert(0, TOOLS_DIR)
-from verify_requirements import parse_requirements, REQ_REGEX  # noqa: E402
+from verify import parse_requirements, REQ_REGEX  # noqa: E402
 
 INPUT_DIR = os.path.join(ROOT_DIR, "input")
 STATE_DIR = os.path.join(ROOT_DIR, ".workflow_state")

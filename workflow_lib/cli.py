@@ -54,7 +54,7 @@ Available commands
     After manual task edits, rescan tasks, rebuild the DAG, and validate.
 
 ``fixup``
-    Run validation and automatically fix failures (phase mappings + task coverage).
+    Run validation and automatically fix failures (phase mappings, task coverage, depends_on formatting, and DAG references).
 """
 
 import os

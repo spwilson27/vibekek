@@ -161,7 +161,7 @@ def _run_all_checks(quiet: bool = False) -> Dict[str, Any]:
         ``"missing_reqs"`` list of requirement IDs that failed the check.
     :rtype: Dict[str, Any]
     """
-    verify_script = os.path.join(TOOLS_DIR, "verify_requirements.py")
+    verify_script = os.path.join(TOOLS_DIR, "verify.py")
     plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
     req_file = os.path.join(ROOT_DIR, "requirements.md")
     phases_dir = os.path.join(plan_dir, "phases")
@@ -170,18 +170,19 @@ def _run_all_checks(quiet: bool = False) -> Dict[str, Any]:
     checks = []
 
     if os.path.exists(req_file):
-        checks.append(("verify-req-format", [sys.executable, verify_script, "--verify-req-format", "requirements.md"]))
-        checks.append(("verify-desc-length", [sys.executable, verify_script, "--verify-desc-length", "requirements.md"]))
+        checks.append(("verify-req-format", [sys.executable, verify_script, "req-format", "requirements.md"]))
+        checks.append(("verify-desc-length", [sys.executable, verify_script, "req-desc-length", "requirements.md"]))
 
     if os.path.exists(req_file) and os.path.isdir(os.path.join(plan_dir, "requirements")):
-        checks.append(("verify-master", [sys.executable, verify_script, "--verify-master"]))
+        checks.append(("verify-master", [sys.executable, verify_script, "master", "requirements.md", "docs/plan/requirements"]))
 
     if os.path.exists(req_file) and os.path.isdir(phases_dir):
-        checks.append(("verify-phases", [sys.executable, verify_script, "--verify-phases", "requirements.md", "docs/plan/phases/"]))
+        checks.append(("verify-phases", [sys.executable, verify_script, "phases", "requirements.md", "docs/plan/phases/"]))
 
     if os.path.isdir(phases_dir) and os.path.isdir(tasks_dir):
-        checks.append(("verify-tasks", [sys.executable, verify_script, "--verify-tasks", "docs/plan/phases/", "docs/plan/tasks/"]))
-        checks.append(("verify-dags", [sys.executable, verify_script, "--verify-dags", "docs/plan/tasks/"]))
+        checks.append(("verify-tasks", [sys.executable, verify_script, "tasks", "docs/plan/phases/", "docs/plan/tasks/"]))
+        checks.append(("verify-dags", [sys.executable, verify_script, "dags", "docs/plan/tasks/"]))
+        checks.append(("verify-depends-on", [sys.executable, verify_script, "depends-on", tasks_dir]))
 
     results: Dict[str, Any] = {"all_pass": True, "checks": {}}
 
@@ -229,7 +230,7 @@ def cmd_validate(args: "argparse.Namespace") -> None:  # type: ignore[name-defin
 
     Determines which checks are relevant based on what artefacts exist on disk
     (``requirements.md``, ``docs/plan/phases/``, ``docs/plan/tasks/``), then
-    runs each via ``verify_requirements.py``.  Exits with code 1 if any check
+    runs each via ``verify.py``.  Exits with code 1 if any check
     fails.
 
     :param args: Parsed :mod:`argparse` namespace (no relevant attributes).
@@ -1101,10 +1102,13 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 
     Runs all verification checks, then for each failure category:
 
+    - **verify-desc-length**: Expands short requirement descriptions.
     - **verify-phases**: Assigns unmapped requirements to the best-fit phase
       using AI.
     - **verify-tasks**: Generates new task files to cover unmapped requirements
       (formerly ``fix-requirements``).
+    - **verify-depends-on**: Fixes depends_on metadata formatting issues.
+    - **verify-dags**: Fixes broken task references in DAG files.
 
     After fixes, re-runs validation to confirm resolution. Rebuilds DAGs for
     any phases whose tasks were modified.
@@ -1152,6 +1156,12 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
     if not dags_check.get("passed", True):
         dag_fixes = _fix_dag_references(dry_run=dry_run, ctx=ctx)
         if dag_fixes > 0:
+            fixed_anything = True
+
+    # Fix verify-depends-on failures
+    depends_on_check = results["checks"].get("verify-depends-on", {})
+    if not depends_on_check.get("passed", True):
+        if _fix_depends_on_formatting(dry_run=dry_run):
             fixed_anything = True
 
     if not fixed_anything:
@@ -1382,9 +1392,9 @@ def _fix_description_length(ctx: ProjectContext, dry_run: bool = False) -> bool:
         return False
 
     # Run verify-desc-length to get the list of short descriptions
-    verify_script = os.path.join(TOOLS_DIR, "verify_requirements.py")
+    verify_script = os.path.join(TOOLS_DIR, "verify.py")
     result = subprocess.run(
-        [sys.executable, verify_script, "--verify-desc-length", req_file],
+        [sys.executable, verify_script, "req-desc-length", req_file],
         capture_output=True, text=True, cwd=ROOT_DIR
     )
 
@@ -1595,19 +1605,19 @@ def _show_affected_tasks(req_id: str) -> None:
 
 
 def _run_verify(mode: str) -> None:
-    """Run a specific ``verify_requirements.py`` verification mode and print the result.
+    """Run a specific ``verify.py`` verification mode and print the result.
 
-    Supported modes: ``"verify-master"`` and ``"verify-dags"``.  Unknown modes
+    Supported modes: ``"master"`` and ``"dags"``.  Unknown modes
     are silently ignored.
 
     :param mode: Verification mode string matching a key in the internal
         ``cmd_map``.
     :type mode: str
     """
-    verify_script = os.path.join(TOOLS_DIR, "verify_requirements.py")
+    verify_script = os.path.join(TOOLS_DIR, "verify.py")
     cmd_map = {
-        "verify-master": [sys.executable, verify_script, "--verify-master"],
-        "verify-dags": [sys.executable, verify_script, "--verify-dags", "docs/plan/tasks/"],
+        "master": [sys.executable, verify_script, "master", "requirements.md", "docs/plan/requirements"],
+        "dags": [sys.executable, verify_script, "dags", "docs/plan/tasks/"],
     }
     cmd = cmd_map.get(mode)
     if cmd:
@@ -1920,6 +1930,54 @@ def cmd_add_feature(args: "argparse.Namespace") -> None:  # type: ignore[name-de
 
     print(f"\nFeature integrated into {phase_id}/{sub_epic}.")
     print("Run 'workflow.py validate' to verify plan consistency.")
+
+
+def _fix_depends_on_formatting(dry_run: bool = False) -> bool:
+    """Fix verify-depends-on failures by running the validation script with --fix.
+
+    Delegates to :mod:`verify` to automatically fix common
+    formatting issues like:
+    - Inconsistent quoting in depends_on arrays
+    - Relative paths with ../ prefixes
+    - Full project-relative paths
+
+    :param dry_run: If ``True``, print what would be fixed without writing.
+    :returns: ``True`` if fix was attempted (or dry-run shown), ``False`` if
+        nothing to do or on error.
+    """
+    tasks_dir = get_tasks_dir()
+    verify_script = os.path.join(TOOLS_DIR, "verify.py")
+
+    print("\n=> Fixing depends_on formatting issues...")
+
+    if dry_run:
+        print(f"\n[dry-run] Would run: python {verify_script} depends-on --fix {tasks_dir}")
+        print("This will attempt to automatically fix:")
+        print("  - Inconsistent quoting in depends_on arrays")
+        print("  - Relative paths with ../ prefixes")
+        print("  - Full project-relative paths")
+        return True
+
+    # Run the verification script with --fix flag
+    result = subprocess.run(
+        [sys.executable, verify_script, "depends-on", "--fix", tasks_dir],
+        capture_output=True,
+        text=True,
+        cwd=ROOT_DIR
+    )
+
+    # Print output
+    print(result.stdout)
+
+    if result.returncode != 0:
+        print(result.stderr)
+        print("\n[!] Some depends_on issues could not be fixed automatically.")
+        print("Manual fixes may be required. Review the errors above.")
+        # Return True to indicate we attempted the fix, even if not all succeeded
+        return True
+
+    print("\n✓ depends_on formatting fixes applied successfully.")
+    return True
 
 
 # ---------------------------------------------------------------------------
