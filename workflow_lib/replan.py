@@ -48,7 +48,7 @@ import subprocess
 import sys
 import json
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 
 from .constants import TOOLS_DIR, ROOT_DIR, parse_requirements
@@ -152,10 +152,14 @@ def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined
     print()
 
 
-def _run_all_checks(quiet: bool = False) -> Dict[str, Any]:
+def _run_all_checks(quiet: bool = False, checks_filter: Optional[List[str]] = None) -> Dict[str, Any]:
     """Run all applicable verification checks and return structured results.
 
     :param quiet: When ``True``, suppress printed output.
+    :param checks_filter: Optional list of check names to run. When provided,
+        only these checks will be executed. Valid names: ``"verify-req-format"``,
+        ``"verify-desc-length"``, ``"verify-master"``, ``"verify-phases"``,
+        ``"verify-tasks"``, ``"verify-dags"``, ``"verify-depends-on"``.
     :returns: Dict with ``"all_pass"`` bool and per-check entries keyed by
         check name, each containing ``"passed"`` bool, ``"output"`` str, and
         ``"missing_reqs"`` list of requirement IDs that failed the check.
@@ -167,31 +171,35 @@ def _run_all_checks(quiet: bool = False) -> Dict[str, Any]:
     phases_dir = os.path.join(plan_dir, "phases")
     tasks_dir = get_tasks_dir()
 
-    checks = []
+    all_checks: List[Tuple[str, List[str]]] = []
 
     if os.path.exists(req_file):
-        checks.append(("verify-req-format", [sys.executable, verify_script, "req-format", "requirements.md"]))
-        checks.append(("verify-desc-length", [sys.executable, verify_script, "req-desc-length", "requirements.md"]))
+        all_checks.append(("verify-req-format", [sys.executable, verify_script, "req-format", "requirements.md"]))
+        all_checks.append(("verify-desc-length", [sys.executable, verify_script, "req-desc-length", "requirements.md"]))
 
     if os.path.exists(req_file) and os.path.isdir(os.path.join(plan_dir, "requirements")):
-        checks.append(("verify-master", [sys.executable, verify_script, "master", "requirements.md", "docs/plan/requirements"]))
+        all_checks.append(("verify-master", [sys.executable, verify_script, "master", "requirements.md", "docs/plan/requirements"]))
 
     if os.path.exists(req_file) and os.path.isdir(phases_dir):
-        checks.append(("verify-phases", [sys.executable, verify_script, "phases", "requirements.md", "docs/plan/phases/"]))
+        all_checks.append(("verify-phases", [sys.executable, verify_script, "phases", "requirements.md", "docs/plan/phases/"]))
 
     if os.path.isdir(phases_dir) and os.path.isdir(tasks_dir):
-        checks.append(("verify-tasks", [sys.executable, verify_script, "tasks", "docs/plan/phases/", "docs/plan/tasks/"]))
-        checks.append(("verify-dags", [sys.executable, verify_script, "dags", "docs/plan/tasks/"]))
-        checks.append(("verify-depends-on", [sys.executable, verify_script, "depends-on", tasks_dir]))
+        all_checks.append(("verify-tasks", [sys.executable, verify_script, "tasks", "docs/plan/phases/", "docs/plan/tasks/"]))
+        all_checks.append(("verify-dags", [sys.executable, verify_script, "dags", "docs/plan/tasks/"]))
+        all_checks.append(("verify-depends-on", [sys.executable, verify_script, "depends-on", tasks_dir]))
+
+    # Apply filter if provided
+    if checks_filter is not None:
+        all_checks = [(name, cmd) for name, cmd in all_checks if name in checks_filter]
 
     results: Dict[str, Any] = {"all_pass": True, "checks": {}}
 
-    if not checks:
+    if not all_checks:
         if not quiet:
             print("No plan artifacts found to validate.")
         return results
 
-    for name, cmd in checks:
+    for name, cmd in all_checks:
         res = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT_DIR)
         passed = res.returncode == 0
         output = res.stdout.strip()

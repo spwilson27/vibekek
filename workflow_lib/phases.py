@@ -733,7 +733,17 @@ class Phase4COrderRequirements(BasePhase):
             print("\n[!] Automated verification failed after ordering requirements:")
             print(verify_res.stdout)
             sys.exit(1)
-            
+
+        print("\n   -> Verifying requirement description lengths...")
+        verify_desc_res = subprocess.run(
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "req-desc-length", "requirements.md"],
+            capture_output=True, text=True, cwd=ctx.root_dir
+        )
+        if verify_desc_res.returncode != 0:
+            print("\n[!] Requirement description length verification failed:")
+            print(verify_desc_res.stdout)
+            sys.exit(1)
+
         # Overwrite master with ordered version and cleanup
         master_req_path = os.path.join(ctx.root_dir, "requirements.md")
         ordered_req_path = os.path.join(ctx.root_dir, "ordered_requirements.md")
@@ -1026,7 +1036,16 @@ class Phase6AFixupValidation(BasePhase):
 
         from .replan import _run_all_checks, _fix_phase_mappings, _fix_task_mappings
 
-        results = _run_all_checks()
+        # Run only checks applicable before DAG generation (exclude verify-dags)
+        pre_dag_checks = [
+            "verify-depends-on",
+            "verify-master",
+            "verify-phases",
+            "verify-desc-length",
+            "verify-req-format",
+            "verify-tasks",
+        ]
+        results = _run_all_checks(checks_filter=pre_dag_checks)
 
         if results["all_pass"]:
             print("All validation checks passed. No fixup needed.")
