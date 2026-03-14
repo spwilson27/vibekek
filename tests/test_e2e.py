@@ -364,20 +364,15 @@ class TestMainEntrypoint:
         assert "never awaited" not in stderr
 
 
-class TestServerInitPerformance:
-    """Test MCP server initialization performance."""
+class TestStartupPerformance:
+    """Test MCP server and CLI startup performance."""
 
     def test_server_init_under_200ms(self, temp_dir, test_repo):
-        """Test that MCP server returns initialization response within 200ms.
-        
-        This test verifies that the server can start and respond to the
-        initialize request quickly, without blocking on index initialization.
-        """
+        """Test that MCP server returns initialization response within 200ms."""
         import subprocess
         import json
         from pathlib import Path
 
-        # Create a minimal config
         config_data = {
             "repo_path": str(test_repo),
             "tools": {
@@ -390,7 +385,6 @@ class TestServerInitPerformance:
         with open(config_path, "w") as f:
             json.dump(config_data, f)
 
-        # Find the rag-mcp script
         venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
         rag_mcp_script = venv_bin / "rag-mcp"
 
@@ -399,7 +393,6 @@ class TestServerInitPerformance:
             if not rag_mcp_script:
                 pytest.skip("rag-mcp script not found")
 
-        # Start the server process
         proc = subprocess.Popen(
             [str(rag_mcp_script), str(config_path)],
             stdin=subprocess.PIPE,
@@ -410,7 +403,6 @@ class TestServerInitPerformance:
         )
 
         try:
-            # MCP initialize request
             init_request = {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -422,38 +414,61 @@ class TestServerInitPerformance:
                 },
             }
 
-            # Send initialize request and measure response time
             start_time = time.time()
             proc.stdin.write(json.dumps(init_request) + "\n")
             proc.stdin.flush()
 
-            # Read response with timeout
             response_line = proc.stdout.readline()
             end_time = time.time()
 
             elapsed_ms = (end_time - start_time) * 1000
-
-            # Parse response
             response = json.loads(response_line)
 
-            # Verify we got a valid response
             assert "result" in response, f"Expected 'result' in response, got: {response}"
             assert response.get("id") == 1, f"Expected id=1, got: {response.get('id')}"
 
-            # Verify initialization completed within 350ms
-            # Note: This is a 10x improvement from the original ~2.6s startup time
-            assert elapsed_ms < 350, (
-                f"Server initialization took {elapsed_ms:.1f}ms, expected < 350ms"
+            # Target: < 250ms for initialize response (MCP SDK import takes ~240ms)
+            assert elapsed_ms < 250, (
+                f"Server initialization took {elapsed_ms:.1f}ms, expected < 250ms"
             )
 
         finally:
-            # Clean up process
             proc.terminate()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
+
+    def test_cli_help_under_150ms(self, temp_dir):
+        """Test that CLI --help returns within 150ms."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        start_time = time.time()
+        result = subprocess.run(
+            [str(rag_mcp_cli), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        end_time = time.time()
+
+        elapsed_ms = (end_time - start_time) * 1000
+
+        assert result.returncode == 0, f"CLI --help failed: {result.stderr}"
+        assert "rag-mcp-cli" in result.stdout, "Expected help output"
+
+        # Target: < 150ms for --help
+        assert elapsed_ms < 150, (
+            f"CLI --help took {elapsed_ms:.1f}ms, expected < 150ms"
+        )
 
     def test_server_initialized_notification(self, temp_dir, test_repo):
         """Test that server sends initialized notification after init."""
