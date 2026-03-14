@@ -95,6 +95,13 @@ def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined
     # Also find tasks on disk not in DAG
     on_disk = set()
     if os.path.exists(tasks_dir):
+        # Skip non-task files (READMEs, summaries, etc.)
+        _NON_TASK_FILES = {
+            "README.md",
+            "SUB_EPIC_SUMMARY.md",
+            "REQUIREMENTS_TRACEABILITY.md",
+            "review_summary.md",
+        }
         for phase_dir in sorted(os.listdir(tasks_dir)):
             phase_path = os.path.join(tasks_dir, phase_dir)
             if not os.path.isdir(phase_path) or not phase_dir.startswith("phase_"):
@@ -104,7 +111,7 @@ def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined
                 if not os.path.isdir(se_path):
                     continue
                 for md in sorted(os.listdir(se_path)):
-                    if md.endswith(".md"):
+                    if md.endswith(".md") and md not in _NON_TASK_FILES:
                         on_disk.add(f"{phase_dir}/{sub_epic}/{md}")
 
     total = len(master_dag)
@@ -831,12 +838,19 @@ def cmd_cascade(args: "argparse.Namespace") -> None:  # type: ignore[name-define
     print(f"Scanning tasks in {phase_id}...")
     task_reqs = set()
     task_count = 0
+    # Skip non-task files (READMEs, summaries, etc.)
+    _NON_TASK_FILES = {
+        "README.md",
+        "SUB_EPIC_SUMMARY.md",
+        "REQUIREMENTS_TRACEABILITY.md",
+        "review_summary.md",
+    }
     for sub_epic in sorted(os.listdir(phase_dir)):
         se_path = os.path.join(phase_dir, sub_epic)
         if not os.path.isdir(se_path):
             continue
         for md in sorted(os.listdir(se_path)):
-            if md.endswith(".md"):
+            if md.endswith(".md") and md not in _NON_TASK_FILES:
                 reqs = parse_requirements(os.path.join(se_path, md))
                 task_reqs.update(reqs)
                 task_count += 1
@@ -1226,13 +1240,20 @@ def _fix_dag_references(dry_run: bool = False, ctx: Optional[ProjectContext] = N
             dag = json.load(f)
 
         # Use the same 2-level discovery as _validate_dag: only sub_epic/*.md
+        # Skip non-task files (READMEs, summaries, etc.)
+        _NON_TASK_FILES = {
+            "README.md",
+            "SUB_EPIC_SUMMARY.md",
+            "REQUIREMENTS_TRACEABILITY.md",
+            "review_summary.md",
+        }
         on_disk = set()
         for sub_epic in sorted(os.listdir(phase_path)):
             se_path = os.path.join(phase_path, sub_epic)
             if not os.path.isdir(se_path):
                 continue
             for fname in sorted(os.listdir(se_path)):
-                if fname.endswith(".md"):
+                if fname.endswith(".md") and fname not in _NON_TASK_FILES:
                     on_disk.add(f"{sub_epic}/{fname}")
 
         orphans = on_disk - set(dag.keys())

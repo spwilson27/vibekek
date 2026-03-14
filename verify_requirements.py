@@ -346,8 +346,15 @@ def _verify_phase_consistency(phase_path, phase_dag):
         return False
         
     # Check for orphans: markdown files on disk not mentioned in the DAG
-    # Exclude non-task files (review summaries, reorder reports, etc.)
-    _NON_TASK_PATTERNS = {"review_summary.md", "cross_phase_review_summary", "reorder_tasks_summary"}
+    # Exclude non-task files (review summaries, reorder reports, READMEs, etc.)
+    _NON_TASK_PATTERNS = {
+        "review_summary.md",
+        "cross_phase_review_summary",
+        "reorder_tasks_summary",
+        "README.md",                    # Sub-epic documentation, not a task
+        "SUB_EPIC_SUMMARY.md",          # Sub-epic summary, not a task
+        "REQUIREMENTS_TRACEABILITY.md", # Requirements traceability, not a task
+    }
     orphan_tasks = []
     for root, dirs, files in os.walk(phase_path):
         for file in files:
@@ -497,10 +504,10 @@ def verify_description_length(file_path, min_words=10):
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # Pattern to match requirement blocks: [REQ-ID] followed by Description field
-    # We need to extract the description text after "**Description:**"
+    # Pattern to match requirement blocks: ### **[REQ-ID]** followed by content
+    # Must start with "### **" to avoid matching inline references like **[SEC-020]**
     req_block_pattern = re.compile(
-        r'\*\*\[([A-Z0-9_]+-[A-Z0-9\._-]+)\]\*\*.*?(?=\*\*\[|\Z)',
+        r'### \*\*\[([A-Z0-9_]+-[A-Z0-9\._-]+)\]\*\*.*?(?=### \*\*\[|\Z)',
         re.DOTALL
     )
     

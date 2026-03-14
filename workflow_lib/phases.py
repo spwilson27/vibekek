@@ -1100,14 +1100,22 @@ class Phase6BReviewTasks(BasePhase):
             sub_epics = [d for d in os.listdir(phase_dir_path) if os.path.isdir(os.path.join(phase_dir_path, d))]
             if not sub_epics:
                 return True
-                
+
+            # Skip non-task files (READMEs, summaries, etc.)
+            _NON_TASK_FILES = {
+                "README.md",
+                "SUB_EPIC_SUMMARY.md",
+                "REQUIREMENTS_TRACEABILITY.md",
+                "review_summary.md",
+            }
             tasks_content = ""
             for sub_epic in sorted(sub_epics):
                 sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
                 if not os.path.isdir(sub_epic_dir):
                     continue
-                md_files = [f for f in os.listdir(sub_epic_dir) if f.endswith(".md")]
-                
+                md_files = [f for f in os.listdir(sub_epic_dir) 
+                           if f.endswith(".md") and f not in _NON_TASK_FILES]
+
                 for md_file in sorted(md_files):
                      task_id = f"{sub_epic}/{md_file}"
                      tasks_content += f"### Task ID: {task_id}\n"
@@ -1431,7 +1439,15 @@ class Phase7ADAGGeneration(BasePhase):
 
         for sub_epic in sorted(sub_epics):
             sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-            md_files = [f for f in os.listdir(sub_epic_dir) if f.endswith(".md")]
+            # Skip non-task files (READMEs, summaries, etc.)
+            _NON_TASK_FILES = {
+                "README.md",
+                "SUB_EPIC_SUMMARY.md",
+                "REQUIREMENTS_TRACEABILITY.md",
+                "review_summary.md",
+            }
+            md_files = [f for f in os.listdir(sub_epic_dir) 
+                       if f.endswith(".md") and f not in _NON_TASK_FILES]
 
             for md_file in sorted(md_files):
                 task_id = f"{sub_epic}/{md_file}"
@@ -1474,9 +1490,18 @@ class Phase7ADAGGeneration(BasePhase):
         component_creators = {}  # component_name -> task_id
         component_consumers: Dict[str, List[str]] = {}  # component_name -> [task_ids]
 
+        # Skip non-task files (READMEs, summaries, etc.)
+        _NON_TASK_FILES = {
+            "README.md",
+            "SUB_EPIC_SUMMARY.md",
+            "REQUIREMENTS_TRACEABILITY.md",
+            "review_summary.md",
+        }
+
         for sub_epic in sorted(sub_epics):
             sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-            md_files = [f for f in os.listdir(sub_epic_dir) if f.endswith(".md")]
+            md_files = [f for f in os.listdir(sub_epic_dir) 
+                       if f.endswith(".md") and f not in _NON_TASK_FILES]
             for md_file in sorted(md_files):
                 task_id = f"{sub_epic}/{md_file}"
                 filepath = os.path.join(sub_epic_dir, md_file)
@@ -1514,14 +1539,20 @@ class Phase7ADAGGeneration(BasePhase):
         :returns: List of error strings (empty means valid).
         """
         errors = []
-        # Collect all .md files on disk (excluding review/summary files)
+        # Collect all .md files on disk (excluding review/summary files and READMEs)
+        _NON_TASK_FILES = {
+            "README.md",
+            "SUB_EPIC_SUMMARY.md",
+            "REQUIREMENTS_TRACEABILITY.md",
+            "review_summary.md",
+        }
         on_disk = set()
         for sub_epic in sorted(os.listdir(phase_dir_path)):
             se_path = os.path.join(phase_dir_path, sub_epic)
             if not os.path.isdir(se_path):
                 continue
             for md in sorted(os.listdir(se_path)):
-                if md.endswith(".md"):
+                if md.endswith(".md") and md not in _NON_TASK_FILES:
                     on_disk.add(f"{sub_epic}/{md}")
 
         dag_keys = set(dag.keys())

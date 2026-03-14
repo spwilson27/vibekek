@@ -794,15 +794,30 @@ class ProjectContext:
         )
 
     def count_task_files(self, directory: str) -> int:
+        """Count task files in a directory, excluding non-task files.
+        
+        :param directory: Directory to scan.
+        :type directory: str
+        :returns: Count of task files (excluding READMEs, summaries, etc.).
+        :rtype: int
+        """
+        # Non-task files to exclude
+        _NON_TASK_FILES = {
+            "README.md",
+            "SUB_EPIC_SUMMARY.md",
+            "REQUIREMENTS_TRACEABILITY.md",
+            "review_summary.md",
+            "cross_phase_review_summary.md",
+            "reorder_tasks_summary.md",
+            "cross_phase_review_summary_pass_1.md",
+            "cross_phase_review_summary_pass_2.md",
+            "reorder_tasks_summary_pass_1.md",
+            "reorder_tasks_summary_pass_2.md",
+        }
         count = 0
         for root, dirs, files in os.walk(directory):
             for f in files:
-                if f.endswith(".md") and f not in ("review_summary.md", "cross_phase_review_summary.md",
-                                                     "reorder_tasks_summary.md",
-                                                     "cross_phase_review_summary_pass_1.md",
-                                                     "cross_phase_review_summary_pass_2.md",
-                                                     "reorder_tasks_summary_pass_1.md",
-                                                     "reorder_tasks_summary_pass_2.md"):
+                if f.endswith(".md") and f not in _NON_TASK_FILES:
                     count += 1
         return count
 

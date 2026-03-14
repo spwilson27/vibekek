@@ -43,3 +43,31 @@ The following requirements in `requirements.md` have descriptions shorter than 1
 - Edit the existing `requirements.md` file directly.
 - Preserve the exact structure and formatting of the document.
 - Only modify the **Description:** field for requirements with short descriptions.
+
+# VERIFICATION STEPS (REQUIRED - DO NOT SKIP)
+
+After updating the descriptions, you MUST verify your work is complete:
+
+**Step 1: Run the description length verification script**
+```bash
+python .tools/verify_requirements.py --verify-desc-length requirements.md
+```
+
+**Step 2: Check the output**
+- If the script prints `Success: All X requirements...`, your work is complete.
+- If the script lists requirements with short descriptions, you must fix them.
+
+**Step 3: Fix any remaining issues**
+- Re-read the failed requirement's full context in `requirements.md`
+- Expand the description further until it has at least 10 words
+- Re-run the verification script
+
+**Step 4: Repeat until verification passes**
+- Do NOT consider your work complete until the verification script prints `Success:`
+- The script must exit with code 0
+
+**Step 5: Final checklist before ending your turn**
+- [ ] Verification script passes: `python .tools/verify_requirements.py --verify-desc-length requirements.md`
+- [ ] All requirements listed in the original input now have 10+ word descriptions
+- [ ] No new validation errors were introduced
+- [ ] Original requirement intent preserved (no scope changes)
