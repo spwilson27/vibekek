@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mcp-tools": {
+      "command": "/home/mrwilson/software/devs/.tools/rag/.venv/bin/rag-mcp",
+      "args": ["/home/mrwilson/software/devs/.tools/rag/config.json"]
+    }
+  }
+}

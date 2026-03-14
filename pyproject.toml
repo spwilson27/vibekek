@@ -1,0 +1,28 @@
+[project]
+name = "rag-mcp"
+version = "0.2.0"
+description = "RAG MCP server for code search with semantic analysis"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0",
+    "sentence-transformers>=2.2.0",
+    "chromadb>=0.4.0",
+    "gitpython>=3.1.0",
+    "tree-sitter>=0.21.0",
+    "tree-sitter-python>=0.21.0",
+    "tree-sitter-javascript>=0.21.0",
+    "tree-sitter-typescript>=0.21.0",
+    "jsoncomment>=0.4.0",
+]
+dev-dependencies = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-timeout",
+]
+
+[project.scripts]
+rag-mcp = "rag_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

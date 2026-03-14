@@ -1,0 +1,58 @@
+{
+  // Path to the git repository to index
+  // Default: current working directory
+  "repo_path": null,
+  
+  // Tool configuration
+  "tools": {
+    // RAG (Retrieval-Augmented Generation) - Natural language code search
+    "rag": {
+      "enabled": true,
+      // Index directory, use {hash} placeholder for repo hash
+      "index_dir": "/tmp/rag-{hash}",
+      
+      // Size limits to prevent index from growing too large
+      "limits": {
+        // Maximum number of files to index (0 = no limit)
+        "max_files": 0,
+        // Maximum number of chunks in the vector DB (0 = no limit)
+        "max_chunks": 0,
+        // Skip files larger than this size in KB (0 = no limit)
+        "max_file_size_kb": 10000,
+        // Truncate files to this size before indexing (0 = no truncation)
+        // Files larger than this will be truncated but still indexed
+        "truncate_size_kb": 100
+      },
+      
+      // Priority and filtering configuration
+      "priority": {
+        // Directories to index first (lower index = higher priority)
+        "dirs": ["src/", "lib/", "app/", "test/"],
+        // Directories to exclude from indexing
+        // Empty list uses defaults: node_modules, vendor, __pycache__, .git, etc.
+        "exclude_dirs": [],
+        // Only index files with these extensions (empty = all code extensions)
+        "extensions": []
+      }
+    },
+    
+    // Semantic search - Find code definitions and references using tree-sitter
+    "semantic": {
+      "enabled": true,
+      "index_dir": "/tmp/semantic-{hash}",
+      
+      "limits": {
+        "max_files": 0,
+        "max_chunks": 0,
+        "max_file_size_kb": 10000,
+        "truncate_size_kb": 100
+      },
+      
+      "priority": {
+        "dirs": ["src/", "lib/", "app/"],
+        "exclude_dirs": [],
+        "extensions": []
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  // Semantic-only configuration with size limits
+  "repo_path": null,
+  
+  "tools": {
+    "rag": {
+      "enabled": false
+    },
+    "semantic": {
+      "enabled": true,
+      "index_dir": "/tmp/semantic-{hash}",
+      
+      "limits": {
+        "max_index_size_mb": 50,
+        "max_files": 500,
+        "max_chunks": 5000,
+        "max_file_size_kb": 512,
+        "truncate_size_kb": 128
+      },
+      
+      "priority": {
+        "dirs": ["src/", "lib/"],
+        "exclude_dirs": [],
+        "extensions": []
+      }
+    }
+  }
+}
