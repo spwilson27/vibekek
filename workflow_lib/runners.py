@@ -802,12 +802,13 @@ class QwenRunner(SessionResumableRunner):
     extract human-readable text.  Supports soft-timeout via
     ``--session-id`` / ``--resume``.
 
-    Prompts are passed via stdin (using ``-p -``) to avoid OS argument
-    length limits for large prompts.
+    Prompts are passed via stdin to avoid OS argument length limits for
+    large prompts. The qwen CLI reads from stdin by default when no
+    positional prompt is given.
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
-        cmd = ["qwen", "-y", "--output-format", "stream-json", "--include-partial-messages", "-p", "-"]
+        cmd = ["qwen", "-y", "--output-format", "stream-json", "--include-partial-messages"]
         # Only enable chat recording when using a session ID (soft-timeout path).
         # Without a session ID, --chat-recording may cause qwen to enter a
         # persistent interactive-chat mode that drifts away from the task.

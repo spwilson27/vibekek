@@ -1072,6 +1072,7 @@ class Phase6BReviewTasks(BasePhase):
         :raises SystemExit: On AI runner failure after 3 attempts for any
             phase.
         """
+        assert False, "pausing here"
         if ctx.state.get("tasks_reviewed", False):
             print("Task review already completed.")
             return
