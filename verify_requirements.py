@@ -500,12 +500,13 @@ def verify_description_length(file_path, min_words=10):
     # Pattern to match requirement blocks: [REQ-ID] followed by Description field
     # We need to extract the description text after "**Description:**"
     req_block_pattern = re.compile(
-        r'\*\*\[([A-Z0-9_]+-[A-Z0-9\._-]+)\]\*\*.*?(?=\*\*\[|$)',
+        r'\*\*\[([A-Z0-9_]+-[A-Z0-9\._-]+)\]\*\*.*?(?=\*\*\[|\Z)',
         re.DOTALL
     )
     
     # Pattern to extract description from a requirement block
-    desc_pattern = re.compile(r'\*\*Description:\*\*\s*(.+?)(?=\n\*\*|\Z)', re.DOTALL)
+    # Stop at the next field (which starts with "- **") or end of block
+    desc_pattern = re.compile(r'\*\*Description:\*\*\s*(.+?)(?=\n- \*\*|\Z)', re.DOTALL)
 
     all_reqs = set(REQ_REGEX.findall(content))
     short_descriptions = []

@@ -801,10 +801,13 @@ class QwenRunner(SessionResumableRunner):
     Uses ``--output-format stream-json`` and parses the JSONL stream to
     extract human-readable text.  Supports soft-timeout via
     ``--session-id`` / ``--resume``.
+
+    Prompts are passed via stdin (using ``-p -``) to avoid OS argument
+    length limits for large prompts.
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
-        cmd = ["qwen", "-y", "--output-format", "stream-json", "--include-partial-messages"]
+        cmd = ["qwen", "-y", "--output-format", "stream-json", "--include-partial-messages", "-p", "-"]
         # Only enable chat recording when using a session ID (soft-timeout path).
         # Without a session ID, --chat-recording may cause qwen to enter a
         # persistent interactive-chat mode that drifts away from the task.
@@ -854,14 +857,12 @@ class QwenRunner(SessionResumableRunner):
         timeout: Optional[int] = None,
         abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
-        """Override to use JSONL-parsing streaming with prompt as positional arg.
+        """Override to use JSONL-parsing streaming with prompt via stdin.
 
-        Passing *prompt* as a positional argument (rather than via stdin)
-        triggers qwen's one-shot task mode.  Piping via stdin enters
-        interactive chat mode where the model responds conversationally
-        instead of executing the task.
+        The prompt is passed via stdin (with ``-p -`` in the command) to
+        avoid OS argument length limits for large prompts.
         """
-        return self._run_streaming_json(cmd + [prompt], cwd, on_line, timeout=timeout, prompt="", abort_event=abort_event)
+        return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=prompt, abort_event=abort_event)
 
     def run(
         self,
@@ -872,12 +873,10 @@ class QwenRunner(SessionResumableRunner):
         timeout: Optional[int] = None,
         abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
-        """Run ``qwen -y --output-format stream-json`` and parse the output.
+        """Run ``qwen -y --output-format stream-json -p -`` and parse the output.
 
-        The prompt is passed as a positional argument (not via stdin) so that
-        qwen runs in one-shot task mode.  Piping via stdin enters interactive
-        chat mode, causing the model to respond conversationally instead of
-        executing the task.
+        The prompt is passed via stdin (with ``-p -`` in the command) to
+        avoid OS argument length limits for large prompts.
 
         When *soft_timeout* is configured, the process is spawned with a
         unique ``--session-id``.  If the soft timeout elapses before it
@@ -896,10 +895,10 @@ class QwenRunner(SessionResumableRunner):
             # interrupt and are accessible for the resume run.
             return self._run_with_soft_timeout(cmd, full_prompt, cwd, on_line, session_id, timeout, abort_event=abort_event)
         if on_line is not None:
-            return self._run_streaming_json(cmd + [full_prompt], cwd, on_line, timeout=timeout, prompt="", abort_event=abort_event)
+            return self._run_streaming_json(cmd, cwd, on_line, timeout=timeout, prompt=full_prompt, abort_event=abort_event)
 
-        # Non-streaming fallback: prompt as positional arg, no stdin
-        result = subprocess.run(cmd + [full_prompt], cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
+        # Non-streaming fallback: prompt via stdin
+        result = subprocess.run(cmd, input=full_prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
         parsed_lines: List[str] = []
         for line in result.stdout.splitlines():
             parsed = parse_stream_json_line(line)

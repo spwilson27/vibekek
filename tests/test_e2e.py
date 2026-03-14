@@ -71,6 +71,7 @@ PROMPT_NAMES = [
     "feature_discuss.md",
     "feature_execute.md",
     "feature_spec.md",
+    "fix_description_length.md",
 ]
 
 STUB_PROMPT = "Write {target_path} based on {description_ctx}."

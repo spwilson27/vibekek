@@ -91,5 +91,194 @@ class TestVerifyTasksExcludesPhaseRemoved(unittest.TestCase):
             self.assertEqual(result, 1)
 
 
+class TestVerifyDescriptionLength(unittest.TestCase):
+    """Tests for verify_description_length() - validates requirement descriptions are 10+ words."""
+
+    def test_passes_with_long_enough_descriptions(self):
+        """Requirements with descriptions of 10+ words should pass."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("""
+### **[REQ-001]** First Requirement
+- **Type:** Functional
+- **Description:** This is a description that has more than ten words in it.
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+
+### **[REQ-002]** Second Requirement
+- **Type:** Technical
+- **Description:** The system must handle at least one thousand concurrent users without degradation.
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+""")
+            f.flush()
+            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            self.assertEqual(result, 0)
+            os.unlink(f.name)
+
+    def test_fails_with_short_descriptions(self):
+        """Requirements with descriptions shorter than 10 words should fail."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("""
+### **[REQ-001]** First Requirement
+- **Type:** Functional
+- **Description:** This is too short.
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+
+### **[REQ-002]** Second Requirement
+- **Type:** Technical
+- **Description:** The system must handle at least one thousand concurrent users without degradation.
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+""")
+            f.flush()
+            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            self.assertEqual(result, 1)
+            os.unlink(f.name)
+
+    def test_fails_with_dash_description(self):
+        """Requirements with '-' as description should fail (common anti-pattern)."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("""
+### **[REQ-001]** First Requirement
+- **Type:** Functional
+- **Description:** -
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+""")
+            f.flush()
+            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            self.assertEqual(result, 1)
+            os.unlink(f.name)
+
+    def test_fails_with_empty_description(self):
+        """Requirements with empty descriptions should fail."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("""
+### **[REQ-001]** First Requirement
+- **Type:** Functional
+- **Description:**
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+""")
+            f.flush()
+            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            self.assertEqual(result, 1)
+            os.unlink(f.name)
+
+    def test_fails_with_tbd_description(self):
+        """Requirements with 'TBD' descriptions should fail."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("""
+### **[REQ-001]** First Requirement
+- **Type:** Functional
+- **Description:** TBD
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+""")
+            f.flush()
+            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            self.assertEqual(result, 1)
+            os.unlink(f.name)
+
+    def test_exactly_ten_words_passes(self):
+        """Requirements with exactly 10 words should pass."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("""
+### **[REQ-001]** First Requirement
+- **Type:** Functional
+- **Description:** One two three four five six seven eight nine ten words exactly here.
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+""")
+            f.flush()
+            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            self.assertEqual(result, 0)
+            os.unlink(f.name)
+
+    def test_nine_words_fails(self):
+        """Requirements with exactly 9 words should fail."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("""
+### **[REQ-001]** First Requirement
+- **Type:** Functional
+- **Description:** One two three four five six seven eight nine.
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+""")
+            f.flush()
+            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            self.assertEqual(result, 1)
+            os.unlink(f.name)
+
+    def test_custom_min_words(self):
+        """Custom min_words parameter should be respected."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("""
+### **[REQ-001]** First Requirement
+- **Type:** Functional
+- **Description:** Five words in this one.
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+""")
+            f.flush()
+            # Should fail with min_words=10
+            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            self.assertEqual(result, 1)
+            # Should pass with min_words=5
+            result = verify_requirements.verify_description_length(f.name, min_words=5)
+            self.assertEqual(result, 0)
+            os.unlink(f.name)
+
+    def test_file_not_found(self):
+        """Non-existent file should return error code 1."""
+        result = verify_requirements.verify_description_length("/nonexistent/file.md", min_words=10)
+        self.assertEqual(result, 1)
+
+    def test_multiple_short_descriptions_reported(self):
+        """Multiple short descriptions should all be reported in output."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("""
+### **[REQ-001]** First Requirement
+- **Type:** Functional
+- **Description:** Too short.
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+
+### **[REQ-002]** Second Requirement
+- **Type:** Technical
+- **Description:** Also too brief.
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+
+### **[REQ-003]** Third Requirement
+- **Type:** UX
+- **Description:** This one is also not long enough at all.
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+""")
+            f.flush()
+            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            self.assertEqual(result, 1)
+            os.unlink(f.name)
+
+    def test_multiline_description_counted_correctly(self):
+        """Multi-line descriptions should have word count calculated correctly."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("""
+### **[REQ-001]** First Requirement
+- **Type:** Functional
+- **Description:** This is a multi-line description
+    that spans across multiple lines
+    and should have ten words total here.
+- **Source:** Test Document (docs/test.md)
+- **Dependencies:** None
+""")
+            f.flush()
+            result = verify_requirements.verify_description_length(f.name, min_words=10)
+            self.assertEqual(result, 0)
+            os.unlink(f.name)
+
+
 if __name__ == "__main__":
     unittest.main()

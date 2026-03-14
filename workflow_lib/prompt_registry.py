@@ -70,6 +70,9 @@ PROMPT_PLACEHOLDERS = {
     "feature_discuss.md": {"description_ctx", "discussion_history", "feature_brief", "phases_ctx", "requirements_ctx", "shared_components_ctx"},
     "feature_spec.md": {"description_ctx", "discussion_history", "feature_brief", "requirements_ctx", "shared_components_ctx", "spec_output_path"},
     "feature_execute.md": {"description_ctx", "feature_spec", "phases_ctx", "requirements_ctx", "shared_components_ctx", "phase_id", "sub_epic", "next_task_num"},
+
+    # Fixup operations
+    "fix_description_length.md": {"description_ctx", "requirements_context", "short_reqs_list"},
 }
 
 

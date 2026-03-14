@@ -1115,6 +1115,12 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 
     fixed_anything = False
 
+    # Fix verify-desc-length failures first (expand short descriptions)
+    desc_check = results["checks"].get("verify-desc-length", {})
+    if not desc_check.get("passed", True):
+        if _fix_description_length(ctx, dry_run=dry_run):
+            fixed_anything = True
+
     # Fix verify-phases failures first (must happen before verify-tasks)
     phases_check = results["checks"].get("verify-phases", {})
     if not phases_check.get("passed", True) and phases_check.get("missing_reqs"):
@@ -1336,6 +1342,91 @@ def _fix_single_dag_ref(
 
     # Unknown broken ref — return as-is, validation will still catch it
     return ref
+
+
+def _fix_description_length(ctx: ProjectContext, dry_run: bool = False) -> bool:
+    """Fix verify-desc-length failures by expanding short descriptions.
+
+    Spawns an AI agent to review requirements.md and expand all descriptions
+    that are shorter than 10 words to meet the minimum length requirement.
+
+    :param ctx: Project context with AI runner.
+    :param dry_run: Preview mode — don't actually run AI.
+    :returns: ``True`` if fix was attempted (or dry-run shown), ``False`` if nothing to do.
+    """
+    req_file = os.path.join(ROOT_DIR, "requirements.md")
+
+    if not os.path.exists(req_file):
+        print("Error: requirements.md not found.")
+        return False
+
+    # Run verify-desc-length to get the list of short descriptions
+    verify_script = os.path.join(TOOLS_DIR, "verify_requirements.py")
+    result = subprocess.run(
+        [sys.executable, verify_script, "--verify-desc-length", req_file],
+        capture_output=True, text=True, cwd=ROOT_DIR
+    )
+
+    if result.returncode == 0:
+        print("No description length issues to fix.")
+        return False
+
+    # Parse the output to extract requirement IDs with short descriptions
+    short_reqs = []
+    for line in result.stdout.splitlines():
+        m = re.match(r'\s*-\s*\[([^\]]+)\]\s*\((\d+)\s+words\)', line)
+        if m:
+            short_reqs.append((m.group(1), int(m.group(2))))
+
+    if not short_reqs:
+        print("No description length issues found in output.")
+        return False
+
+    print(f"\n=> Fixing {len(short_reqs)} requirement(s) with descriptions shorter than 10 words:")
+    for req_id, word_count in sorted(short_reqs)[:20]:  # Show first 20
+        print(f"  - [{req_id}] ({word_count} words)")
+    if len(short_reqs) > 20:
+        print(f"  ... and {len(short_reqs) - 20} more")
+
+    if dry_run:
+        print("\n[dry-run] Would expand short descriptions to meet 10-word minimum.")
+        return True
+
+    # Load requirements context
+    with open(req_file, "r", encoding="utf-8") as f:
+        req_content = f.read()
+
+    # Build context for the short requirements
+    requirements_context = ""
+    for req_id, _ in short_reqs:
+        # Find the requirement block in the file
+        pattern = re.compile(
+            rf'###\s*\*\*\[{re.escape(req_id)}\]\*\*\s*.*?(?=\n###\s*\*\*\[|\Z)',
+            re.DOTALL
+        )
+        match = pattern.search(req_content)
+        if match:
+            requirements_context += f"### **[{req_id}]**\n{match.group(0)}\n\n"
+
+    prompt_tmpl = ctx.load_prompt("fix_description_length.md")
+    prompt = ctx.format_prompt(
+        prompt_tmpl,
+        description_ctx=ctx.description_ctx,
+        requirements_context=requirements_context,
+        short_reqs_list="\n".join(f"- [{r[0]}] ({r[1]} words)" for r in sorted(short_reqs)),
+    )
+
+    allowed_files = [req_file]
+    result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+
+    if result.returncode != 0:
+        print(f"\n[!] Error fixing description length.")
+        print(result.stdout)
+        print(result.stderr)
+        return False
+
+    print("  Description length issues addressed.")
+    return True
 
 
 # ---------------------------------------------------------------------------

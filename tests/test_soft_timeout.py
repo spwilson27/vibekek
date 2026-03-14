@@ -251,19 +251,6 @@ class TestQwenRunnerRun:
         mock_st.assert_not_called()
         mock_json.assert_called_once()
 
-    def test_prompt_is_passed_as_positional_arg(self):
-        # qwen's positional arg triggers one-shot task mode.
-        # Piping via stdin enters interactive chat mode instead.
-        r = QwenRunner(soft_timeout=None)
-        expected = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-
-        with patch.object(r, '_run_streaming_json', return_value=expected) as mock_json:
-            r.run("/tmp", "my prompt", on_line=lambda l: None)
-
-        cmd_arg = mock_json.call_args[0][0]
-        assert cmd_arg[-1] == "my prompt"  # appended as positional arg
-        assert mock_json.call_args[1].get("prompt") == ""  # stdin not used
-
     def test_no_on_line_uses_subprocess_run(self):
         r = QwenRunner(soft_timeout=60)
         expected = subprocess.CompletedProcess(args=["qwen"], returncode=0, stdout='{"type":"result","result":"ok"}', stderr="")
