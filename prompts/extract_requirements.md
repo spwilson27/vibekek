@@ -10,8 +10,10 @@ You are a Lead Product Manager. Your job is to read a specific project document 
 # TASK
 1. Extract the core requirements from the document into a new file at '{target_path}'.
 2. IMPORTANT: If the original document ('{document_path}') contains requirements that do not have `[REQ-...]` or `[TAS-...]` IDs, you MUST trace those requirements and edit '{document_path}' to insert these new tags natively into the source file.
-3. You MUST verify your extraction and tagging by running `python .tools/verify_requirements.py --verify-doc {document_path} {target_path}`.
-4. If the script reports missing requirements (either missing in source or extracted), you MUST continually fix '{document_path}' and '{target_path}' and run the validation again until it succeeds perfectly.
+3. CRITICAL: Each requirement description MUST be at least 10 words long. Descriptions that are too short (e.g., "-", "TBD", "See source", or single phrases) are NOT acceptable. You MUST expand each description to be a meaningful, self-contained summary of the requirement.
+4. You MUST verify your extraction and tagging by running `python .tools/verify_requirements.py --verify-doc {document_path} {target_path}`.
+5. You MUST also verify description length by running `python .tools/verify_requirements.py --verify-desc-length {target_path}`.
+6. If either script reports issues (missing requirements or short descriptions), you MUST continually fix '{document_path}' and '{target_path}' and run the validations again until both succeed perfectly.
 
 # CHAIN OF THOUGHT
 Before generating the final document, plan your approach:
@@ -38,6 +40,7 @@ Before generating the final document, plan your approach:
 # ANTI-PATTERNS (WHAT NOT TO DO)
 - Do not invent new requirements that are not present in the source document.
 - Do not group distinct, testable requirements into a single large paragraph.
+- Do NOT write descriptions shorter than 10 words. Descriptions like "-", "TBD", "See source for details", or single phrases are NOT acceptable.
 - Do not use phrases like "See source for details" in the description. The description MUST be a meaningful and self-contained summary of the requirement, as agents working from the requirements may not have the original document for context.
 
 # OUTPUT FORMAT

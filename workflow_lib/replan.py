@@ -164,6 +164,7 @@ def _run_all_checks(quiet: bool = False) -> Dict[str, Any]:
 
     if os.path.exists(req_file):
         checks.append(("verify-req-format", [sys.executable, verify_script, "--verify-req-format", "requirements.md"]))
+        checks.append(("verify-desc-length", [sys.executable, verify_script, "--verify-desc-length", "requirements.md"]))
 
     if os.path.exists(req_file) and os.path.isdir(os.path.join(plan_dir, "requirements")):
         checks.append(("verify-master", [sys.executable, verify_script, "--verify-master"]))

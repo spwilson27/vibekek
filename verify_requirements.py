@@ -486,6 +486,54 @@ def verify_uniqueness(directory):
     return 1
 
 
+def verify_description_length(file_path, min_words=10):
+    """Verifies that all requirements in a file have descriptions of at least min_words words."""
+    print(f"Verifying requirement descriptions have at least {min_words} words in {file_path}...")
+
+    if not os.path.exists(file_path):
+        print(f"Error: File not found: {file_path}")
+        return 1
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Pattern to match requirement blocks: [REQ-ID] followed by Description field
+    # We need to extract the description text after "**Description:**"
+    req_block_pattern = re.compile(
+        r'\*\*\[([A-Z0-9_]+-[A-Z0-9\._-]+)\]\*\*.*?(?=\*\*\[|$)',
+        re.DOTALL
+    )
+    
+    # Pattern to extract description from a requirement block
+    desc_pattern = re.compile(r'\*\*Description:\*\*\s*(.+?)(?=\n\*\*|\Z)', re.DOTALL)
+
+    all_reqs = set(REQ_REGEX.findall(content))
+    short_descriptions = []
+
+    for match in req_block_pattern.finditer(content):
+        req_id = match.group(1)
+        block = match.group(0)
+        
+        desc_match = desc_pattern.search(block)
+        if desc_match:
+            description = desc_match.group(1).strip()
+            # Count words by splitting on whitespace
+            words = description.split()
+            word_count = len(words)
+            
+            if word_count < min_words:
+                short_descriptions.append((req_id, word_count, description[:100] + "..." if len(description) > 100 else description))
+
+    if short_descriptions:
+        print(f"FAILED: The following {len(short_descriptions)} requirements have descriptions with fewer than {min_words} words:")
+        for req_id, word_count, desc_preview in sorted(short_descriptions):
+            print(f"  - [{req_id}] ({word_count} words): {desc_preview}")
+        return 1
+
+    print(f"Success: All {len(all_reqs)} requirements in {file_path} have descriptions with at least {min_words} words.")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Verify requirement extraction consistency.")
     parser.add_argument("--verify-doc", nargs=2, metavar=("SOURCE_FILE", "EXTRACTED_FILE"),
@@ -506,6 +554,8 @@ def main():
                         help="Verify that all requirement IDs in FILE follow the standard format [DOC_PREFIX-REQ-NNN]")
     parser.add_argument("--verify-uniqueness", metavar="DIR",
                         help="Verify that no requirement ID appears in multiple files within DIR")
+    parser.add_argument("--verify-desc-length", metavar="FILE",
+                        help="Verify that all requirements in FILE have descriptions of at least 10 words")
 
     args = parser.parse_args()
     
@@ -551,6 +601,9 @@ def main():
 
     elif args.verify_uniqueness:
         exit_code = verify_uniqueness(args.verify_uniqueness)
+
+    elif args.verify_desc_length:
+        exit_code = verify_description_length(args.verify_desc_length, min_words=10)
 
     else:
         parser.print_help()

@@ -10,9 +10,12 @@ You are a Lead Product Manager. Your job is to review all individual requirement
 3. Merge the requirements into a single `requirements.md` in the project root.
 4. Identify and resolve any conflicting requirements across the different documents.
 5. IMPORTANT: If you resolve a conflict that affects the original design or research, you MUST update the corresponding files in `specs/` or `research/` to reflect the resolution.
-6. You MUST document all requirements from the input documents that are intentionally removed, skipped, or modified during the merge process to ensure no requirements are lost without explanation.
-7. MANDATORY VERIFICATION: Once `requirements.md` is updated, you MUST run `python .tools/verify_requirements.py --verify-master` and carefully read the full output.
-8. If the script reports missing requirements, you MUST update `requirements.md` to either include them as proper requirement entries or document them in the "Removed or Modified Requirements" section using the `[EXACT-ID]` bracket syntax, then rerun the script. Repeat until the script prints `Success:` with zero failures.
+6. CRITICAL: Each requirement description MUST be at least 10 words long. If any merged requirement has a description shorter than 10 words, you MUST expand it to be a meaningful, self-contained summary.
+7. You MUST document all requirements from the input documents that are intentionally removed, skipped, or modified during the merge process to ensure no requirements are lost without explanation.
+8. MANDATORY VERIFICATION: Once `requirements.md` is updated, you MUST run the following verification commands and carefully read the full output:
+   - `python .tools/verify_requirements.py --verify-master`
+   - `python .tools/verify_requirements.py --verify-desc-length requirements.md`
+9. If either script reports issues (missing requirements or short descriptions), you MUST update `requirements.md` to fix each issue, then rerun both scripts. Repeat until both scripts print `Success:` with zero failures.
 
 # CHAIN OF THOUGHT
 Before generating the final document, plan your approach:
@@ -21,9 +24,10 @@ Before generating the final document, plan your approach:
 3. Look for duplicates and merge them.
 4. Look for contradictions. Decide on the most logical resolution based on the project context.
 5. Document the rationale for any requirements that are intentionally removed, skipped, or significantly modified. Include every shorthand alias ID in the "Removed or Modified Requirements" section using its `[EXACT-SHORTHAND-ID]` bracket form.
-6. Create the master `requirements.md` file, including a dedicated section for removed or modified requirements.
-7. Run `python .tools/verify_requirements.py --verify-master`. Read the full output. If it reports missing IDs, fix each one — either add a proper requirement entry or add a "Removed" entry with the `[EXACT-ID]` bracket. Re-run until the script prints `Success:` with zero failures.
-8. If a source document (in `specs/` or `research/`) contained a conflicting idea that was overruled or modified, edit that source document to remain consistent with the new master requirements.
+6. **Check description lengths**: Ensure every requirement has a description of at least 10 words. Expand any short descriptions.
+7. Create the master `requirements.md` file, including a dedicated section for removed or modified requirements.
+8. Run `python .tools/verify_requirements.py --verify-master` and `python .tools/verify_requirements.py --verify-desc-length requirements.md`. Read the full output of both. If either reports issues, fix each one — either add a proper requirement entry, expand short descriptions, or add a "Removed" entry with the `[EXACT-ID]` bracket. Re-run both scripts until both print `Success:` with zero failures.
+9. If a source document (in `specs/` or `research/`) contained a conflicting idea that was overruled or modified, edit that source document to remain consistent with the new master requirements.
 
 # CONSTRAINTS
 - You may use a `<thinking>...</thinking>` block at the very beginning of your response to plan your approach. After the thinking block, output ONLY the raw Markdown document. Do not include any conversational filler.

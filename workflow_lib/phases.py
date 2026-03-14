@@ -539,7 +539,18 @@ class Phase4AExtractRequirements(BasePhase):
             print(f"\n[!] Automated verification failed for {self.doc['name']}:")
             print(verify_res.stdout)
             sys.exit(1)
-        
+
+        # Verify description length (minimum 10 words)
+        print(f"   -> Verifying description length for {self.doc['name']}...")
+        desc_res = subprocess.run(
+            [sys.executable, os.path.join(TOOLS_DIR, "verify_requirements.py"), "--verify-desc-length", expected_file],
+            capture_output=True, text=True, cwd=ctx.root_dir
+        )
+        if desc_res.returncode != 0:
+            print(f"\n[!] Description length validation failed for {self.doc['name']}:")
+            print(desc_res.stdout)
+            sys.exit(1)
+
         ctx.stage_changes(allowed_files)
         ctx.state.setdefault("extracted_requirements", []).append(self.doc["id"])
         ctx.save_state()
@@ -587,7 +598,18 @@ class Phase4BMergeRequirements(BasePhase):
             print("\n[!] Automated verification failed after merging requirements:")
             print(verify_res.stdout)
             sys.exit(1)
-            
+
+        # Verify description length (minimum 10 words)
+        print("\n   -> Verifying description length in requirements.md...")
+        desc_res = subprocess.run(
+            [sys.executable, os.path.join(TOOLS_DIR, "verify_requirements.py"), "--verify-desc-length", "requirements.md"],
+            capture_output=True, text=True, cwd=ctx.root_dir
+        )
+        if desc_res.returncode != 0:
+            print("\n[!] Description length validation failed after merging requirements:")
+            print(desc_res.stdout)
+            sys.exit(1)
+
         ctx.stage_changes(allowed_files)
         ctx.state["requirements_merged"] = True
         ctx.save_state()
