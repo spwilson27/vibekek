@@ -979,10 +979,12 @@ class Phase6BreakDownTasks(BasePhase):
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
-            print("\n[!] Automated verification failed: Not all requirements mapped to actionable tasks:")
+            # Verification failures are expected and will be fixed by Phase6A Fixup.
+            # Just warn and continue - Phase6AFixupValidation will handle the gaps.
+            print("\n[!] Warning: Verification found gaps (Phase6A Fixup will address these):")
             print(verify_res.stdout)
-            sys.exit(1)
-            
+            # Don't exit here - let Phase6AFixupValidation handle the gaps
+
         ctx.stage_changes([tasks_dir])
         ctx.state["tasks_completed"] = True
         ctx.save_state()
