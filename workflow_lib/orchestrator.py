@@ -230,8 +230,9 @@ class Orchestrator:
         13. **Phase 6B** — Review tasks for completeness.
         14. **Phase 6C** × 2 — Cross-phase review (two passes).
         15. **Phase 6D** × 2 — Validate task ordering (two passes).
-        16. **Phase 6E** — Generate integration test plan.
-        17. **Phase 7A** — Generate per-phase dependency DAGs.
+        16. **Phase 6E** — Validate depends_on metadata for DAG generation.
+        17. **Phase 6F** — Generate integration test plan.
+        18. **Phase 7A** — Generate per-phase dependency DAGs.
 
         The AI runner ignore file is backed up before the run and restored in a
         ``finally`` block so that the workspace is always returned to a clean
@@ -318,6 +319,7 @@ class Orchestrator:
         self.run_phase_with_retry(Phase6DReorderTasks(pass_num=1))
         self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=2))
         self.run_phase_with_retry(Phase6DReorderTasks(pass_num=2))
+        self.run_phase_with_retry(Phase6EDependsOnValidation())
         self.run_phase_with_retry(Phase6EIntegrationTestPlan())
         self._validate_artifacts(
             [os.path.join(self.ctx.plan_dir, "integration_test_plan.md")],

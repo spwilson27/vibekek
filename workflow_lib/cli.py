@@ -205,6 +205,7 @@ def cmd_plan(args: argparse.Namespace) -> None:
                     "6b-review": ["tasks_reviewed"],
                     "6c-cross-review": ["cross_phase_reviewed_pass_1", "cross_phase_reviewed_pass_2"],
                     "6d-reorder": ["tasks_reordered_pass_1", "tasks_reordered_pass_2"],
+                    "6e-depends-on-validation": ["depends_on_validated"],
                     "6e-integration": ["integration_test_plan_completed"],
                     "7-dag": ["dag_completed"],
                 }

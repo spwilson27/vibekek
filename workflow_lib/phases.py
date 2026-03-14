@@ -40,6 +40,10 @@ Phase catalogue
 +-------------------+------------------------------------------------------+
 | Phase6DReorderTasks       | Reorder tasks for logical progression.        |
 +-------------------+------------------------------------------------------+
+| Phase6EDependsOnValidation| Validate depends_on metadata before DAG gen.  |
++-------------------+------------------------------------------------------+
+| Phase6EIntegrationTestPlan| Generate integration test plan.               |
++-------------------+------------------------------------------------------+
 | Phase7ADAGGeneration      | Build per-phase dependency DAGs.              |
 +-------------------+------------------------------------------------------+
 """
@@ -1080,7 +1084,6 @@ class Phase6BReviewTasks(BasePhase):
         :raises SystemExit: On AI runner failure after 3 attempts for any
             phase.
         """
-        assert False, "pausing here"
         if ctx.state.get("tasks_reviewed", False):
             print("Task review already completed.")
             return
@@ -1867,4 +1870,180 @@ class Phase6EIntegrationTestPlan(BasePhase):
         ctx.state["integration_test_plan_completed"] = True
         ctx.save_state()
         print("Successfully generated integration test plan.")
+
+
+class Phase6EDependsOnValidation(BasePhase):
+    """Validate depends_on metadata in all task files before DAG generation.
+
+    This phase runs a comprehensive validation of all ``depends_on`` fields
+    across all task files to ensure:
+
+    1. Every task file has a ``depends_on`` metadata field
+    2. All referenced dependencies exist as actual task files
+    3. No circular dependencies exist within phases
+    4. Dependency paths use the correct format (relative to tasks/ directory)
+
+    Produces ``depends_on_validation.md`` in the tasks directory documenting
+    validation results. Idempotent via ``ctx.state["depends_on_validated"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Validate depends_on metadata across all task files.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        :raises SystemExit: On validation failure with unresolved errors.
+        """
+        if ctx.state.get("depends_on_validated", False):
+            print("Depends-on validation already completed.")
+            return
+
+        print("\n=> [Phase 6E: Depends-On Validation] Validating task dependencies before DAG generation...")
+
+        tasks_dir = os.path.join(ctx.plan_dir, "tasks")
+        if not os.path.exists(tasks_dir):
+            print("\n[!] Error: tasks directory does not exist. Run Phase 6 first.")
+            sys.exit(1)
+
+        validation_report_path = os.path.join(tasks_dir, "depends_on_validation.md")
+
+        # Run the depends_on verification from verify.py
+        validation_script = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "verify.py"
+        )
+
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, validation_script, "depends-on", tasks_dir],
+            capture_output=True,
+            text=True,
+            cwd=ctx.root_dir
+        )
+
+        validation_passed = result.returncode == 0
+
+        # Collect all task files and their depends_on metadata for the report
+        phase_dirs = [d for d in os.listdir(tasks_dir)
+                      if os.path.isdir(os.path.join(tasks_dir, d)) and d.startswith("phase_")]
+
+        total_tasks = 0
+        tasks_with_deps = 0
+        all_dependencies = []
+
+        _NON_TASK_FILES = {
+            "README.md",
+            "SUB_EPIC_SUMMARY.md",
+            "REQUIREMENTS_TRACEABILITY.md",
+            "review_summary.md",
+        }
+
+        for phase_id in sorted(phase_dirs):
+            phase_dir_path = os.path.join(tasks_dir, phase_id)
+            for sub_epic in sorted(os.listdir(phase_dir_path)):
+                sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
+                if not os.path.isdir(sub_epic_dir):
+                    continue
+                for md_file in sorted(os.listdir(sub_epic_dir)):
+                    if md_file.endswith(".md") and md_file not in _NON_TASK_FILES:
+                        total_tasks += 1
+                        task_id = f"{phase_id}/{sub_epic}/{md_file}"
+                        filepath = os.path.join(sub_epic_dir, md_file)
+                        with open(filepath, "r", encoding="utf-8") as f:
+                            content = f.read()
+
+                        deps = Phase7ADAGGeneration._parse_depends_on(content)
+                        if deps is not None:
+                            tasks_with_deps += 1
+                            if deps:
+                                all_dependencies.append((task_id, deps))
+
+        # Generate validation report
+        print(f"   -> Generating validation report...")
+        report_content = f"""# Depends-On Validation Report
+
+## Summary
+
+- **Total task files validated:** {total_tasks}
+- **Tasks with depends_on metadata:** {tasks_with_deps}
+- **Validation status:** {'PASSED' if validation_passed else 'FAILED'}
+
+## Validation Checks
+
+1. **Metadata Presence:** All task files must have a `depends_on` field
+2. **Dependency Existence:** All referenced dependencies must exist as task files
+3. **Path Format:** Dependencies use paths relative to the tasks/ directory
+4. **No Circular Dependencies:** Dependencies within each phase must not form cycles
+
+## Results
+
+"""
+        if validation_passed:
+            report_content += f"""### Status: ✓ PASSED
+
+All {total_tasks} task files have valid depends_on metadata.
+
+- {tasks_with_deps} tasks explicitly declare dependencies
+- {len(all_dependencies)} tasks have non-trivial dependencies
+- No circular dependencies detected
+- All dependency paths are correctly formatted
+
+## Next Steps
+
+Proceed to Phase 7A (DAG Generation) to generate the final dependency graphs.
+"""
+        else:
+            report_content += f"""### Status: ✗ FAILED
+
+Validation found issues that must be resolved before DAG generation.
+
+### Error Output
+
+```
+{result.stdout}
+{result.stderr}
+```
+
+## Required Actions
+
+1. Review the errors above
+2. Fix the depends_on metadata in the affected task files
+3. Re-run Phase 6E to re-validate
+
+### Automatic Fix Option
+
+Run the following command to attempt automatic fixes:
+
+```bash
+python .tools/verify.py depends-on --fix docs/plan/tasks/
+```
+
+Then re-run Phase 6E.
+"""
+
+        os.makedirs(os.path.dirname(validation_report_path), exist_ok=True)
+        with open(validation_report_path, "w", encoding="utf-8") as f:
+            f.write(report_content)
+
+        if not validation_passed:
+            print("\n" + "="*60)
+            print(f"{RED}[!] VALIDATION FAILED{RESET}")
+            print("="*60)
+            print(result.stdout)
+            print(result.stderr)
+            print("\nValidation report saved to: docs/plan/tasks/depends_on_validation.md")
+            print("\nTo fix these issues:")
+            print("1. Manual fix: Edit the task files to correct depends_on fields")
+            print("2. Automatic fix: python .tools/verify.py depends-on --fix docs/plan/tasks/")
+            print("\nThen re-run Phase 6E.\n")
+            sys.exit(1)
+
+        print(result.stdout)
+        print(f"\n{GREEN}✓ Depends-on validation passed for {total_tasks} tasks{RESET}")
+        print(f"   Validation report: docs/plan/tasks/depends_on_validation.md")
+
+        ctx.stage_changes([validation_report_path])
+        ctx.state["depends_on_validated"] = True
+        ctx.save_state()
+        print("Successfully validated depends_on metadata.")
 

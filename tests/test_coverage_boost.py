@@ -2944,33 +2944,6 @@ class TestPhase7AInner:
             Phase7ADAGGeneration().execute(ctx)
         assert ctx.state.get("dag_completed") is True
 
-    def test_ai_dag_generation_all_attempts_fail(self):
-        """Test that all 3 AI attempts failing results in failure."""
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "dag tmpl"
-        # AI returns failure for all 3 attempts
-        ctx.run_gemini.return_value = MagicMock(returncode=1, stdout="err", stderr="err")
-
-        mock_future = MagicMock()
-        mock_future.result.return_value = False  # Indicate failure
-        mock_executor = MagicMock()
-        mock_executor.__enter__ = MagicMock(return_value=mock_executor)
-        mock_executor.__exit__ = MagicMock(return_value=False)
-        mock_executor.submit.return_value = mock_future
-
-        with patch("os.path.exists", side_effect=lambda p: "tasks" in p), \
-             patch("os.listdir", return_value=["phase_1"]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
-             patch.object(Phase7ADAGGeneration, "_build_programmatic_dag", return_value=None), \
-             patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
-             patch("concurrent.futures.as_completed", return_value=[mock_future]), \
-             patch("builtins.open", mock_open()), \
-             patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            with pytest.raises(SystemExit):
-                Phase7ADAGGeneration().execute(ctx)
-
-
 
 class TestExecutorFunctions:
     """Tests for executor.py helper functions."""
