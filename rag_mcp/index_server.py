@@ -98,13 +98,13 @@ def main():
     # Get config path from argument or find default
     config_path = sys.argv[1] if len(sys.argv) > 1 else None
     if not config_path:
-        for c in ["config.jsonc", "config.json"]:
+        for c in [".rag-config.jsonc", "config.jsonc", "config.json"]:
             if os.path.exists(c):
                 config_path = c
                 break
     
     if not config_path:
-        print("Error: No config file found. Create config.json or config.jsonc in current directory.")
+        print("Error: No config file found. Create .rag-config.jsonc in current directory.")
         sys.exit(1)
     
     config = load_config(config_path)
