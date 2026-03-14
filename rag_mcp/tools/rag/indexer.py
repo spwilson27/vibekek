@@ -91,6 +91,10 @@ class Indexer:
                     pass
 
                 try:
+                    # Remove old chunks for this file before adding new ones
+                    # This ensures clean updates when file content changes
+                    self.vector_store.remove_file_chunks(str(file_path))
+
                     content = file_path.read_text()
 
                     # Truncate if needed

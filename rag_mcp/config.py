@@ -34,6 +34,7 @@ class LimitConfig:
     max_index_size_mb: int = 100   # Max index size in MB (0 = no limit)
     max_file_size_kb: int = 1024   # Skip files larger than this (0 = no limit)
     truncate_size_kb: int = 256    # Truncate files to this size before indexing (0 = no truncation)
+    line_limit: int = 25           # Max lines to display per search result (0 = no limit)
 
     @classmethod
     def from_dict(cls, data: dict) -> "LimitConfig":
@@ -43,6 +44,7 @@ class LimitConfig:
             max_index_size_mb=data.get("max_index_size_mb", 100),
             max_file_size_kb=data.get("max_file_size_kb", 1024),
             truncate_size_kb=data.get("truncate_size_kb", 256),
+            line_limit=data.get("line_limit", 25),
         )
 
 
@@ -52,18 +54,36 @@ class PriorityConfig:
     dirs: list[str] = field(default_factory=list)       # Index these dirs first
     exclude_dirs: list[str] = field(default_factory=list)  # Exclude these dirs
     extensions: list[str] = field(default_factory=list)    # Only these extensions (empty = all code)
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> "PriorityConfig":
         # Merge with defaults for exclude_dirs
         exclude_dirs = data.get("exclude_dirs", [])
         if not exclude_dirs:
             exclude_dirs = DEFAULT_EXCLUDE_DIRS.copy()
-        
+
         return cls(
             dirs=data.get("dirs", []),
             exclude_dirs=exclude_dirs,
             extensions=data.get("extensions", []),
+        )
+
+
+@dataclass
+class PageRankConfig:
+    """Configuration for PageRank-style importance scoring."""
+    enabled: bool = True
+    damping_factor: float = 0.85  # Probability of following a link (standard PageRank value)
+    iterations: int = 20          # Number of iterations for convergence
+    weight: float = 0.5           # Weight of PageRank score in final ranking (0-1)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PageRankConfig":
+        return cls(
+            enabled=data.get("enabled", True),
+            damping_factor=data.get("damping_factor", 0.85),
+            iterations=data.get("iterations", 20),
+            weight=data.get("weight", 0.5),
         )
 
 
@@ -74,17 +94,20 @@ class ToolConfig:
     index_dir: Optional[str] = None
     limits: LimitConfig = field(default_factory=LimitConfig)
     priority: PriorityConfig = field(default_factory=PriorityConfig)
+    pagerank: PageRankConfig = field(default_factory=PageRankConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ToolConfig":
         limits_data = data.get("limits", {})
         priority_data = data.get("priority", {})
-        
+        pagerank_data = data.get("pagerank", {})
+
         return cls(
             enabled=data.get("enabled", True),
             index_dir=data.get("index_dir"),
             limits=LimitConfig.from_dict(limits_data),
             priority=PriorityConfig.from_dict(priority_data),
+            pagerank=PageRankConfig.from_dict(pagerank_data),
         )
 
 

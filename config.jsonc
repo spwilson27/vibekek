@@ -40,18 +40,33 @@
     "semantic": {
       "enabled": true,
       "index_dir": "/tmp/semantic-{hash}",
-      
+
       "limits": {
         "max_files": 0,
         "max_chunks": 0,
         "max_file_size_kb": 10000,
-        "truncate_size_kb": 100
+        "truncate_size_kb": 100,
+        // Maximum lines to display per search result (0 = no limit)
+        "line_limit": 25
       },
-      
+
       "priority": {
         "dirs": ["src/", "lib/", "app/"],
         "exclude_dirs": [],
         "extensions": []
+      },
+
+      // PageRank-style importance scoring for ranking search results
+      "pagerank": {
+        // Enable PageRank scoring (default: true)
+        "enabled": true,
+        // Damping factor - probability of following a call link (standard: 0.85)
+        "damping_factor": 0.85,
+        // Number of iterations for convergence (default: 20)
+        "iterations": 20,
+        // Weight of PageRank score in final ranking (0-1, default: 0.5)
+        // Higher values give more importance to PageRank vs other factors
+        "weight": 0.5
       }
     }
   }

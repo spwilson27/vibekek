@@ -44,25 +44,32 @@ class RAGTool(BaseTool):
                         "description": "Number of results to return (default: 10)",
                         "default": 10,
                     },
+                    "line_limit": {
+                        "type": "integer",
+                        "description": "Maximum lines to display per result (0 = no limit, default: 25)",
+                        "default": 25,
+                    },
                 },
                 "required": ["query"],
             },
         )
-    
+
     async def execute(self, arguments: dict[str, Any]) -> str:
         """Execute RAG search."""
         query = arguments.get("query", "")
         n_results = arguments.get("n_results", 10)
-        
+        # Allow argument to override config
+        line_limit = arguments.get("line_limit", self.tool_config.limits.line_limit)
+
         if not query:
             return "Error: query is required"
-        
+
         # Search
         results = self.vector_store.search(query, n_results)
-        
+
         # Format results
         output_parts = []
-        
+
         # Add warning if still indexing
         if self.vector_store.is_indexing:
             status = self.vector_store.indexing_status
@@ -72,21 +79,34 @@ class RAGTool(BaseTool):
                 f"{status['total_chunks']} chunks in index).\n"
                 f"Results may be incomplete.\n"
             )
-        
+
         if not results:
             output_parts.append("No results found.")
         else:
             output_parts.append(f"Found {len(results)} relevant result(s):\n")
-            
+
             for i, result in enumerate(results, 1):
+                content = result['content']
+                truncated = False
+
+                # Apply line limit if configured
+                if line_limit > 0:
+                    lines = content.split('\n')
+                    if len(lines) > line_limit:
+                        content = '\n'.join(lines[:line_limit])
+                        truncated = True
+
                 output_parts.append(
                     f"--- Result {i} ---\n"
                     f"File: {result['file_path']}\n"
                     f"Lines: {result['start_line']}-{result['end_line']}\n"
                     f"Relevance: {result['relevance_score']:.2%}\n"
-                    f"```\n{result['content']}\n```\n"
+                    f"```\n{content}\n```"
                 )
-        
+                if truncated:
+                    output_parts.append(f"\n⚠️ **Note**: Content truncated to first {line_limit} lines\n")
+                output_parts.append("\n")
+
         return "\n".join(output_parts)
     
     def start(self) -> None:

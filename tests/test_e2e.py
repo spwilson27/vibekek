@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -309,6 +310,668 @@ class TestServerStartup:
         # Should not raise and should enable RAG
         server = create_server(str(config_path))
         assert server is not None
+
+
+class TestBackgroundIndexServer:
+    """Test the background index server (serve/stop commands)."""
+
+    def test_serve_starts_server(self, temp_dir, test_repo):
+        """Test that 'rag-mcp-cli serve' starts a background server."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create a config in temp_dir
+        config_data = {
+            "repo_path": str(test_repo),
+            "tools": {
+                "rag": {"enabled": True},
+                "semantic": {"enabled": False}
+            }
+        }
+        config_path = temp_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f)
+
+        # PID file should be in project directory (test_repo), not temp_dir
+        pid_file = test_repo / ".rag-mcp-server.pid"
+        log_file = test_repo / ".rag-mcp-server.log"
+
+        # Clean up any existing files
+        pid_file.unlink(missing_ok=True)
+        log_file.unlink(missing_ok=True)
+
+        result = subprocess.run(
+            [str(rag_mcp_cli), "-c", str(config_path), "serve"],
+            capture_output=True,
+            text=True,
+            cwd=temp_dir,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, f"serve command failed: {result.stderr}"
+        assert "Server started" in result.stdout, f"Expected 'Server started' in output: {result.stdout}"
+
+        # Wait for server to initialize
+        time.sleep(2)
+
+        # Check PID file exists in PROJECT directory, not temp_dir
+        assert pid_file.exists(), "PID file should be created in project directory"
+        assert not (temp_dir / ".rag-mcp-server.pid").exists(), "PID file should NOT be in cwd"
+
+        # Check server process is running
+        pid = int(pid_file.read_text().strip())
+        assert pid > 0, "PID should be a positive integer"
+
+        # Verify process exists
+        try:
+            os.kill(pid, 0)
+            process_running = True
+        except ProcessLookupError:
+            process_running = False
+
+        assert process_running, f"Server process {pid} should be running"
+
+        # Clean up
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (AttributeError, ProcessLookupError):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+    def test_serve_detects_already_running(self, temp_dir, test_repo):
+        """Test that 'rag-mcp-cli serve' detects already running server."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create a config
+        config_data = {
+            "repo_path": str(test_repo),
+            "tools": {"rag": {"enabled": True}}
+        }
+        config_path = temp_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f)
+
+        pid_file = test_repo / ".rag-mcp-server.pid"
+        log_file = test_repo / ".rag-mcp-server.log"
+
+        # Start server manually
+        server_cmd = [str(venv_bin / "rag-mcp-index"), str(config_path)]
+        with open(log_file, "w") as log:
+            proc = subprocess.Popen(
+                server_cmd,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                cwd=temp_dir,
+                start_new_session=True,
+            )
+
+        # Write PID file
+        pid_file.write_text(str(proc.pid))
+
+        try:
+            # Wait for server to start
+            time.sleep(2)
+
+            # Try to start another server
+            result = subprocess.run(
+                [str(rag_mcp_cli), "-c", str(config_path), "serve"],
+                capture_output=True,
+                text=True,
+                cwd=temp_dir,
+                timeout=5,
+            )
+
+            assert result.returncode == 0
+            assert "already running" in result.stdout.lower(), \
+                f"Expected 'already running' message: {result.stdout}"
+
+        finally:
+            # Clean up
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except (AttributeError, ProcessLookupError):
+                try:
+                    os.kill(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            pid_file.unlink(missing_ok=True)
+
+    def test_stop_stops_server(self, temp_dir, test_repo):
+        """Test that 'rag-mcp-cli stop' stops the background server."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create a config
+        config_data = {
+            "repo_path": str(test_repo),
+            "tools": {"rag": {"enabled": True}}
+        }
+        config_path = temp_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f)
+
+        pid_file = test_repo / ".rag-mcp-server.pid"
+        log_file = test_repo / ".rag-mcp-server.log"
+
+        # Start server manually (mimicking how CLI starts it)
+        server_cmd = [str(venv_bin / "rag-mcp-index"), str(config_path)]
+        with open(log_file, "w") as log:
+            proc = subprocess.Popen(
+                server_cmd,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                cwd=temp_dir,
+                start_new_session=True,
+            )
+
+        # Write PID file
+        pid_file.write_text(str(proc.pid))
+        server_pid = proc.pid
+
+        try:
+            # Wait for server to start
+            time.sleep(2)
+
+            # Verify server is running before stop
+            try:
+                os.kill(server_pid, 0)
+                server_was_running = True
+            except ProcessLookupError:
+                server_was_running = False
+
+            assert server_was_running, "Server should be running before stop"
+
+            # Stop the server using the CLI command
+            result = subprocess.run(
+                [str(rag_mcp_cli), "-c", str(config_path), "stop"],
+                capture_output=True,
+                text=True,
+                cwd=temp_dir,
+                timeout=15,
+            )
+
+            assert result.returncode == 0, f"stop command failed: {result.stderr}"
+            assert "stopped" in result.stdout.lower() or "not running" in result.stdout.lower(), \
+                f"Expected 'stopped' or 'not running' message: {result.stdout}"
+
+            # PID file should be removed after stop
+            time.sleep(0.5)
+            assert not pid_file.exists(), "PID file should be removed after stop"
+
+        finally:
+            # Clean up in case stop failed
+            try:
+                os.killpg(server_pid, signal.SIGKILL)
+            except (AttributeError, ProcessLookupError):
+                try:
+                    os.kill(server_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            pid_file.unlink(missing_ok=True)
+
+    def test_stop_when_not_running(self, temp_dir, test_repo):
+        """Test that 'rag-mcp-cli stop' handles server not running gracefully."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create a config
+        config_data = {
+            "repo_path": str(test_repo),
+            "tools": {"rag": {"enabled": True}}
+        }
+        config_path = temp_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f)
+
+        # Ensure no PID file exists
+        pid_file = test_repo / ".rag-mcp-server.pid"
+        pid_file.unlink(missing_ok=True)
+
+        # Try to stop when not running
+        result = subprocess.run(
+            [str(rag_mcp_cli), "-c", str(config_path), "stop"],
+            capture_output=True,
+            text=True,
+            cwd=temp_dir,
+            timeout=5,
+        )
+
+        assert result.returncode == 0
+        assert "not running" in result.stdout.lower(), \
+            f"Expected 'not running' message: {result.stdout}"
+
+    def test_different_projects_independent_servers(self, temp_dir):
+        """Test that different projects can have independent servers running."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create two separate project directories
+        project_a = temp_dir / "project_a"
+        project_b = temp_dir / "project_b"
+        project_a.mkdir()
+        project_b.mkdir()
+
+        # Initialize git repos (required for scanner)
+        for proj in [project_a, project_b]:
+            subprocess.run(["git", "init"], cwd=proj, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=proj, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=proj, capture_output=True)
+            (proj / "dummy.txt").write_text("dummy")
+            subprocess.run(["git", "add", "."], cwd=proj, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=proj, capture_output=True)
+
+        # Create configs for each project
+        config_a = temp_dir / "config_a.json"
+        config_b = temp_dir / "config_b.json"
+        
+        with open(config_a, "w") as f:
+            json.dump({"repo_path": str(project_a), "tools": {"rag": {"enabled": True}}}, f)
+        with open(config_b, "w") as f:
+            json.dump({"repo_path": str(project_b), "tools": {"rag": {"enabled": True}}}, f)
+
+        pid_file_a = project_a / ".rag-mcp-server.pid"
+        pid_file_b = project_b / ".rag-mcp-server.pid"
+
+        # Clean up
+        pid_file_a.unlink(missing_ok=True)
+        pid_file_b.unlink(missing_ok=True)
+
+        try:
+            # Start server for project A
+            result_a = subprocess.run(
+                [str(rag_mcp_cli), "-c", str(config_a), "serve"],
+                capture_output=True,
+                text=True,
+                cwd=temp_dir,
+                timeout=10,
+            )
+            assert result_a.returncode == 0, f"Failed to start server A: {result_a.stderr}"
+            time.sleep(2)
+
+            # Start server for project B
+            result_b = subprocess.run(
+                [str(rag_mcp_cli), "-c", str(config_b), "serve"],
+                capture_output=True,
+                text=True,
+                cwd=temp_dir,
+                timeout=10,
+            )
+            assert result_b.returncode == 0, f"Failed to start server B: {result_b.stderr}"
+            time.sleep(2)
+
+            # Both servers should be running
+            assert pid_file_a.exists(), "PID file A should exist"
+            assert pid_file_b.exists(), "PID file B should exist"
+
+            pid_a = int(pid_file_a.read_text().strip())
+            pid_b = int(pid_file_b.read_text().strip())
+
+            # PIDs should be different
+            assert pid_a != pid_b, "Different projects should have different PIDs"
+
+            # Both processes should be running
+            try:
+                os.kill(pid_a, 0)
+                os.kill(pid_b, 0)
+                both_running = True
+            except ProcessLookupError:
+                both_running = False
+
+            assert both_running, "Both servers should be running"
+
+            # Stop server A
+            subprocess.run(
+                [str(rag_mcp_cli), "-c", str(config_a), "stop"],
+                capture_output=True,
+                text=True,
+                cwd=temp_dir,
+                timeout=10,
+            )
+            time.sleep(1)
+
+            # Server B should still be running
+            try:
+                os.kill(pid_b, 0)
+                b_still_running = True
+            except ProcessLookupError:
+                b_still_running = False
+
+            assert b_still_running, "Server B should still be running after stopping A"
+
+        finally:
+            # Clean up both servers
+            for pid_file in [pid_file_a, pid_file_b]:
+                if pid_file.exists():
+                    try:
+                        pid = int(pid_file.read_text().strip())
+                        os.killpg(pid, signal.SIGKILL)
+                    except (AttributeError, ProcessLookupError, ValueError):
+                        try:
+                            pid = int(pid_file.read_text().strip())
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    pid_file.unlink(missing_ok=True)
+
+    def test_stale_pid_file_cleanup(self, temp_dir, test_repo):
+        """Test that stale PID files are cleaned up automatically."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create a config
+        config_data = {
+            "repo_path": str(test_repo),
+            "tools": {"rag": {"enabled": True}}
+        }
+        config_path = temp_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f)
+
+        pid_file = test_repo / ".rag-mcp-server.pid"
+
+        # Write a fake PID (non-existent process)
+        pid_file.write_text("999999")
+
+        try:
+            # Try to serve - should detect stale PID and start new server
+            result = subprocess.run(
+                [str(rag_mcp_cli), "-c", str(config_path), "serve"],
+                capture_output=True,
+                text=True,
+                cwd=temp_dir,
+                timeout=10,
+            )
+
+            assert result.returncode == 0, f"serve failed with stale PID: {result.stderr}"
+            assert "Server started" in result.stdout, "Should start new server after cleaning stale PID"
+
+            time.sleep(2)
+
+            # New PID file should exist with different PID
+            assert pid_file.exists(), "PID file should exist"
+            new_pid = int(pid_file.read_text().strip())
+            assert new_pid != 999999, "Should have new PID"
+
+            # Verify new server is running
+            try:
+                os.kill(new_pid, 0)
+                server_running = True
+            except ProcessLookupError:
+                server_running = False
+
+            assert server_running, "New server should be running"
+
+        finally:
+            # Clean up
+            if pid_file.exists():
+                try:
+                    pid = int(pid_file.read_text().strip())
+                    if pid != 999999:
+                        os.killpg(pid, signal.SIGKILL)
+                except (AttributeError, ProcessLookupError, ValueError):
+                    pass
+            pid_file.unlink(missing_ok=True)
+
+    def test_server_survives_directory_change(self, temp_dir, test_repo):
+        """Test that server continues running after changing directory."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create a config
+        config_data = {
+            "repo_path": str(test_repo),
+            "tools": {"rag": {"enabled": True}}
+        }
+        config_path = temp_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f)
+
+        pid_file = test_repo / ".rag-mcp-server.pid"
+        pid_file.unlink(missing_ok=True)
+
+        try:
+            # Start server from temp_dir
+            result = subprocess.run(
+                [str(rag_mcp_cli), "-c", str(config_path), "serve"],
+                capture_output=True,
+                text=True,
+                cwd=temp_dir,
+                timeout=10,
+            )
+            assert result.returncode == 0
+            time.sleep(2)
+
+            # Get PID
+            assert pid_file.exists()
+            pid = int(pid_file.read_text().strip())
+
+            # Change to a completely different directory
+            other_dir = temp_dir / "other_dir"
+            other_dir.mkdir()
+
+            # Server should still be running
+            try:
+                os.kill(pid, 0)
+                server_running = True
+            except ProcessLookupError:
+                server_running = False
+
+            assert server_running, "Server should still be running after cd"
+
+            # Should be able to stop from different directory
+            stop_result = subprocess.run(
+                [str(rag_mcp_cli), "-c", str(config_path), "stop"],
+                capture_output=True,
+                text=True,
+                cwd=other_dir,  # Different directory
+                timeout=10,
+            )
+
+            assert stop_result.returncode == 0
+            time.sleep(1)
+
+            # Server should be stopped
+            try:
+                os.kill(pid, 0)
+                still_running = True
+            except ProcessLookupError:
+                still_running = False
+
+            assert not still_running, "Server should be stopped"
+
+        finally:
+            pid_file.unlink(missing_ok=True)
+
+
+class TestStatusCommand:
+    """Test the status command performance and output."""
+
+    def test_status_command_under_500ms(self, temp_dir, test_repo):
+        """Test that 'rag-mcp-cli status' returns within 500ms."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create a config
+        config_data = {
+            "repo_path": str(test_repo),
+            "tools": {
+                "rag": {"enabled": True},
+                "semantic": {"enabled": True}
+            }
+        }
+        config_path = temp_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f)
+
+        # Run status command
+        start_time = time.time()
+        result = subprocess.run(
+            [str(rag_mcp_cli), "-c", str(config_path), "status"],
+            capture_output=True,
+            text=True,
+            cwd=temp_dir,
+            timeout=5,
+        )
+        end_time = time.time()
+
+        elapsed_ms = (end_time - start_time) * 1000
+
+        assert result.returncode == 0, f"status command failed: {result.stderr}"
+        assert "MCP Tools Status" in result.stdout, "Expected status output"
+
+        # Target: < 500ms for status (should be fast since it doesn't load models)
+        assert elapsed_ms < 500, (
+            f"status command took {elapsed_ms:.1f}ms, expected < 500ms. "
+            f"Output: {result.stdout}"
+        )
+
+    def test_status_shows_indexing_complete(self, temp_dir, test_repo):
+        """Test that status command shows when indexing is complete."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create a config
+        config_data = {
+            "repo_path": str(test_repo),
+            "tools": {
+                "rag": {"enabled": True},
+                "semantic": {"enabled": False}
+            }
+        }
+        config_path = temp_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f)
+
+        # First run a query to trigger indexing
+        subprocess.run(
+            [str(rag_mcp_cli), "-c", str(config_path), "rag", "test"],
+            capture_output=True,
+            text=True,
+            cwd=temp_dir,
+            timeout=30,
+        )
+
+        # Wait for background indexing to complete
+        # (RAG tool indexes in a daemon thread)
+        time.sleep(5)
+
+        # Run status command
+        result = subprocess.run(
+            [str(rag_mcp_cli), "-c", str(config_path), "status"],
+            capture_output=True,
+            text=True,
+            cwd=temp_dir,
+            timeout=5,
+        )
+
+        assert result.returncode == 0, f"status command failed: {result.stderr}"
+        
+        # After indexing, should show "Initialized" and some chunks
+        # (test_repo has sample files that should be indexed)
+        assert "Initialized" in result.stdout or "initialized" in result.stdout.lower(), \
+            f"Expected 'Initialized' status: {result.stdout}"
+        
+        # Should have some chunks indexed (test repo has files)
+        # The quick status check counts .meta files
+        assert "Chunks:" in result.stdout, f"Expected chunk count: {result.stdout}"
+
+    def test_status_shows_not_initialized(self, temp_dir, test_repo):
+        """Test that status command shows not initialized for new project."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create a config
+        config_data = {
+            "repo_path": str(test_repo),
+            "tools": {
+                "rag": {"enabled": True},
+                "semantic": {"enabled": True}
+            }
+        }
+        config_path = temp_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f)
+
+        # Run status without any queries (no index yet)
+        result = subprocess.run(
+            [str(rag_mcp_cli), "-c", str(config_path), "status"],
+            capture_output=True,
+            text=True,
+            cwd=temp_dir,
+            timeout=5,
+        )
+
+        assert result.returncode == 0, f"status command failed: {result.stderr}"
+        
+        # Should show some indication that index is not ready
+        output_lower = result.stdout.lower()
+        assert any(keyword in output_lower for keyword in ["not", "yet", "will be", "⏳"]), \
+            f"Expected indication that index is not ready: {result.stdout}"
 
 
 class TestMainEntrypoint:
@@ -766,18 +1429,180 @@ class TestRAGSearch:
         """Test rag_status tool returns status information."""
         from rag_mcp.config import load_config
         from rag_mcp.tools.rag import RAGTool
-        
+
         config = load_config(str(config_file))
         tool_config = config.get_tool_config("rag")
         index_dir = config.get_index_dir("rag")
-        
+
         tool = RAGTool(str(sample_code_files), str(index_dir), tool_config)
         time.sleep(INDEXING_WAIT_TIME)
-        
+
         result = asyncio.run(tool.execute_status({}))
-        
+
         assert "RAG Index Status" in result
         assert "Files indexed" in result or "indexed_files" in result.lower()
+
+    def test_rag_search_no_duplicates_after_reindex(self, temp_dir):
+        """Test that re-indexing a file doesn't create duplicate search results.
+        
+        This test reproduces the issue where duplicate results were returned
+        when files were re-indexed. The fix ensures:
+        1. upsert() is used instead of add() to update existing chunks
+        2. Search results are deduplicated before returning
+        3. Old chunks are removed before re-indexing modified files
+        """
+        from rag_mcp.tools.rag import RAGTool
+        from rag_mcp.config import ToolConfig, LimitConfig, PriorityConfig
+        
+        # Create a test repository with a single file
+        test_repo = temp_dir / "test_repo"
+        test_repo.mkdir()
+        
+        # Create initial file
+        test_file = test_repo / "code.py"
+        test_file.write_text("""
+def authenticate(username, password):
+    '''Authenticate a user.'''
+    if not username or not password:
+        raise ValueError("Invalid credentials")
+    return {"user": username}
+""")
+        
+        # Initialize Git repo (required for scanner)
+        import subprocess
+        subprocess.run(["git", "init"], cwd=test_repo, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=test_repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=test_repo, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=test_repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=test_repo, capture_output=True)
+        
+        # Create config
+        index_dir = temp_dir / "test_index"
+        tool_config = ToolConfig(
+            enabled=True,
+            limits=LimitConfig(
+                max_files=100,
+                max_chunks=10000,
+                max_file_size_kb=1024,
+                truncate_size_kb=512,
+                line_limit=25,
+                max_index_size_mb=100,
+            ),
+            priority=PriorityConfig(
+                dirs=[],
+                exclude_dirs=[],
+                extensions=[],
+            ),
+        )
+        
+        # Create tool and wait for initial indexing
+        tool = RAGTool(str(test_repo), str(index_dir), tool_config)
+        time.sleep(INDEXING_WAIT_TIME)
+        
+        # Initial search - should find the authenticate function
+        result1 = asyncio.run(tool.execute({"query": "authenticate username password"}))
+        assert result1 is not None
+        assert result1.strip()
+        
+        # Count initial results
+        initial_result_count = result1.count("--- Result")
+        assert initial_result_count > 0, "Should find at least one result"
+        
+        # Extract result identifiers (file + lines)
+        def extract_result_ids(result_text):
+            """Extract unique identifiers for each result."""
+            import re
+            results = []
+            for match in re.finditer(r"File: (.+)\nLines: (\d+)-(\d+)", result_text):
+                results.append((match.group(1), match.group(2), match.group(3)))
+            return results
+        
+        initial_result_ids = set(extract_result_ids(result1))
+        
+        # Modify the file (simulating an edit)
+        test_file.write_text("""
+def authenticate(username, password):
+    '''Authenticate a user with username and password.'''
+    if not username or not password:
+        raise ValueError("Invalid credentials")
+    return {"user": username, "authenticated": True}
+
+def verify_token(token):
+    '''Verify an authentication token.'''
+    return token is not None
+""")
+        
+        # Re-index by recreating the tool (simulates server restart or re-index)
+        # In real usage, the indexer would detect file changes
+        tool2 = RAGTool(str(test_repo), str(index_dir), tool_config)
+        time.sleep(INDEXING_WAIT_TIME)
+        
+        # Search again
+        result2 = asyncio.run(tool2.execute({"query": "authenticate username password"}))
+        assert result2 is not None
+        assert result2.strip()
+        
+        # Extract result identifiers after re-index
+        result2_ids = extract_result_ids(result2)
+        
+        # Verify no duplicates - each (file, start_line, end_line) should be unique
+        assert len(result2_ids) == len(set(result2_ids)), \
+            f"Found duplicate results: {result2_ids}"
+        
+        # Verify result count hasn't increased significantly (no duplicates added)
+        result2_count = result2.count("--- Result")
+        # Allow for some variation due to content changes, but not duplicates
+        assert result2_count <= initial_result_count + 3, \
+            f"Result count increased significantly: {initial_result_count} -> {result2_count}"
+
+    def test_vector_store_search_no_duplicate_results(self, temp_dir):
+        """Test that VectorStore.search() never returns duplicate results.
+        
+        This directly tests the deduplication logic in the search method.
+        Even if the database has duplicate entries, search results should be unique.
+        """
+        from rag_mcp.tools.rag.store import VectorStore
+        from rag_mcp.utils.embeddings import Chunk
+        
+        index_dir = temp_dir / "test_index"
+        store = VectorStore(index_dir)
+        
+        # Add the same chunk multiple times with different IDs
+        # This simulates a corrupted database state
+        chunk1 = Chunk(
+            content="def authenticate(): return 'auth'",
+            file_path="test.py",
+            start_line=1,
+            end_line=1,
+            content_hash="hash_a"
+        )
+        chunk2 = Chunk(
+            content="def authenticate(): return 'auth'",  # Same content
+            file_path="test.py",
+            start_line=1,
+            end_line=1,
+            content_hash="hash_b"  # Different ID
+        )
+        chunk3 = Chunk(
+            content="def authenticate(): return 'auth'",  # Same content
+            file_path="test.py",
+            start_line=1,
+            end_line=1,
+            content_hash="hash_c"  # Different ID
+        )
+        
+        # Add all chunks
+        store.add_chunks([chunk1, chunk2, chunk3])
+        
+        # Search - should return deduplicated results
+        results = store.search("authenticate function", n_results=10)
+        
+        # Verify results are unique by (file_path, start_line, end_line, content)
+        seen = set()
+        for result in results:
+            key = (result["file_path"], result["start_line"], result["end_line"], result["content"])
+            assert key not in seen, f"Duplicate result found: {key}"
+            seen.add(key)
 
 
 class TestSemanticSearch:

@@ -22,6 +22,7 @@ dev-dependencies = [
 
 [project.scripts]
 rag-mcp = "rag_mcp.server:main"
+rag-mcp-index = "rag_mcp.index_server:main"
 rag-mcp-cli = "rag_mcp.cli:main"
 
 [build-system]

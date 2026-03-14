@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .pagerank import PageRankCalculator, PageRankResult
+from ...config import PageRankConfig
+
 
 @dataclass
 class Symbol:
@@ -41,7 +44,7 @@ class Symbol:
 class SymbolDatabase:
     """SQLite-based symbol database for semantic search."""
 
-    def __init__(self, index_dir: Path):
+    def __init__(self, index_dir: Path, pagerank_config: Optional[PageRankConfig] = None):
         self.index_dir = index_dir
         self.index_dir.mkdir(parents=True, exist_ok=True)
 
@@ -52,6 +55,14 @@ class SymbolDatabase:
         self._is_indexing = False
         self._total_files = 0
         self._indexed_files = 0
+
+        # PageRank
+        self._pagerank_config = pagerank_config or PageRankConfig()
+        self._pagerank = PageRankCalculator(
+            damping_factor=self._pagerank_config.damping_factor,
+            iterations=self._pagerank_config.iterations
+        )
+        self._pagerank_computed = False
 
     def _ensure_initialized(self):
         """Lazy initialization of database schema."""
@@ -158,12 +169,15 @@ class SymbolDatabase:
     @property
     def indexing_status(self) -> dict:
         self._ensure_initialized()
-        return {
+        status = {
             "is_indexing": self._is_indexing,
             "indexed_files": self._indexed_files,
             "total_files": self._total_files,
             "total_symbols": self.get_symbol_count(),
         }
+        if self._pagerank_config.enabled:
+            status["pagerank_computed"] = self._pagerank_computed
+        return status
     
     def set_file_count(self, count: int):
         self._total_files = count
@@ -290,7 +304,7 @@ class SymbolDatabase:
         self._ensure_initialized()
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
+
         try:
             if symbol_type:
                 cursor.execute("""
@@ -304,10 +318,10 @@ class SymbolDatabase:
                     FROM symbols
                     WHERE name = ?
                 """, (name,))
-            
+
             results = []
             for row in cursor.fetchall():
-                results.append({
+                result = {
                     "name": row[0],
                     "symbol_type": row[1],
                     "file_path": row[2],
@@ -315,7 +329,16 @@ class SymbolDatabase:
                     "end_line": row[4],
                     "content": row[5],
                     "language": row[6],
-                })
+                }
+                # Add PageRank score if enabled
+                if self._pagerank_config.enabled:
+                    result["pagerank_score"] = self.get_pagerank_scores(row[0], row[2])
+                results.append(result)
+            
+            # Sort by PageRank score if enabled
+            if self._pagerank_config.enabled and results:
+                results.sort(key=lambda x: x.get("pagerank_score", 0), reverse=True)
+            
             return results
         finally:
             conn.close()
@@ -364,7 +387,7 @@ class SymbolDatabase:
 
             results = []
             for row in cursor.fetchall():
-                results.append({
+                result = {
                     "name": row[0],
                     "symbol_type": row[1],
                     "file_path": row[2],
@@ -376,7 +399,16 @@ class SymbolDatabase:
                     "decorators": json.loads(row[8]) if row[8] else [],
                     "parameters": json.loads(row[9]) if row[9] else [],
                     "extends": json.loads(row[10]) if row[10] else [],
-                })
+                }
+                # Add PageRank score if enabled
+                if self._pagerank_config.enabled:
+                    result["pagerank_score"] = self.get_pagerank_scores(row[0], row[2])
+                results.append(result)
+            
+            # Sort by PageRank score if enabled
+            if self._pagerank_config.enabled and results:
+                results.sort(key=lambda x: x.get("pagerank_score", 0), reverse=True)
+            
             return results
         finally:
             conn.close()
@@ -410,7 +442,7 @@ class SymbolDatabase:
 
             results = []
             for row in cursor.fetchall():
-                results.append({
+                result = {
                     "name": row[0],
                     "symbol_type": row[1],
                     "file_path": row[2],
@@ -422,7 +454,16 @@ class SymbolDatabase:
                     "decorators": json.loads(row[8]) if row[8] else [],
                     "parameters": json.loads(row[9]) if row[9] else [],
                     "extends": json.loads(row[10]) if row[10] else [],
-                })
+                }
+                # Add PageRank score if enabled
+                if self._pagerank_config.enabled:
+                    result["pagerank_score"] = self.get_pagerank_scores(row[0], row[2])
+                results.append(result)
+            
+            # Sort by PageRank score if enabled
+            if self._pagerank_config.enabled and results:
+                results.sort(key=lambda x: x.get("pagerank_score", 0), reverse=True)
+            
             return results
         finally:
             conn.close()
@@ -444,7 +485,7 @@ class SymbolDatabase:
 
             results = []
             for row in cursor.fetchall():
-                results.append({
+                result = {
                     "name": row[0],
                     "symbol_type": row[1],
                     "file_path": row[2],
@@ -456,7 +497,16 @@ class SymbolDatabase:
                     "decorators": json.loads(row[8]) if row[8] else [],
                     "parameters": json.loads(row[9]) if row[9] else [],
                     "extends": json.loads(row[10]) if row[10] else [],
-                })
+                }
+                # Add PageRank score if enabled
+                if self._pagerank_config.enabled:
+                    result["pagerank_score"] = self.get_pagerank_scores(row[0], row[2])
+                results.append(result)
+            
+            # Sort by PageRank score if enabled
+            if self._pagerank_config.enabled and results:
+                results.sort(key=lambda x: x.get("pagerank_score", 0), reverse=True)
+            
             return results
         finally:
             conn.close()
@@ -584,3 +634,56 @@ class SymbolDatabase:
             }
         finally:
             conn.close()
+
+    # PageRank methods
+
+    def register_symbol_for_pagerank(self, symbol: Symbol):
+        """Register a symbol for PageRank calculation."""
+        if self._pagerank_config.enabled:
+            self._pagerank.add_symbol(symbol.name, symbol.file_path)
+
+    def register_call_for_pagerank(self, caller_symbol: Symbol, callee_name: str):
+        """Register a call relationship for PageRank calculation."""
+        if self._pagerank_config.enabled:
+            self._pagerank.add_call(caller_symbol.name, caller_symbol.file_path, callee_name)
+
+    def compute_pagerank(self):
+        """Compute PageRank scores for all indexed symbols."""
+        if not self._pagerank_config.enabled:
+            return
+
+        self._pagerank.compute()
+        self._pagerank_computed = True
+
+    def get_pagerank_scores(self, symbol_name: str, file_path: str) -> float:
+        """Get PageRank score for a specific symbol."""
+        if not self._pagerank_config.enabled:
+            return 0.0
+
+        if not self._pagerank_computed:
+            self.compute_pagerank()
+
+        return self._pagerank.get_symbol_score(symbol_name, file_path)
+
+    def get_ranked_symbols(self, symbol_type: Optional[str] = None,
+                           limit: int = 100) -> list[PageRankResult]:
+        """Get symbols ranked by PageRank score."""
+        if not self._pagerank_config.enabled:
+            return []
+
+        if not self._pagerank_computed:
+            self.compute_pagerank()
+
+        return self._pagerank.get_ranked_symbols(symbol_type=symbol_type, limit=limit)
+
+    def get_pagerank_config(self) -> PageRankConfig:
+        """Get PageRank configuration."""
+        return self._pagerank_config
+
+    def is_pagerank_enabled(self) -> bool:
+        """Check if PageRank is enabled."""
+        return self._pagerank_config.enabled
+
+    def is_pagerank_computed(self) -> bool:
+        """Check if PageRank has been computed."""
+        return self._pagerank_computed

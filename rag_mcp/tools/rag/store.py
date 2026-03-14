@@ -82,7 +82,7 @@ class VectorStore:
         # Generate embeddings
         contents = [chunk.content for chunk in chunks]
         embeddings = self._embedder.embed(contents)
-        
+
         # Prepare metadata
         metadatas = []
         for chunk in chunks:
@@ -92,15 +92,15 @@ class VectorStore:
                 "end_line": chunk.end_line,
                 "content_hash": chunk.content_hash,
             })
-        
-        # Add to collection
-        self._collection.add(
+
+        # Use upsert to handle existing IDs - updates instead of creating duplicates
+        self._collection.upsert(
             ids=[chunk.content_hash for chunk in chunks],
             embeddings=embeddings,
             metadatas=metadatas,
             documents=contents,
         )
-        
+
         # Store metadata file for cleanup tracking
         for chunk in chunks:
             meta_path = self.index_dir / f"{chunk.content_hash}.meta"
@@ -131,14 +131,14 @@ class VectorStore:
         self._ensure_initialized()
         # Generate query embedding
         query_embedding = self._embedder.embed_single(query)
-        
+
         # Query collection
         results = self._collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results,
             include=["documents", "metadatas", "distances"],
         )
-        
+
         # Format results
         formatted = []
         if results["documents"] and results["documents"][0]:
@@ -152,8 +152,18 @@ class VectorStore:
                     "end_line": metadata.get("end_line", 0),
                     "relevance_score": 1 - distance,  # Convert distance to similarity
                 })
-        
-        return formatted
+
+        # Remove duplicates based on (file_path, start_line, end_line, content)
+        # Keep the first occurrence (highest relevance score)
+        seen = set()
+        deduplicated = []
+        for result in formatted:
+            key = (result["file_path"], result["start_line"], result["end_line"], result["content"])
+            if key not in seen:
+                seen.add(key)
+                deduplicated.append(result)
+
+        return deduplicated
     
     def get_indexed_files(self) -> set[str]:
         """Get set of all indexed file paths."""

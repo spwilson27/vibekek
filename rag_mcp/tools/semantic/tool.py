@@ -25,7 +25,7 @@ class SemanticTool(BaseTool):
         self.repo_path = repo_path
         self.index_dir = Path(index_dir)
         self.tool_config = tool_config
-        self.db = SymbolDatabase(self.index_dir)
+        self.db = SymbolDatabase(self.index_dir, tool_config.pagerank)
         self.parser = CodeParser()
         self._thread: threading.Thread | None = None
         # Start background indexing automatically
@@ -53,6 +53,11 @@ class SemanticTool(BaseTool):
                         "type": "string",
                         "description": "Filter by symbol type: function, class, method, variable, interface, type",
                         "enum": ["function", "class", "method", "variable", "interface", "type"],
+                    },
+                    "line_limit": {
+                        "type": "integer",
+                        "description": "Maximum lines to display per result (0 = no limit, default: 25)",
+                        "default": 25,
                     },
                 },
                 "required": ["query"],
@@ -117,12 +122,14 @@ class SemanticTool(BaseTool):
         query = arguments.get("query", "")
         search_type = arguments.get("search_type", "all")
         symbol_type = arguments.get("symbol_type")
-        
+        # Allow argument to override config
+        line_limit = arguments.get("line_limit", self.tool_config.limits.line_limit)
+
         if not query:
             return "Error: query is required"
-        
+
         output_parts = []
-        
+
         # Add warning if still indexing
         if self.db.is_indexing:
             status = self.db.indexing_status
@@ -132,39 +139,67 @@ class SemanticTool(BaseTool):
                 f"{status['total_symbols']} symbols in index).\n"
                 f"Results may be incomplete.\n\n"
             )
-        
+
         if search_type in ("definition", "all"):
             definitions = self.db.find_definitions(query, symbol_type)
             if definitions:
                 output_parts.append(f"## Definitions ({len(definitions)})\n")
                 for i, defn in enumerate(definitions, 1):
+                    content = defn['content']
+                    truncated = False
+                    
+                    # Apply line limit if configured
+                    if line_limit > 0:
+                        lines = content.split('\n')
+                        if len(lines) > line_limit:
+                            content = '\n'.join(lines[:line_limit])
+                            truncated = True
+                    
                     output_parts.append(
                         f"### {defn['name']} ({defn['symbol_type']})\n"
                         f"File: {defn['file_path']}\n"
                         f"Lines: {defn['start_line']}-{defn['end_line']}\n"
                         f"Language: {defn['language']}\n"
-                        f"```\n{defn['content']}\n```\n"
                     )
+                    if defn.get('pagerank_score'):
+                        output_parts.append(f"PageRank Score: {defn['pagerank_score']:.6f}\n")
+                    output_parts.append(f"```\n{content}\n```")
+                    if truncated:
+                        output_parts.append(f"\n⚠️ **Note**: Content truncated to first {line_limit} lines\n")
+                    output_parts.append("\n")
             elif search_type == "definition":
                 output_parts.append(f"No definitions found for '{query}'.\n")
-        
+
         if search_type in ("references", "all"):
             references = self.db.find_references(query)
             if references:
                 output_parts.append(f"\n## References ({len(references)})\n")
                 for i, ref in enumerate(references, 1):
+                    content = ref['content']
+                    truncated = False
+                    
+                    # Apply line limit if configured
+                    if line_limit > 0:
+                        lines = content.split('\n')
+                        if len(lines) > line_limit:
+                            content = '\n'.join(lines[:line_limit])
+                            truncated = True
+                    
                     output_parts.append(
                         f"### Reference {i}\n"
                         f"File: {ref['file_path']}\n"
                         f"Lines: {ref['start_line']}-{ref['end_line']}\n"
-                        f"```\n{ref['content']}\n```\n"
+                        f"```\n{content}\n```"
                     )
+                    if truncated:
+                        output_parts.append(f"\n⚠️ **Note**: Content truncated to first {line_limit} lines\n")
+                    output_parts.append("\n")
             elif search_type == "references" and not output_parts:
                 output_parts.append(f"No references found for '{query}'.\n")
-        
+
         if not output_parts or (len(output_parts) == 1 and "Warning" in output_parts[0]):
             output_parts.append(f"No results found for '{query}'.\n")
-        
+
         return "\n".join(output_parts)
     
     def start(self) -> None:
@@ -262,6 +297,10 @@ class SemanticTool(BaseTool):
                         symbol_hash = hashlib.md5(
                             f"{symbol.file_path}:{symbol.start_line}:{symbol.name}".encode()
                         ).hexdigest()
+                        
+                        # Register with PageRank
+                        self.db.register_symbol_for_pagerank(symbol)
+                        
                         self.db.add_symbol(symbol, symbol_hash)
 
                         # Extract and store call relationships for functions/methods
@@ -269,6 +308,8 @@ class SemanticTool(BaseTool):
                             calls = self.parser.extract_calls(Path(file_path), content, symbol)
                             for call_name, call_line, call_content, call_hash in calls:
                                 self.db.add_call(symbol, call_name, call_line, call_content, call_hash)
+                                # Register call with PageRank
+                                self.db.register_call_for_pagerank(symbol, call_name)
 
                     self.db.mark_file_indexed(file_path, content_hash)
                     self.db.increment_indexed()
@@ -276,8 +317,11 @@ class SemanticTool(BaseTool):
                 except Exception:
                     self.db.increment_indexed()
                     continue
-        
+
         finally:
+            # Compute PageRank after indexing is complete
+            if self.db.is_pagerank_enabled():
+                self.db.compute_pagerank()
             self.db.is_indexing = False
     
     def get_status(self) -> dict[str, Any]:
@@ -316,6 +360,8 @@ class SemanticTool(BaseTool):
         symbol_type = arguments.get("symbol_type")
         file_path = arguments.get("file_path")
         n_results = arguments.get("n_results", 100)
+        # Allow argument to override config
+        line_limit = arguments.get("line_limit", self.tool_config.limits.line_limit)
 
         output_parts = []
 
@@ -331,12 +377,22 @@ class SemanticTool(BaseTool):
         if list_type == "by_type":
             if not symbol_type:
                 return "Error: symbol_type is required when list_type is 'by_type'"
-            
+
             symbols = self.db.list_symbols_by_type(symbol_type, n_results=n_results)
-            
+
             if symbols:
                 output_parts.append(f"## {symbol_type.title()}s ({len(symbols)})\n")
                 for sym in symbols:
+                    content = sym['content']
+                    truncated = False
+                    
+                    # Apply line limit if configured
+                    if line_limit > 0:
+                        lines = content.split('\n')
+                        if len(lines) > line_limit:
+                            content = '\n'.join(lines[:line_limit])
+                            truncated = True
+                    
                     output_parts.append(
                         f"### {sym['name']}\n"
                         f"File: {sym['file_path']}\n"
@@ -346,19 +402,34 @@ class SemanticTool(BaseTool):
                         output_parts.append(f"Decorators: {', '.join(sym['decorators'])}\n")
                     if sym.get('parameters'):
                         output_parts.append(f"Parameters: {', '.join(sym['parameters'])}\n")
-                    output_parts.append(f"```\n{sym['content']}\n```\n")
+                    if sym.get('pagerank_score'):
+                        output_parts.append(f"PageRank Score: {sym['pagerank_score']:.6f}\n")
+                    output_parts.append(f"```\n{content}\n```")
+                    if truncated:
+                        output_parts.append(f"\n⚠️ **Note**: Content truncated to first {line_limit} lines\n")
+                    output_parts.append("\n")
             else:
                 output_parts.append(f"No {symbol_type}s found.\n")
 
         elif list_type == "file":
             if not file_path:
                 return "Error: file_path is required when list_type is 'file'"
-            
+
             symbols = self.db.get_file_symbols(file_path)
-            
+
             if symbols:
                 output_parts.append(f"## Symbols in {file_path} ({len(symbols)})\n")
                 for sym in symbols:
+                    content = sym['content']
+                    truncated = False
+                    
+                    # Apply line limit if configured
+                    if line_limit > 0:
+                        lines = content.split('\n')
+                        if len(lines) > line_limit:
+                            content = '\n'.join(lines[:line_limit])
+                            truncated = True
+                    
                     indent = "  " if sym.get('parent') else ""
                     output_parts.append(
                         f"{indent}### {sym['name']} ({sym['symbol_type']})\n"
@@ -366,7 +437,12 @@ class SemanticTool(BaseTool):
                     )
                     if sym.get('parameters'):
                         output_parts.append(f"{indent}Parameters: {', '.join(sym['parameters'])}\n")
-                    output_parts.append(f"{indent}```\n{sym['content'][:500]}{'...' if len(sym['content']) > 500 else ''}\n```\n")
+                    if sym.get('pagerank_score'):
+                        output_parts.append(f"{indent}PageRank Score: {sym['pagerank_score']:.6f}\n")
+                    output_parts.append(f"{indent}```\n{content}\n```")
+                    if truncated:
+                        output_parts.append(f"\n{indent}⚠️ **Note**: Content truncated to first {line_limit} lines\n")
+                    output_parts.append("\n")
             else:
                 output_parts.append(f"No symbols found in {file_path}.\n")
 
@@ -376,6 +452,8 @@ class SemanticTool(BaseTool):
         """Execute semantic_hierarchy tool."""
         hierarchy_type = arguments.get("hierarchy_type")
         symbol_name = arguments.get("symbol_name")
+        # Allow argument to override config
+        line_limit = arguments.get("line_limit", self.tool_config.limits.line_limit)
 
         if not hierarchy_type or not symbol_name:
             return "Error: hierarchy_type and symbol_name are required"
@@ -395,12 +473,22 @@ class SemanticTool(BaseTool):
             if callers:
                 output_parts.append(f"## Callers of {symbol_name} ({len(callers)})\n")
                 for call in callers:
+                    content = call['call_content']
+                    truncated = False
+                    if line_limit > 0:
+                        lines = content.split('\n')
+                        if len(lines) > line_limit:
+                            content = '\n'.join(lines[:line_limit])
+                            truncated = True
                     output_parts.append(
                         f"### {call['caller_symbol']}\n"
                         f"File: {call['caller_file']}\n"
                         f"Line: {call['call_line']}\n"
-                        f"```\n{call['call_content']}\n```\n"
+                        f"```\n{content}\n```"
                     )
+                    if truncated:
+                        output_parts.append(f"\n⚠️ **Note**: Content truncated to first {line_limit} lines\n")
+                    output_parts.append("\n")
             else:
                 output_parts.append(f"No callers found for {symbol_name}.\n")
 
@@ -409,11 +497,21 @@ class SemanticTool(BaseTool):
             if callees:
                 output_parts.append(f"## Functions called by {symbol_name} ({len(callees)})\n")
                 for call in callees:
+                    content = call['call_content']
+                    truncated = False
+                    if line_limit > 0:
+                        lines = content.split('\n')
+                        if len(lines) > line_limit:
+                            content = '\n'.join(lines[:line_limit])
+                            truncated = True
                     output_parts.append(
                         f"### {call['callee_name']}\n"
                         f"Line: {call['call_line']}\n"
-                        f"```\n{call['call_content']}\n```\n"
+                        f"```\n{content}\n```"
                     )
+                    if truncated:
+                        output_parts.append(f"\n⚠️ **Note**: Content truncated to first {line_limit} lines\n")
+                    output_parts.append("\n")
             else:
                 output_parts.append(f"No function calls found in {symbol_name}.\n")
 
