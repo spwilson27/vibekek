@@ -245,7 +245,7 @@ class SemanticTool(BaseTool):
                         continue
 
                     # Check if it's a code file
-                    if not is_code_file(Path(file_path), set(priority.extensions) if priority.extensions else None):
+                    if not is_code_file(Path(file_path), set(self.tool_config.priority.extensions) if self.tool_config.priority.extensions else None):
                         self.db.increment_indexed()
                         continue
 
@@ -263,7 +263,7 @@ class SemanticTool(BaseTool):
                             f"{symbol.file_path}:{symbol.start_line}:{symbol.name}".encode()
                         ).hexdigest()
                         self.db.add_symbol(symbol, symbol_hash)
-                        
+
                         # Extract and store call relationships for functions/methods
                         if symbol.symbol_type in ("function", "method"):
                             calls = self.parser.extract_calls(Path(file_path), content, symbol)
@@ -272,7 +272,7 @@ class SemanticTool(BaseTool):
 
                     self.db.mark_file_indexed(file_path, content_hash)
                     self.db.increment_indexed()
-                    
+
                 except Exception:
                     self.db.increment_indexed()
                     continue

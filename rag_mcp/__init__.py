@@ -1,5 +1,13 @@
 """RAG MCP Server - Multi-tool code search."""
 
+import os
+
+# Disable Hugging Face Hub telemetry and progress bars globally
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
 __version__ = "0.2.0"
 
 # Lazy imports to avoid loading heavy dependencies on package import

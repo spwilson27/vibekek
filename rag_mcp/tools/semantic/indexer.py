@@ -97,40 +97,36 @@ class CodeParser:
             symbols = []
             symbol_types = SYMBOL_TYPES.get(language, {})
 
-            cursor = tree.walk()
-            self._extract_symbols(cursor, file_path, content, language, symbol_types, symbols)
+            # Use iterative approach to walk the tree
+            self._walk_tree(tree.root_node, file_path, content, language, 
+                           symbol_types, symbols, parent=None)
 
             return symbols
-        except Exception:
+        except Exception as e:
+            print(f"Error parsing {file_path}: {e}")
             return []
 
-    def _extract_symbols(self, cursor, file_path: Path, content: str,
-                         language: str, symbol_types: dict, symbols: list,
-                         parent: Optional[str] = None):
-        """Recursively extract symbols from tree."""
-        node = cursor.node
-        node_type = node.type
-
-        if node_type in symbol_types:
-            symbol = self._extract_symbol(node, file_path, content, language, 
+    def _walk_tree(self, node, file_path: Path, content: str, language: str,
+                   symbol_types: dict, symbols: list, parent: Optional[str] = None):
+        """Walk tree and extract symbols iteratively."""
+        # Check if this node is a symbol we care about
+        if node.type in symbol_types:
+            symbol = self._extract_symbol(node, file_path, content, language,
                                          symbol_types, parent)
             if symbol:
                 symbols.append(symbol)
                 # For classes, extract methods as children
                 if symbol.symbol_type == "class":
-                    if cursor.goto_first_child():
-                        self._extract_symbols(cursor, file_path, content, language,
-                                            symbol_types, symbols, parent=symbol.name)
-                        cursor.goto_parent()
-                    return  # Already processed children
+                    # Process children with this class as parent
+                    for child in node.children:
+                        self._walk_tree(child, file_path, content, language,
+                                       symbol_types, symbols, parent=symbol.name)
+                    return  # Children already processed
 
-        if cursor.goto_first_child():
-            self._extract_symbols(cursor, file_path, content, language, symbol_types, symbols, parent)
-            cursor.goto_parent()
-
-        if cursor.goto_next_sibling():
-            self._extract_symbols(cursor, file_path, content, language, symbol_types, symbols, parent)
-            cursor.goto_parent()
+        # Process all children
+        for child in node.children:
+            self._walk_tree(child, file_path, content, language,
+                           symbol_types, symbols, parent)
 
     def _extract_symbol(self, node, file_path: Path, content: str,
                         language: str, symbol_types: dict, 
@@ -305,9 +301,14 @@ class CodeParser:
 
     def _get_symbol_name(self, node, node_type: str) -> Optional[str]:
         """Extract the name from a symbol node."""
-        name_node_types = {
-            "function_definition": "name",
-            "class_definition": "name",
+        # Python uses 'identifier' for names, JavaScript/TypeScript use 'name'
+        python_name_nodes = {
+            "function_definition": "identifier",
+            "class_definition": "identifier",
+            "assignment": "identifier",
+        }
+        
+        js_name_nodes = {
             "function_declaration": "name",
             "class_declaration": "name",
             "variable_declarator": "name",
@@ -317,18 +318,23 @@ class CodeParser:
             "type_alias_declaration": "name",
         }
 
-        child_type = name_node_types.get(node_type)
-        if not child_type:
-            return None
-
-        cursor = node.walk()
-        if cursor.goto_first_child():
-            while True:
-                if cursor.node.type == child_type:
-                    name_node = cursor.node
-                    return name_node.text.decode("utf8")
-                if not cursor.goto_next_sibling():
-                    break
+        # Try Python first
+        child_type = python_name_nodes.get(node_type)
+        if child_type:
+            for child in node.children:
+                if child.type == child_type:
+                    return child.text.decode("utf8")
+        
+        # Try JavaScript/TypeScript
+        child_type = js_name_nodes.get(node_type)
+        if child_type:
+            cursor = node.walk()
+            if cursor.goto_first_child():
+                while True:
+                    if cursor.node.type == child_type:
+                        return cursor.node.text.decode("utf8")
+                    if not cursor.goto_next_sibling():
+                        break
 
         return None
 

@@ -22,6 +22,7 @@ dev-dependencies = [
 
 [project.scripts]
 rag-mcp = "rag_mcp.server:main"
+rag-mcp-cli = "rag_mcp.cli:main"
 
 [build-system]
 requires = ["hatchling"]

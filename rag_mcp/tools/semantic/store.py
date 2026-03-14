@@ -82,6 +82,12 @@ class SymbolDatabase:
             )
         """)
 
+        # Add new columns to existing tables if they don't exist
+        self._add_column_if_not_exists(cursor, "symbols", "parent", "TEXT")
+        self._add_column_if_not_exists(cursor, "symbols", "decorators", "TEXT")
+        self._add_column_if_not_exists(cursor, "symbols", "parameters", "TEXT")
+        self._add_column_if_not_exists(cursor, "symbols", "extends", "TEXT")
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS symbol_references (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,12 +125,27 @@ class SymbolDatabase:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbols_type ON symbols(symbol_type)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbol_references ON symbol_references(symbol_name)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbols_parent ON symbols(parent)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbol_calls ON symbol_calls(caller_symbol)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbol_calls_callee ON symbol_calls(callee_name)")
+        self._create_index_if_not_exists(cursor, "symbols", "idx_symbols_parent", "parent")
+        self._create_index_if_not_exists(cursor, "symbol_calls", "idx_symbol_calls", "caller_symbol")
+        self._create_index_if_not_exists(cursor, "symbol_calls", "idx_symbol_calls_callee", "callee_name")
 
         conn.commit()
         conn.close()
+
+    def _add_column_if_not_exists(self, cursor, table: str, column: str, column_type: str):
+        """Add a column to a table if it doesn't already exist."""
+        try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+    def _create_index_if_not_exists(self, cursor, table: str, index_name: str, column: str):
+        """Create an index if it doesn't already exist."""
+        try:
+            cursor.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table}({column})")
+        except sqlite3.OperationalError:
+            pass  # Index creation failed, but we can continue
     
     @property
     def is_indexing(self) -> bool:

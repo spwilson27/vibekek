@@ -1,5 +1,12 @@
 """Chunking and embedding pipeline for code files."""
 
+# MUST be set before ANY imports to suppress Hugging Face warnings
+import os
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
 from dataclasses import dataclass
 from typing import Optional
 
@@ -14,6 +21,13 @@ CHUNK_SIZE = 512  # characters
 CHUNK_OVERLAP = 50  # characters
 
 
+# Disable Hugging Face Hub telemetry and online checks
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+
 @dataclass
 class Chunk:
     """A chunk of code with metadata."""
@@ -26,24 +40,27 @@ class Chunk:
 
 class Embedder:
     """Handles text embedding generation."""
-    
+
     def __init__(self):
         self._model: Optional[SentenceTransformer] = None
-    
+
     @property
     def model(self) -> SentenceTransformer:
         """Lazy-load the embedding model."""
         if self._model is None:
-            self._model = SentenceTransformer(EMBEDDING_MODEL)
+            self._model = SentenceTransformer(
+                EMBEDDING_MODEL,
+                trust_remote_code=False,
+            )
         return self._model
-    
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for a list of texts."""
         if not texts:
             return []
         embeddings = self.model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
         return embeddings.tolist()
-    
+
     def embed_single(self, text: str) -> list[float]:
         """Generate embedding for a single text."""
         return self.embed([text])[0]
