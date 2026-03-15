@@ -267,6 +267,8 @@ def _start_task_container(
 
     Validates that all ``copy_files`` sources exist on the host, then runs
     ``docker run -d --name <name> --env-file <env_file> <volumes> <image> sleep infinity``.
+    After the container starts, ``copy_files`` are copied in via ``docker cp`` to
+    avoid permission issues with bind-mounted files (e.g. ``.git-credentials``).
 
     :param container_name: Unique name for the container.
     :param docker_config: :class:`~workflow_lib.agent_pool.DockerConfig`.
@@ -289,6 +291,8 @@ def _start_task_container(
         if len(parts) >= 2:
             mounted_dests.add(parts[1])
 
+    # Validate copy_files sources and track which need docker cp (not bind mount)
+    copy_files_to_cp = []
     for cf in dc.copy_files:
         if not os.path.exists(cf.src):
             raise FileNotFoundError(f"docker copy_files src does not exist: {cf.src!r}")
@@ -298,8 +302,8 @@ def _start_task_container(
                 stacklevel=3,
             )
             continue
-        volume_flags += ["-v", f"{cf.src}:{cf.dest}:ro"]
-        mounted_dests.add(cf.dest)
+        # Use docker cp for all copy_files to avoid permission issues with bind mounts
+        copy_files_to_cp.append(cf)
 
     docker_cmd = [
         "docker", "run", "-d",
@@ -309,6 +313,26 @@ def _start_task_container(
 
     log(f"      [docker] Starting container {container_name} ({dc.image})...")
     subprocess.run(docker_cmd, check=True, capture_output=True)
+
+    # Copy files into the container after it starts to avoid permission issues
+    # with bind-mounted files (e.g. .git-credentials with mode 0600)
+    for cf in copy_files_to_cp:
+        # Ensure parent directory exists
+        parent_dir = os.path.dirname(cf.dest)
+        if parent_dir:
+            mkdir_cmd = ["docker", "exec", "-i", "--workdir", "/workspace",
+                        container_name, "sudo", "mkdir", "-p", parent_dir]
+            subprocess.run(mkdir_cmd, capture_output=True, check=False)
+        # Copy the file (use sudo to read files owned by other users)
+        cp_cmd = ["sudo", "docker", "cp", cf.src, f"{container_name}:{cf.dest}"]
+        result = subprocess.run(cp_cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            log(f"      [!] docker cp failed for {cf.src} -> {cf.dest}: {result.stderr.strip()}")
+        else:
+            # Make the file readable by the container user
+            chmod_cmd = ["docker", "exec", "-i", "--workdir", "/workspace",
+                        container_name, "sudo", "chmod", "644", cf.dest]
+            subprocess.run(chmod_cmd, capture_output=True, check=False)
 
 
 def _stop_task_container(container_name: str, log: Callable) -> None:

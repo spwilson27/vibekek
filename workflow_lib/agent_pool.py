@@ -35,6 +35,7 @@ QUOTA_PATTERNS: List[str] = [
     "No capacity available for model",
     "exhausted your capacity",
     "ModelNotFoundError: Requested entity was not found",
+    "You've hit your limit · resets", # Claude
 ]
 
 # Substrings (case-insensitive) that indicate the CLI is already handling

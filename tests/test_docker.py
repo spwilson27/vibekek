@@ -541,9 +541,15 @@ class TestStartTaskContainer:
         with patch("subprocess.run", side_effect=fake_run):
             _start_task_container("ctr", dc, env_file, print)
 
+        # First call should be docker run (without -v for copy_files)
         start_cmd = calls[0]
         v_args = [start_cmd[i+1] for i in range(len(start_cmd)) if start_cmd[i] == "-v"]
-        assert f"{src}:/root/.creds:ro" in v_args
+        # copy_files should NOT be in volume mounts anymore (uses docker cp instead)
+        assert f"{src}:/root/.creds:ro" not in v_args
+        
+        # Subsequent calls should be docker cp and chmod for the copy_file
+        assert any("docker" in str(cmd) and "cp" in str(cmd) and str(src) in str(cmd) for cmd in calls)
+        assert any("chmod" in str(cmd) and "/root/.creds" in str(cmd) for cmd in calls)
 
     def test_copy_file_missing_src_raises(self, tmp_path):
         dc = _docker_cfg(copy_files=[DockerCopyFile(src="/nonexistent/file.txt", dest="/dest")])
