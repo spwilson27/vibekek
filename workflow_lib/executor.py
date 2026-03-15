@@ -24,7 +24,6 @@ Signal handling:
 
 import atexit
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -53,6 +52,8 @@ from .rag_integration import get_rag_help_text, start_rag_server
 
 shutdown_requested = False
 _active_dashboard: Any = None
+_active_containers: set = set()  # container names currently running
+_active_containers_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Stage constants for restartable process_task pipeline
@@ -161,6 +162,15 @@ def signal_handler(sig: int, frame: Any) -> None:  # type: ignore[type-arg]
     else:
         _restore_terminal()
         print("\n[!] Ctrl-C detected again. Forcing immediate exit...")
+        # Clean up any active Docker containers before hard exit
+        with _active_containers_lock:
+            containers = list(_active_containers)
+        for name in containers:
+            try:
+                subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False,
+                               timeout=5)
+            except Exception:
+                pass
         os._exit(1)
 def get_gitlab_remote_url(root_dir: str, remote_name: str = "origin") -> str:
     """Return the URL of the pivot remote for *root_dir*.
@@ -314,6 +324,8 @@ def _start_task_container(
 
     log(f"      [docker] Starting container {container_name} ({dc.image})...")
     subprocess.run(docker_cmd, check=True, capture_output=True)
+    with _active_containers_lock:
+        _active_containers.add(container_name)
 
     # Copy files into the container after it starts to avoid permission issues
     # with bind-mounted files (e.g. .git-credentials with mode 0600)
@@ -334,11 +346,18 @@ def _start_task_container(
             chmod_cmd = ["docker", "exec", "-i", "--workdir", "/workspace",
                         container_name, "sudo", "chmod", "644", cf.dest]
             subprocess.run(chmod_cmd, capture_output=True, check=False)
-            # Chown file and parent dir to the container's default user
-            chown_cmd = ["docker", "exec", "-i", "--workdir", "/workspace",
-                        container_name, "sudo", "sh", "-c",
-                        f"u=$(id -un) && chown \"$u:$u\" {shlex.quote(cf.dest)} && chown \"$u:$u\" {shlex.quote(parent_dir)}"]
-            subprocess.run(chown_cmd, capture_output=True, check=False)
+            # Chown file and parent dir to the container's default user.
+            # We first query the non-root user, then sudo chown to that user.
+            who_cmd = ["docker", "exec", "-i", "--workdir", "/workspace",
+                       container_name, "id", "-un"]
+            who_result = subprocess.run(who_cmd, capture_output=True, text=True, check=False)
+            container_user = who_result.stdout.strip()
+            if container_user and container_user != "root":
+                chown_cmd = ["docker", "exec", "-i", "--workdir", "/workspace",
+                            container_name, "sudo", "chown",
+                            f"{container_user}:{container_user}",
+                            cf.dest, parent_dir]
+                subprocess.run(chown_cmd, capture_output=True, check=False)
 
 
 def _stop_task_container(container_name: str, log: Callable) -> None:
@@ -351,6 +370,8 @@ def _stop_task_container(container_name: str, log: Callable) -> None:
         return
     log(f"      [docker] Stopping container {container_name}...")
     subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, check=False)
+    with _active_containers_lock:
+        _active_containers.discard(container_name)
 
 
 class Logger(object):

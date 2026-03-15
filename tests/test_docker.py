@@ -536,7 +536,9 @@ class TestStartTaskContainer:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            return MagicMock(returncode=0, stdout="", stderr="")
+            # Return "username" for the `id -un` query so chown logic triggers
+            stdout = "username\n" if "id" in cmd and "-un" in cmd else ""
+            return MagicMock(returncode=0, stdout=stdout, stderr="")
 
         with patch("subprocess.run", side_effect=fake_run):
             _start_task_container("ctr", dc, env_file, print)
@@ -546,7 +548,7 @@ class TestStartTaskContainer:
         v_args = [start_cmd[i+1] for i in range(len(start_cmd)) if start_cmd[i] == "-v"]
         # copy_files should NOT be in volume mounts anymore (uses docker cp instead)
         assert f"{src}:/root/.creds:ro" not in v_args
-        
+
         # Subsequent calls should be docker cp, chmod, and chown for the copy_file
         assert any("docker" in str(cmd) and "cp" in str(cmd) and str(src) in str(cmd) for cmd in calls)
         assert any("chmod" in str(cmd) and "/root/.creds" in str(cmd) for cmd in calls)
