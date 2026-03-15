@@ -305,7 +305,9 @@ def _start_task_container(
     # Validate copy_files sources and track which need docker cp (not bind mount)
     copy_files_to_cp = []
     for cf in dc.copy_files:
-        if not os.path.exists(cf.src):
+        # Use sudo to check existence so files in other users' home dirs are accessible
+        result = subprocess.run(["sudo", "test", "-f", cf.src], check=False)
+        if result.returncode != 0:
             raise FileNotFoundError(f"docker copy_files src does not exist: {cf.src!r}")
         if cf.dest in mounted_dests:
             _warnings.warn(
