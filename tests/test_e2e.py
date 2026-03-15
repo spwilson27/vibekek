@@ -925,14 +925,50 @@ class TestStatusCommand:
 
         assert result.returncode == 0, f"status command failed: {result.stderr}"
         
-        # After indexing, should show "Initialized" and some chunks
-        # (test_repo has sample files that should be indexed)
-        assert "Initialized" in result.stdout or "initialized" in result.stdout.lower(), \
-            f"Expected 'Initialized' status: {result.stdout}"
+        # After indexing, should show "Ready" status
+        assert "Ready" in result.stdout or "ready" in result.stdout.lower(), \
+            f"Expected 'Ready' status: {result.stdout}"
         
         # Should have some chunks indexed (test repo has files)
-        # The quick status check counts .meta files
         assert "Chunks:" in result.stdout, f"Expected chunk count: {result.stdout}"
+
+    def test_status_shows_indexing_state(self, temp_dir, test_repo):
+        """Test that status command shows indexing state (indexing vs ready)."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create a config
+        config_data = {
+            "repo_path": str(test_repo),
+            "tools": {
+                "rag": {"enabled": True},
+                "semantic": {"enabled": False}
+            }
+        }
+        config_path = temp_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f)
+
+        # Run status before any indexing
+        result = subprocess.run(
+            [str(rag_mcp_cli), "-c", str(config_path), "status"],
+            capture_output=True,
+            text=True,
+            cwd=temp_dir,
+            timeout=5,
+        )
+
+        assert result.returncode == 0
+        # Should show some indication of not being ready (before first query)
+        output_lower = result.stdout.lower()
+        assert any(kw in output_lower for kw in ["not", "yet", "will be", "⏳", "created"]), \
+            f"Expected indication that index is not ready: {result.stdout}"
 
     def test_status_shows_not_initialized(self, temp_dir, test_repo):
         """Test that status command shows not initialized for new project."""
@@ -972,6 +1008,61 @@ class TestStatusCommand:
         output_lower = result.stdout.lower()
         assert any(keyword in output_lower for keyword in ["not", "yet", "will be", "⏳"]), \
             f"Expected indication that index is not ready: {result.stdout}"
+
+    def test_status_shows_index_size(self, temp_dir, test_repo):
+        """Test that status command shows index size in human-readable format."""
+        import subprocess
+        from pathlib import Path
+
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+        rag_mcp_cli = venv_bin / "rag-mcp-cli"
+
+        if not rag_mcp_cli.exists():
+            pytest.skip("rag-mcp-cli script not found")
+
+        # Create a config
+        config_data = {
+            "repo_path": str(test_repo),
+            "tools": {
+                "rag": {"enabled": True},
+                "semantic": {"enabled": False}
+            }
+        }
+        config_path = temp_dir / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(config_data, f)
+
+        # First run a query to trigger indexing
+        subprocess.run(
+            [str(rag_mcp_cli), "-c", str(config_path), "rag", "test"],
+            capture_output=True,
+            text=True,
+            cwd=temp_dir,
+            timeout=30,
+        )
+
+        # Wait for indexing to complete
+        time.sleep(5)
+
+        # Run status command
+        result = subprocess.run(
+            [str(rag_mcp_cli), "-c", str(config_path), "status"],
+            capture_output=True,
+            text=True,
+            cwd=temp_dir,
+            timeout=5,
+        )
+
+        assert result.returncode == 0, f"status command failed: {result.stderr}"
+        
+        # Should show size with unit (KB, MB, or GB)
+        assert "Size:" in result.stdout, f"Expected 'Size:' in output: {result.stdout}"
+        
+        # Should have a valid size format (e.g., "1.5 MB", "500 KB", "2.3 GB")
+        import re
+        size_pattern = r"Size: \d+\.?\d* (B|KB|MB|GB)"
+        assert re.search(size_pattern, result.stdout), \
+            f"Expected size in format 'X.X KB/MB/GB': {result.stdout}"
 
 
 class TestMainEntrypoint:

@@ -655,6 +655,41 @@ def _cmd_hierarchy(args, config):
     return 0
 
 
+def _format_size(size_bytes: int) -> str:
+    """Format size in human-readable format (KB/MB/GB)."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+
+def _get_directory_size(path):
+    """Calculate total size of a directory in bytes."""
+    from pathlib import Path
+    
+    total_size = 0
+    path = Path(path)
+    
+    if not path.exists():
+        return 0
+    
+    try:
+        for entry in path.rglob("*"):
+            if entry.is_file():
+                try:
+                    total_size += entry.stat().st_size
+                except (OSError, PermissionError):
+                    pass
+    except (OSError, PermissionError):
+        pass
+    
+    return total_size
+
+
 def _get_index_status_quick(index_dir):
     """Get index status without loading full database (fast check)."""
     from pathlib import Path
@@ -668,7 +703,25 @@ def _get_index_status_quick(index_dir):
             "total_files": 0,
             "total_chunks": 0,
             "total_symbols": 0,
+            "status": "not_created",
+            "status_message": "Will be created on first query",
+            "index_size": 0,
+            "index_size_formatted": "0 B",
         }
+    
+    # Check status file written by index server
+    status_file = index_path / ".index_status"
+    indexing_status = "unknown"
+    last_update = 0
+    
+    if status_file.exists():
+        try:
+            content = status_file.read_text().strip().split("\n")
+            indexing_status = content[0] if content else "unknown"
+            if len(content) > 1:
+                last_update = float(content[1])
+        except Exception:
+            pass
     
     # Count meta files for RAG (fast filesystem operation)
     meta_files = list(index_path.glob("*.meta"))
@@ -691,14 +744,40 @@ def _get_index_status_quick(index_dir):
         except Exception:
             pass
     
+    # Calculate index size
+    index_size = _get_directory_size(index_path)
+    index_size_formatted = _format_size(index_size)
+    
+    # Determine status message
+    if indexing_status == "indexing":
+        status = "indexing"
+        status_message = "🔄 Indexing in progress..."
+    elif indexing_status == "stopped":
+        status = "stopped"
+        status_message = "⏸️ Index server stopped"
+    elif chunk_count > 0 or symbol_count > 0:
+        status = "ready"
+        status_message = "✅ Ready for queries"
+    elif chroma_exists:
+        status = "ready"
+        status_message = "✅ Ready for queries (empty index)"
+    else:
+        status = "not_initialized"
+        status_message = "⏳ Will be created on first query"
+    
     return {
         "exists": True,
-        "is_indexing": False,  # Quick check can't determine this
+        "is_indexing": indexing_status == "indexing",
         "indexed_files": len(set(m.read_text().strip() for m in meta_files if m.exists())),
         "total_files": 0,
         "total_chunks": chunk_count,
         "total_symbols": symbol_count,
         "chroma_exists": chroma_exists,
+        "status": status,
+        "status_message": status_message,
+        "last_update": last_update,
+        "index_size": index_size,
+        "index_size_formatted": index_size_formatted,
     }
 
 
@@ -723,24 +802,16 @@ def _cmd_status(args, config):
         status = _get_index_status_quick(idx_dir)
         
         if status["exists"]:
-            # Check if ChromaDB is initialized
-            if status["chroma_exists"]:
-                print(f"### RAG")
-                print(f"- Index: Initialized")
-                print(f"- Files indexed: {status['indexed_files']}")
-                print(f"- Chunks: {status['total_chunks']}")
-                if status["total_chunks"] > 0:
-                    print(f"- Status: ✅ Ready for queries")
-                else:
-                    print(f"- Status: ⏳ Indexing in progress or empty")
-            else:
-                print(f"### RAG")
-                print(f"- Index: Not initialized")
-                print(f"- Status: ⏳ First query will trigger indexing")
+            print(f"### RAG")
+            print(f"- Index: Initialized")
+            print(f"- Size: {status['index_size_formatted']}")
+            print(f"- Files indexed: {status['indexed_files']}")
+            print(f"- Chunks: {status['total_chunks']}")
+            print(f"- Status: {status['status_message']}")
         else:
             print(f"### RAG")
             print(f"- Index: Not created yet")
-            print(f"- Status: ⏳ Will be created on first query")
+            print(f"- Status: {status['status_message']}")
         print()
     
     # Quick status check for Semantic (no parser loading)
@@ -751,15 +822,13 @@ def _cmd_status(args, config):
         if status["exists"]:
             print(f"### Semantic")
             print(f"- Index: Initialized")
+            print(f"- Size: {status['index_size_formatted']}")
             print(f"- Symbols: {status['total_symbols']}")
-            if status["total_symbols"] > 0:
-                print(f"- Status: ✅ Ready for queries")
-            else:
-                print(f"- Status: ⏳ Indexing in progress or empty")
+            print(f"- Status: {status['status_message']}")
         else:
             print(f"### Semantic")
             print(f"- Index: Not created yet")
-            print(f"- Status: ⏳ Will be created on first query")
+            print(f"- Status: {status['status_message']}")
         print()
     
     return 0

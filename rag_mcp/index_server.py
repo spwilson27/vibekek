@@ -16,78 +16,102 @@ os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 class IndexServer:
     """Background server that keeps indexes up to date."""
-    
+
     def __init__(self, repo_path: str, config):
         self.repo_path = repo_path
         self.config = config
         self.rag_tool = None
         self.semantic_tool = None
         self._running = True
-        
+        self.index_dir = config.get_index_dir("rag") if config.is_tool_enabled("rag") else None
+
+    def _write_status(self, status: str):
+        """Write indexing status to file for quick status checks."""
+        if self.index_dir:
+            status_file = Path(self.index_dir) / ".index_status"
+            try:
+                status_file.write_text(f"{status}\n{time.time()}")
+            except Exception:
+                pass
+
     def start(self):
         """Start the indexing server."""
         print(f"Starting index server for: {self.repo_path}")
-        
+
         # Initialize tools (this starts their background indexers)
         if self.config.is_tool_enabled("rag"):
             from .tools.rag import RAGTool
             index_dir = self.config.get_index_dir("rag")
             tool_config = self.config.get_tool_config("rag")
             self.rag_tool = RAGTool(self.repo_path, str(index_dir), tool_config or self._default_tool_config())
+            self.index_dir = index_dir
             print("  - RAG indexer initialized")
-        
+
         if self.config.is_tool_enabled("semantic"):
             from .tools.semantic import SemanticTool
             index_dir = self.config.get_index_dir("semantic")
             tool_config = self.config.get_tool_config("semantic")
             self.semantic_tool = SemanticTool(self.repo_path, str(index_dir), tool_config or self._default_tool_config())
             print("  - Semantic indexer initialized")
-        
+
         if not self.rag_tool and not self.semantic_tool:
             # Enable RAG by default
             from .tools.rag import RAGTool
             from .config import ToolConfig
             index_dir = self.config.get_index_dir("rag")
             self.rag_tool = RAGTool(self.repo_path, str(index_dir), self._default_tool_config())
+            self.index_dir = index_dir
             print("  - RAG indexer initialized (default)")
+
+        # Write initial status
+        self._write_status("ready")
         
         print("Indexing started. Server will continue running to watch for file changes.")
         print("Press Ctrl+C to stop.")
-        
+
         # Keep server running and periodically re-index
         self._run_watch_loop()
-    
+
     def _default_tool_config(self):
         """Create default tool config."""
         from .config import ToolConfig
         return ToolConfig()
-    
+
     def _run_watch_loop(self):
         """Watch for file changes and re-index periodically."""
         reindex_interval = 300  # Re-index every 5 minutes
-        
+
         last_reindex = time.time()
-        
+
         while self._running:
             time.sleep(1)
-            
+
             # Check if it's time to re-index
             if time.time() - last_reindex > reindex_interval:
                 print(f"[{time.strftime('%H:%M:%S')}] Periodic re-index triggered")
                 self._trigger_reindex()
                 last_reindex = time.time()
-    
+
     def _trigger_reindex(self):
         """Trigger re-indexing of all tools."""
+        # Write indexing status
+        self._write_status("indexing")
+        
         if self.rag_tool:
             self.rag_tool.start()
-        
+
         if self.semantic_tool:
             self.semantic_tool.start()
-    
+        
+        # Mark as ready after triggering (actual indexing happens in background)
+        # The tools' internal threads handle the actual indexing
+        time.sleep(0.5)  # Give threads time to start
+        self._write_status("ready")
+
     def stop(self):
         """Stop the indexing server."""
         print("\nStopping index server...")
+        self._write_status("stopped")
         self._running = False
 
 
