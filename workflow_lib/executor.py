@@ -152,9 +152,11 @@ def signal_handler(sig: int, frame: Any) -> None:  # type: ignore[type-arg]
         shutdown_requested = True
         if _active_dashboard:
             _active_dashboard.set_shutting_down()
+            _active_dashboard.log("[!] Graceful shutdown initiated. Current stages will complete before stopping.")
         else:
             print("\n[!] Ctrl-C detected. Initiating graceful shutdown...")
-            print("    Active agents will finish. No new agents will be spawned.")
+            print("    Active agents will finish their current stage. No new agents will be spawned.")
+            print("    Progress will be saved so tasks can resume on next run.")
     else:
         _restore_terminal()
         print("\n[!] Ctrl-C detected again. Forcing immediate exit...")
@@ -1545,15 +1547,23 @@ def process_task(
     )
 
     overall_success = False
+    last_completed_stage = None
     try:
         stages_to_run = _STAGE_ORDER[_STAGE_ORDER.index(starting_stage):]
         for stage in stages_to_run:
             if shutdown_requested:
-                _log(f"      [!] Shutdown requested — stopping before {stage} stage.")
-                return False
+                # Persist progress from any previously completed stage before shutting down
+                if last_completed_stage:
+                    _cb(full_task_id, last_completed_stage)
+                    _log(f"      [!] Shutdown requested — stage {last_completed_stage!r} completed and saved. Stopping before {stage!r} stage.")
+                else:
+                    _log(f"      [!] Shutdown requested — stopping before {stage!r} stage.")
+                # Return True to indicate graceful shutdown (not failure) when we completed at least one stage
+                return last_completed_stage is not None
             extra = _stage_extra_kwargs.get(stage, {})
             if not _stage_fns[stage](**stage_kwargs, **extra):
                 return False
+            last_completed_stage = stage
             _cb(full_task_id, stage)
         overall_success = True
         return True
@@ -1561,7 +1571,8 @@ def process_task(
         if overall_success:
             if dashboard:
                 dashboard.remove_agent(full_task_id)
-        else:
+        elif not shutdown_requested:
+            # Only mark as failed if it was a real failure, not graceful shutdown
             if dashboard:
                 dashboard.set_agent(full_task_id, "failed", "failed", "Task failed")
 
@@ -2237,11 +2248,25 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                 try:
                     success = future.result()
                     if success:
-                        dashboard.log(f"   -> [Implementation] Task {task_id} completed successfully.")
+                        # Check if task fully completed or just partially completed due to shutdown
+                        with state_lock:
+                            task_stage = state.get("task_stages", {}).get(task_id)
 
                         if shutdown_requested:
-                            dashboard.log(f"   -> [Shutdown] Skipping merge for {task_id} — will resume on next run.")
+                            if task_stage:
+                                # Calculate the next stage to resume from
+                                try:
+                                    stage_idx = _STAGE_ORDER.index(task_stage)
+                                    next_stage = _STAGE_ORDER[stage_idx + 1] if stage_idx + 1 < len(_STAGE_ORDER) else STAGE_DONE
+                                except ValueError:
+                                    next_stage = STAGE_IMPL
+                                dashboard.log(f"   -> [Shutdown] Task {task_id} completed up to {task_stage!r} stage. Will resume from {next_stage!r} on next run.")
+                            else:
+                                dashboard.log(f"   -> [Shutdown] Task {task_id} completed. Will resume on next run.")
+                            # Skip merge during shutdown - task will continue on next run
                             continue
+
+                        dashboard.log(f"   -> [Implementation] Task {task_id} completed successfully.")
 
                         # Build the pending state the merge commit should reflect
                         with state_lock:

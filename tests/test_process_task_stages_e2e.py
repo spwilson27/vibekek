@@ -721,3 +721,148 @@ class TestStagedExecuteDagIntegration:
         assert task_id not in state.get("task_stages", {}), (
             "task_stages entry should be cleaned up after full task completion"
         )
+
+
+def test_graceful_shutdown_after_impl_stage_persists_progress(tmp_path):
+    """Verify that when shutdown occurs after impl stage completes, the stage
+    is persisted and task resumes from review on next run.
+    
+    This tests the fix for the issue where SIGINT during stage transitions
+    would mark tasks as failed instead of preserving partial progress.
+    """
+    from workflow_lib.executor import (
+        process_task, STAGE_IMPL, STAGE_REVIEW, STAGE_VALIDATE,
+        run_impl_stage, run_review_stage, run_validate_stage,
+    )
+    import workflow_lib.executor as executor_mod
+    
+    remote, local = _make_dual_repo(tmp_path)
+    task_id = "phase_1/01_test_shutdown.md"
+    full_task_id = task_id
+    
+    # Track which stages were executed
+    stages_executed = []
+    
+    # Mock stage functions that track execution
+    def mock_impl_stage(*args, **kwargs):
+        stages_executed.append(STAGE_IMPL)
+        return True
+    
+    def mock_review_stage(*args, **kwargs):
+        stages_executed.append(STAGE_REVIEW)
+        return True
+    
+    def mock_validate_stage(*args, **kwargs):
+        stages_executed.append(STAGE_VALIDATE)
+        return True
+    
+    # Run 1: Complete impl stage, then trigger shutdown before review
+    executor_mod.shutdown_requested = False
+    state = {"completed_tasks": [], "merged_tasks": [], "task_stages": {}}
+    persisted_stages = []
+    
+    def mock_stage_callback(tid, stage):
+        """Track stage persistence."""
+        persisted_stages.append((tid, stage))
+        state.setdefault("task_stages", {})[tid] = stage
+    
+    # We need to trigger shutdown AFTER impl completes but BEFORE review starts
+    # We do this by patching the stage functions to set the flag after impl
+    shutdown_triggered = [False]
+    
+    def mock_impl_with_shutdown(*args, **kwargs):
+        result = mock_impl_stage(*args, **kwargs)
+        # Trigger shutdown after impl completes
+        executor_mod.shutdown_requested = True
+        shutdown_triggered[0] = True
+        return result
+    
+    with ExitStack() as stack:
+        # Patch all context loaders to avoid any external dependencies
+        for p in _context_patches():
+            stack.enter_context(p)
+        
+        # Patch stage functions - impl triggers shutdown, review/validate shouldn't run
+        stack.enter_context(
+            patch("workflow_lib.executor.run_impl_stage", side_effect=mock_impl_with_shutdown)
+        )
+        stack.enter_context(
+            patch("workflow_lib.executor.run_review_stage", side_effect=mock_review_stage)
+        )
+        stack.enter_context(
+            patch("workflow_lib.executor.run_validate_stage", side_effect=mock_validate_stage)
+        )
+        
+        # Run process_task
+        result = process_task(
+            root_dir=local,
+            full_task_id=full_task_id,
+            presubmit_cmd="echo ok",
+            backend="gemini",
+            serena=False,
+            dashboard=None,
+            model=None,
+            dev_branch="dev",
+            remote_url=remote,
+            agent_pool=None,
+            cleanup=True,
+            docker_config=None,
+            starting_stage=STAGE_IMPL,
+            on_stage_complete=mock_stage_callback,
+        )
+    
+    # Verify:
+    # 1. Only impl stage was executed (shutdown prevented review/validate)
+    assert stages_executed == [STAGE_IMPL], (
+        f"Expected only impl stage to run, got: {stages_executed}"
+    )
+    
+    # 2. Shutdown was triggered
+    assert shutdown_triggered[0], "Shutdown should have been triggered after impl"
+    
+    # 3. impl stage was persisted to state
+    assert state.get("task_stages", {}).get(full_task_id) == STAGE_IMPL, (
+        "impl stage should be persisted in task_stages after graceful shutdown"
+    )
+    
+    # 4. process_task returned True (graceful shutdown, not failure)
+    assert result is True, (
+        "process_task should return True for graceful shutdown after completing a stage"
+    )
+    
+    # Run 2: Verify task resumes from review stage (not impl)
+    executor_mod.shutdown_requested = False
+    stages_executed.clear()
+    starting_stages_received = []
+    
+    def mock_process_task_capture_start(*args, starting_stage=None, **kwargs):
+        """Capture what starting_stage was passed."""
+        starting_stages_received.append(starting_stage)
+        # Run all remaining stages successfully
+        return True
+    
+    with ExitStack() as stack:
+        for p in _context_patches():
+            stack.enter_context(p)
+        
+        stack.enter_context(
+            patch("workflow_lib.executor.run_impl_stage", side_effect=mock_impl_stage)
+        )
+        stack.enter_context(
+            patch("workflow_lib.executor.run_review_stage", side_effect=mock_review_stage)
+        )
+        stack.enter_context(
+            patch("workflow_lib.executor.run_validate_stage", side_effect=mock_validate_stage)
+        )
+        stack.enter_context(
+            patch("workflow_lib.executor.process_task", side_effect=mock_process_task_capture_start)
+        )
+        
+        # Simulate DAG loop calling _starting_stage_for
+        from workflow_lib.executor import _starting_stage_for
+        starting_stage = _starting_stage_for(full_task_id, state)
+        
+        # Verify _starting_stage_for returns review (not impl)
+        assert starting_stage == STAGE_REVIEW, (
+            f"Expected starting_stage={STAGE_REVIEW} (next after impl), got {starting_stage}"
+        )
