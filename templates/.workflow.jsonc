@@ -85,6 +85,11 @@
   //                          specific list to pin an agent to certain phases,
   //                          e.g. a fast model for review and a powerful one
   //                          for development.
+  //   env         (optional) Dict of environment variables to set when spawning
+  //                          this agent. These are merged into the current process
+  //                          environment, allowing per-agent configuration such as
+  //                          API keys, model overrides, or feature flags.
+  //                          Example: {"ANTHROPIC_MODEL": "claude-sonnet-4-5-20250514"}
   //
   // "agents": [
   //   {
@@ -95,7 +100,11 @@
   //     "priority":   1,
   //     "quota-time": 60,
   //     "spawn_rate": 0.5,
-  //     "steps":      ["develop", "merge"]
+  //     "steps":      ["develop", "merge"],
+  //     "env":        {
+  //       "ANTHROPIC_MODEL": "claude-sonnet-4-5-20250514",
+  //       "CUSTOM_FLAG":    "enabled"
+  //     }
   //   },
   //   {
   //     "name":       "gemini-flash-review",

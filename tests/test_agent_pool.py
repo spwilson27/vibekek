@@ -248,7 +248,7 @@ class TestRunAiCommandQuotaDetection:
         mock_runner.run.return_value = sp.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
         captured = {}
-        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, container_name=None):
+        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, container_name=None, env=None):
             captured["user"] = user
             return mock_runner
 
@@ -439,6 +439,27 @@ class TestGetAgentPoolConfigs:
         assert c.priority == 1
         assert c.quota_time == 60
         assert c.model is None
+
+    def test_parses_env_field(self):
+        from workflow_lib.config import get_agent_pool_configs
+        raw = {"agents": [{
+            "name": "env-agent",
+            "backend": "claude",
+            "user": "alice",
+            "env": {"API_KEY": "secret123", "FEATURE_FLAG": "enabled"}
+        }]}
+        with patch("workflow_lib.config.load_config", return_value=raw):
+            cfgs = get_agent_pool_configs()
+        c = cfgs[0]
+        assert c.env == {"API_KEY": "secret123", "FEATURE_FLAG": "enabled"}
+
+    def test_env_defaults_to_empty_dict(self):
+        from workflow_lib.config import get_agent_pool_configs
+        raw = {"agents": [{"name": "x", "backend": "gemini", "user": "bob"}]}
+        with patch("workflow_lib.config.load_config", return_value=raw):
+            cfgs = get_agent_pool_configs()
+        c = cfgs[0]
+        assert c.env == {}
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +663,169 @@ class TestConfigStepsParsing:
             cfgs = get_agent_pool_configs()
         assert cfgs[0].steps == ["develop", "review"]
 
+
+# ---------------------------------------------------------------------------
+# Agent config env field
+# ---------------------------------------------------------------------------
+
+class TestAgentConfigEnv:
+    def test_env_defaults_to_empty_dict(self):
+        """AgentConfig.env should default to empty dict when not specified."""
+        cfg = AgentConfig(name="test", backend="gemini", user="u",
+                          parallel=1, priority=1, quota_time=60)
+        assert cfg.env == {}
+
+    def test_env_accepts_custom_dict(self):
+        """AgentConfig should accept custom env dict."""
+        env_vars = {"API_KEY": "secret123", "FEATURE_FLAG": "enabled"}
+        cfg = AgentConfig(name="test", backend="gemini", user="u",
+                          parallel=1, priority=1, quota_time=60, env=env_vars)
+        assert cfg.env == env_vars
+        assert cfg.env["API_KEY"] == "secret123"
+        assert cfg.env["FEATURE_FLAG"] == "enabled"
+
+
+class TestRunnerEnvMerging:
+    def test_runner_env_merged_with_os_env(self):
+        """Runner._env() should merge agent env with OS environment."""
+        from workflow_lib.runners import GeminiRunner
+        
+        agent_env = {"CUSTOM_VAR": "custom_value", "PATH": "/custom/path"}
+        runner = GeminiRunner(env=agent_env)
+        
+        result_env = runner._env()
+        
+        # OS env vars should be present
+        assert "HOME" in result_env
+        
+        # Agent env vars should override or be added
+        assert result_env["CUSTOM_VAR"] == "custom_value"
+        assert result_env["PATH"] == "/custom/path"
+
+    def test_runner_env_none_defaults_to_empty(self):
+        """Runner with env=None should default to empty dict."""
+        from workflow_lib.runners import GeminiRunner
+        
+        runner = GeminiRunner(env=None)
+        assert runner.env == {}
+
+
+class TestMakeRunnerPassesEnv:
+    def test_make_runner_gemini_passes_env(self):
+        from workflow_lib.runners import make_runner
+        
+        agent_env = {"TEST_VAR": "test_value"}
+        runner = make_runner("gemini", env=agent_env)
+        
+        assert runner.env == agent_env
+
+    def test_make_runner_claude_passes_env(self):
+        from workflow_lib.runners import make_runner
+        
+        agent_env = {"ANTHROPIC_KEY": "key123"}
+        runner = make_runner("claude", env=agent_env)
+        
+        assert runner.env == agent_env
+
+    def test_make_runner_qwen_passes_env(self):
+        from workflow_lib.runners import make_runner
+        
+        agent_env = {"Qwen_FLAG": "on"}
+        runner = make_runner("qwen", env=agent_env)
+        
+        assert runner.env == agent_env
+
+
+class TestRunAiCommandPassesAgentEnv:
+    def test_agent_env_passed_to_runner(self):
+        """run_ai_command should pass agent_env to make_runner."""
+        from workflow_lib.executor import run_ai_command
+        import subprocess as sp
+        
+        captured_env = {}
+        
+        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, 
+                             container_name=None, env=None):
+            captured_env["env"] = env
+            mock_runner = MagicMock()
+            mock_runner.run.return_value = sp.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
+            return mock_runner
+        
+        agent_env = {"AGENT_VAR": "agent_value", "MODEL": "test-model"}
+        
+        with patch("workflow_lib.executor.make_runner", side_effect=fake_make_runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
+            run_ai_command("prompt", "/tmp", backend="gemini", agent_env=agent_env)
+        
+        assert captured_env["env"] == agent_env
+
+    def test_agent_env_none_when_not_provided(self):
+        """run_ai_command should pass None when agent_env is not provided."""
+        from workflow_lib.executor import run_ai_command
+        import subprocess as sp
+        
+        captured_env = {}
+        
+        def fake_make_runner(backend, model=None, soft_timeout=None, user=None,
+                             container_name=None, env=None):
+            captured_env["env"] = env
+            mock_runner = MagicMock()
+            mock_runner.run.return_value = sp.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
+            return mock_runner
+        
+        with patch("workflow_lib.executor.make_runner", side_effect=fake_make_runner), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}):
+            run_ai_command("prompt", "/tmp", backend="gemini")
+        
+        assert captured_env["env"] is None
+
+
+class TestRunAgentPassesConfigEnv:
+    def test_run_agent_passes_agent_cfg_env_to_run_ai_command(self):
+        """run_agent should pass agent_cfg.env to run_ai_command."""
+        from workflow_lib.executor import run_agent
+        from workflow_lib.agent_pool import AgentConfig, AgentPoolManager
+        import subprocess as sp
+        
+        captured_agent_env = {}
+        
+        def fake_run_ai_command(prompt, cwd, prefix="", backend="gemini",
+                                image_paths=None, on_line=None, model=None,
+                                user=None, container_name=None, container_env_file="",
+                                spawn_rate=0.0, agent_env=None):
+            captured_agent_env["agent_env"] = agent_env
+            return (0, "")
+        
+        agent_env = {"TEST_KEY": "test_value", "FEATURE": "on"}
+        pool = AgentPoolManager([
+            AgentConfig(name="test-agent", backend="gemini", user="u",
+                       parallel=1, priority=1, quota_time=60, env=agent_env)
+        ])
+        
+        with patch("workflow_lib.executor.run_ai_command", side_effect=fake_run_ai_command), \
+             patch("workflow_lib.executor.get_project_images", return_value=[]), \
+             patch("workflow_lib.config.get_config_defaults", return_value={}), \
+             patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
+             patch("builtins.open", mock_open(read_data="hello {task_name}")):
+            result = run_agent(
+                "Impl", "implement_task.md",
+                {"task_name": "t", "phase_filename": "p"},
+                "/tmp", agent_pool=pool
+            )
+
+        assert result is True
+        assert captured_agent_env["agent_env"] == agent_env
+
+
+# ---------------------------------------------------------------------------
+# config: steps field parsing (continued)
+# ---------------------------------------------------------------------------
+
+class TestConfigStepsParsingContinued:
     def test_default_steps_is_all(self):
         from workflow_lib.config import get_agent_pool_configs
         raw = {"agents": [{"name": "x", "backend": "gemini", "user": "u"}]}
@@ -878,7 +1062,7 @@ class TestExhaustedCapacityE2E:
 
         call_log: list = []
 
-        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, container_name=None):
+        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, container_name=None, env=None):
             mock_runner = MagicMock()
             if backend == "gemini":
                 def gemini_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):

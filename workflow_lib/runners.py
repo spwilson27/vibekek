@@ -121,7 +121,7 @@ class AIRunner:
     Subclasses must implement :meth:`run`.
     """
 
-    def __init__(self, model: Optional[str] = None, user: Optional[str] = None, container_name: Optional[str] = None) -> None:
+    def __init__(self, model: Optional[str] = None, user: Optional[str] = None, container_name: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> None:
         self.model = model
         self.user = user
         # When set, all AI CLI commands are wrapped with ``docker exec`` into
@@ -131,14 +131,20 @@ class AIRunner:
         # Path to the env-file on the host, passed to ``docker exec --env-file``.
         # Set by the caller after construction via ``runner._container_env_file``.
         self._container_env_file: str = ""
+        # Per-agent environment variables from AgentConfig.env
+        self.env: Dict[str, str] = env or {}
 
     def _env(self) -> Dict[str, str]:
         """Return the environment dict to pass to subprocesses.
 
         Starts from the current process environment so that API keys,
         PATH, and other variables are available to AI CLI tools.
+        Agent-specific env vars from :attr:`env` are merged in last,
+        allowing them to override the parent environment.
         """
-        return os.environ.copy()
+        base_env = os.environ.copy()
+        base_env.update(self.env)
+        return base_env
 
     def _wrap_cmd(self, cmd: List[str]) -> List[str]:
         """Optionally prefix *cmd* with ``sudo su -l <user> -c '...'``.
@@ -531,8 +537,8 @@ class SessionResumableRunner(AIRunner):
     DEFAULT_SOFT_TIMEOUT = 480
     RESUME_HARD_TIMEOUT = 120
 
-    def __init__(self, model: Optional[str] = None, soft_timeout: Optional[int] = DEFAULT_SOFT_TIMEOUT, user: Optional[str] = None, container_name: Optional[str] = None) -> None:
-        super().__init__(model=model, user=user, container_name=container_name)
+    def __init__(self, model: Optional[str] = None, soft_timeout: Optional[int] = DEFAULT_SOFT_TIMEOUT, user: Optional[str] = None, container_name: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> None:
+        super().__init__(model=model, user=user, container_name=container_name, env=env)
         self.soft_timeout = soft_timeout
 
     def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
@@ -1011,7 +1017,7 @@ class CopilotRunner(AIRunner):
         raise last_exc if last_exc is not None else RuntimeError("Failed to invoke copilot CLI")
 
 
-def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optional[int] = None, user: Optional[str] = None, container_name: Optional[str] = None) -> AIRunner:
+def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optional[int] = None, user: Optional[str] = None, container_name: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> AIRunner:
     """Instantiate the correct AI runner for the given backend name.
 
     :param backend: One of ``"gemini"``, ``"claude"``, ``"copilot"``,
@@ -1027,24 +1033,27 @@ def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optiona
     :param container_name: Optional name of an already-running Docker container.
         When set, all AI CLI commands are routed into the container via
         ``docker exec``.  The container lifecycle is managed by the caller.
+    :param env: Optional dict of per-agent environment variables. These are
+        merged into the current process environment, allowing per-agent
+        configuration such as API keys or feature flags.
     :returns: An AI runner instance.
     """
     if backend == "claude":
-        return ClaudeRunner(model=model, user=user, container_name=container_name)
+        return ClaudeRunner(model=model, user=user, container_name=container_name, env=env)
     elif backend == "copilot":
-        return CopilotRunner(model=model, user=user, container_name=container_name)
+        return CopilotRunner(model=model, user=user, container_name=container_name, env=env)
     elif backend == "opencode":
-        return OpencodeRunner(model=model, user=user, container_name=container_name)
+        return OpencodeRunner(model=model, user=user, container_name=container_name, env=env)
     elif backend == "cline":
-        return ClineRunner(model=model, user=user, container_name=container_name)
+        return ClineRunner(model=model, user=user, container_name=container_name, env=env)
     elif backend == "aider":
-        return AiderRunner(model=model, user=user, container_name=container_name)
+        return AiderRunner(model=model, user=user, container_name=container_name, env=env)
     elif backend == "codex":
-        return CodexRunner(model=model, user=user, container_name=container_name)
+        return CodexRunner(model=model, user=user, container_name=container_name, env=env)
     elif backend == "qwen":
-        kwargs: Dict[str, Any] = {"model": model, "user": user, "container_name": container_name}
+        kwargs: Dict[str, Any] = {"model": model, "user": user, "container_name": container_name, "env": env}
         if soft_timeout is not None:
             kwargs["soft_timeout"] = soft_timeout
         return QwenRunner(**kwargs)
     # default: gemini
-    return GeminiRunner(model=model, user=user, container_name=container_name)
+    return GeminiRunner(model=model, user=user, container_name=container_name, env=env)

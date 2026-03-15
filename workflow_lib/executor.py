@@ -445,6 +445,7 @@ def run_ai_command(
     container_name: Optional[str] = None,
     container_env_file: str = "",
     spawn_rate: float = 0.0,
+    agent_env: Optional[Dict[str, str]] = None,
 ) -> tuple:  # type: ignore[type-arg]
     """Launch an AI CLI process and stream its output.
 
@@ -471,6 +472,8 @@ def run_ai_command(
         When a quota message advertises a reset time ≤ this value the process is
         *not* killed — the CLI will recover before the next task would be spawned
         anyway.  Defaults to ``0.0`` (only suppress if reset is instantaneous).
+    :param agent_env: Optional dict of per-agent environment variables from
+        :attr:`~workflow_lib.agent_pool.AgentConfig.env`.
     :returns: Tuple of (return_code, stderr_text).
     """
     from .config import get_config_defaults
@@ -478,7 +481,7 @@ def run_ai_command(
     soft_timeout = cfg.get("soft_timeout")
     hard_timeout = cfg.get("timeout")
 
-    runner = make_runner(backend, model=model, soft_timeout=soft_timeout, user=user, container_name=container_name)
+    runner = make_runner(backend, model=model, soft_timeout=soft_timeout, user=user, container_name=container_name, env=agent_env)
     if container_name and container_env_file:
         runner._container_env_file = container_env_file
 
@@ -881,6 +884,7 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
                 container_name=container_name,
                 container_env_file=container_env_file,
                 spawn_rate=agent_cfg.spawn_rate if agent_cfg is not None else 0.0,
+                agent_env=agent_cfg.env if agent_cfg is not None else None,
             )
         finally:
             if agent_pool is not None and agent_cfg is not None:

@@ -287,6 +287,7 @@ def get_agent_pool_configs() -> List[Any]:
             cargo_target_dir=entry.get("cargo-target-dir") or None,
             docker_config=agent_docker,
             context_limit=agent_context_limit,
+            env=entry.get("env", {}),
         ))
     return configs
 

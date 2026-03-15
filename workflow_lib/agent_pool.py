@@ -145,6 +145,9 @@ class AgentConfig:
     :param context_limit: Optional per-agent context limit in words.  When set,
         overrides the global ``"context_limit"`` from ``.workflow.jsonc`` but is
         itself overridden by the CLI ``--context-limit`` flag.
+    :param env: Optional dict of environment variables to set when spawning this
+        agent. These are merged into the current process environment, allowing
+        per-agent configuration such as API keys or feature flags.
     """
 
     name: str
@@ -159,6 +162,7 @@ class AgentConfig:
     cargo_target_dir: Optional[str] = None
     docker_config: Optional[DockerConfig] = None
     context_limit: Optional[int] = None
+    env: Dict[str, str] = field(default_factory=dict)
 
 
 class AgentPoolManager:
