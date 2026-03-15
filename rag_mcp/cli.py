@@ -1270,28 +1270,31 @@ def _cmd_interactive(args, config):
     return 0
 
 
+# Module-level app instance for testing and import verification
+app = setup_parser()
+
+
 def main():
     """Main entry point."""
-    parser = setup_parser()
-    args = parser.parse_args()
-    
+    args = app.parse_args()
+
     if not args.command:
-        parser.print_help()
+        app.print_help()
         return 1
-    
+
     from .config import MCPConfig, load_config
-    
+
     cfg_path = args.config
     if not cfg_path:
         for c in [".rag-config.jsonc", "config.jsonc", "config.json"]:
             if os.path.exists(c):
                 cfg_path = c
                 break
-    
+
     config = load_config(cfg_path) if cfg_path else MCPConfig()
     if args.repo:
         config.repo_path = args.repo
-    
+
     return args.func(args, config) if hasattr(args, "func") else 1
 
 
