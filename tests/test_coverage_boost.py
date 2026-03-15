@@ -4717,6 +4717,8 @@ class TestSoftInterrupt:
         stack.enter_context(patch('workflow_lib.executor.get_task_details', return_value="# Task: test"))
         stack.enter_context(patch('workflow_lib.executor.get_project_context', return_value="ctx"))
         stack.enter_context(patch('workflow_lib.executor.get_memory_context', return_value="mem"))
+        stack.enter_context(patch('workflow_lib.executor.get_rag_enabled', return_value=False))
+        stack.enter_context(patch('workflow_lib.executor.start_rag_server'))
         stack.enter_context(patch('subprocess.run', return_value=MagicMock(returncode=0, stdout="", stderr="")))
         stack.enter_context(patch('tempfile.mkdtemp', return_value="/tmp/fake"))
         stack.enter_context(patch('os.chmod'))
@@ -4826,8 +4828,9 @@ class TestSoftInterrupt:
             result = self._mod.process_task(
                 "/root", "phase_1/task", "./presubmit", dashboard=MagicMock(),
             )
-        # Impl stage completes, but shutdown check before review stops progression
-        assert result is False
+        # Impl stage completes, shutdown fires, and we return True for graceful shutdown
+        # (at least one stage completed before shutdown)
+        assert result is True
         assert agent_calls == ["Implementation"]
 
     # ----------------------------------------------------------------
@@ -4849,8 +4852,9 @@ class TestSoftInterrupt:
             result = self._mod.process_task(
                 "/root", "phase_1/task", "./presubmit", dashboard=MagicMock(),
             )
-        # Review stage completes, but shutdown check before validate stops progression
-        assert result is False
+        # Review stage completes, shutdown fires, and we return True for graceful shutdown
+        # (at least one stage completed before shutdown)
+        assert result is True
         assert call_count[0] == 2  # Implementation + Review only
 
     # ----------------------------------------------------------------

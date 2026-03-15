@@ -36,6 +36,309 @@ def _docker_cfg(image="test-image:latest", volumes=None, copy_files=None, pivot_
 
 
 # ---------------------------------------------------------------------------
+# Dockerfile template tests
+# ---------------------------------------------------------------------------
+
+class TestDockerfileTemplate:
+    """Tests for Dockerfile template and non-root user configuration."""
+
+    def test_dockerfile_template_exists(self):
+        """Dockerfile template should exist in .tools/templates/."""
+        from workflow_lib.constants import TOOLS_DIR
+        template_path = os.path.join(TOOLS_DIR, "templates", "Dockerfile")
+        assert os.path.exists(template_path), f"Dockerfile template not found at {template_path}"
+
+    def test_dockerfile_template_has_username_arg(self):
+        """Dockerfile template should define USERNAME build argument."""
+        from workflow_lib.constants import TOOLS_DIR
+        template_path = os.path.join(TOOLS_DIR, "templates", "Dockerfile")
+        with open(template_path) as f:
+            content = f.read()
+        assert "ARG USERNAME=" in content, "Dockerfile template missing ARG USERNAME"
+
+    def test_dockerfile_template_has_user_uid_arg(self):
+        """Dockerfile template should define USER_UID build argument."""
+        from workflow_lib.constants import TOOLS_DIR
+        template_path = os.path.join(TOOLS_DIR, "templates", "Dockerfile")
+        with open(template_path) as f:
+            content = f.read()
+        assert "ARG USER_UID=" in content, "Dockerfile template missing ARG USER_UID"
+
+    def test_dockerfile_template_creates_user(self):
+        """Dockerfile template should create non-root user with useradd."""
+        from workflow_lib.constants import TOOLS_DIR
+        template_path = os.path.join(TOOLS_DIR, "templates", "Dockerfile")
+        with open(template_path) as f:
+            content = f.read()
+        assert "useradd" in content, "Dockerfile template missing useradd command"
+        assert "${USERNAME}" in content or "weaver" in content, \
+            "Dockerfile template should use USERNAME arg for user creation"
+
+    def test_dockerfile_template_sets_sudo(self):
+        """Dockerfile template should configure passwordless sudo for non-root user."""
+        from workflow_lib.constants import TOOLS_DIR
+        template_path = os.path.join(TOOLS_DIR, "templates", "Dockerfile")
+        with open(template_path) as f:
+            content = f.read()
+        assert "NOPASSWD:ALL" in content, "Dockerfile template missing NOPASSWD sudo config"
+
+    def test_dockerfile_template_switches_to_user(self):
+        """Dockerfile template should switch to non-root user with USER directive."""
+        from workflow_lib.constants import TOOLS_DIR
+        template_path = os.path.join(TOOLS_DIR, "templates", "Dockerfile")
+        with open(template_path) as f:
+            content = f.read()
+        assert "USER ${USERNAME}" in content or "USER weaver" in content, \
+            "Dockerfile template missing USER directive to switch to non-root user"
+
+    def test_dockerfile_template_creates_config_dirs(self):
+        """Dockerfile template should create AI CLI config directories."""
+        from workflow_lib.constants import TOOLS_DIR
+        template_path = os.path.join(TOOLS_DIR, "templates", "Dockerfile")
+        with open(template_path) as f:
+            content = f.read()
+        assert ".claude" in content, "Dockerfile template missing .claude directory"
+        assert ".gemini" in content, "Dockerfile template missing .gemini directory"
+        assert ".qwen" in content, "Dockerfile template missing .qwen directory"
+
+    def test_dockerfile_template_ownership(self):
+        """Dockerfile template should set ownership of workspace to non-root user."""
+        from workflow_lib.constants import TOOLS_DIR
+        template_path = os.path.join(TOOLS_DIR, "templates", "Dockerfile")
+        with open(template_path) as f:
+            content = f.read()
+        assert "chown" in content, "Dockerfile template missing chown command"
+        assert "/workspace" in content, "Dockerfile template missing /workspace ownership"
+
+
+# ---------------------------------------------------------------------------
+# Root Dockerfile tests
+# ---------------------------------------------------------------------------
+
+class TestRootDockerfile:
+    """Tests for the root Dockerfile matching template configuration."""
+
+    def test_root_dockerfile_exists(self):
+        """Root Dockerfile should exist."""
+        from workflow_lib.constants import ROOT_DIR
+        dockerfile_path = os.path.join(ROOT_DIR, "Dockerfile")
+        assert os.path.exists(dockerfile_path), f"Dockerfile not found at {dockerfile_path}"
+
+    def test_root_dockerfile_has_username_arg(self):
+        """Root Dockerfile should define USERNAME build argument."""
+        from workflow_lib.constants import ROOT_DIR
+        dockerfile_path = os.path.join(ROOT_DIR, "Dockerfile")
+        with open(dockerfile_path) as f:
+            content = f.read()
+        assert "ARG USERNAME=" in content, "Root Dockerfile missing ARG USERNAME"
+
+    def test_root_dockerfile_has_user_uid_arg(self):
+        """Root Dockerfile should define USER_UID build argument."""
+        from workflow_lib.constants import ROOT_DIR
+        dockerfile_path = os.path.join(ROOT_DIR, "Dockerfile")
+        with open(dockerfile_path) as f:
+            content = f.read()
+        assert "ARG USER_UID=" in content, "Root Dockerfile missing ARG USER_UID"
+
+    def test_root_dockerfile_default_username(self):
+        """Root Dockerfile should default USERNAME to 'username'."""
+        from workflow_lib.constants import ROOT_DIR
+        dockerfile_path = os.path.join(ROOT_DIR, "Dockerfile")
+        with open(dockerfile_path) as f:
+            content = f.read()
+        # Check for default value in ARG statement
+        assert "ARG USERNAME=username" in content, \
+            "Root Dockerfile should default USERNAME to 'username'"
+
+    def test_root_dockerfile_default_uid(self):
+        """Root Dockerfile should default USER_UID to 1000."""
+        from workflow_lib.constants import ROOT_DIR
+        dockerfile_path = os.path.join(ROOT_DIR, "Dockerfile")
+        with open(dockerfile_path) as f:
+            content = f.read()
+        assert "ARG USER_UID=1000" in content, \
+            "Root Dockerfile should default USER_UID to 1000"
+
+
+# ---------------------------------------------------------------------------
+# .workflow.jsonc Docker config tests
+# ---------------------------------------------------------------------------
+
+class TestWorkflowDockerConfig:
+    """Tests for .workflow.jsonc Docker configuration consistency."""
+
+    def test_workflow_config_copy_files_use_home_username(self):
+        """.workflow.jsonc copy_files should use /home/username/ destinations."""
+        from workflow_lib.constants import ROOT_DIR
+        config_path = os.path.join(ROOT_DIR, ".workflow.jsonc")
+        with open(config_path) as f:
+            content = f.read()
+        # Should not have any /root/ destinations
+        assert '"/root/' not in content or content.count('"/root/') == 0, \
+            ".workflow.jsonc should not use /root/ destinations for copy_files"
+        # Should use /home/username/ destinations
+        assert '"/home/username/' in content, \
+            ".workflow.jsonc should use /home/username/ destinations for copy_files"
+
+
+# ---------------------------------------------------------------------------
+# RAG server in container tests
+# ---------------------------------------------------------------------------
+
+class TestRAGServerInContainer:
+    """Tests for RAG MCP server startup within Docker containers."""
+
+    def test_start_rag_server_with_container_name(self):
+        """RAG server should use docker exec when container_name is provided."""
+        from workflow_lib.rag_integration import start_rag_server
+        import workflow_lib.rag_integration as rag_mod
+        import os
+
+        # Mock all file system checks to pass
+        with patch.object(rag_mod, "RAG_TOOL_DIR", "/fake/rag/tool/dir"), \
+             patch.object(os.path, "isdir", return_value=True), \
+             patch("pathlib.Path.exists", return_value=False), \
+             patch("pathlib.Path.read_text", return_value=""), \
+             patch("pathlib.Path.unlink"), \
+             patch("pathlib.Path.write_text"), \
+             patch("subprocess.run") as mock_run:
+            start_rag_server("/workspace", verbose=False, container_name="test-ctr")
+
+        # Should call subprocess.run with docker exec
+        assert mock_run.called
+        call_args = mock_run.call_args[0][0]
+        assert "docker" in call_args
+        assert "exec" in call_args
+        assert "test-ctr" in call_args
+
+    def test_start_rag_server_without_container_uses_host(self):
+        """RAG server should start directly on host when not in Docker mode."""
+        from workflow_lib.rag_integration import start_rag_server
+        import workflow_lib.rag_integration as rag_mod
+        import os
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+
+        # Mock all file system checks to pass
+        with patch.object(rag_mod, "RAG_TOOL_DIR", "/fake/rag/tool/dir"), \
+             patch.object(os.path, "isdir", return_value=True), \
+             patch("pathlib.Path.exists", side_effect=[False, False]), \
+             patch("builtins.open", MagicMock()), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            start_rag_server("/tmp/test-workspace", verbose=False)
+
+        # Should call Popen for host execution
+        assert mock_popen.called
+        call_args = mock_popen.call_args[0][0]
+        # Should use python -m rag_mcp.cli directly, not docker
+        assert "docker" not in call_args
+        # Check that python executable is in the command (may be /usr/bin/python, python, python3, etc.)
+        cmd_str = " ".join(call_args)
+        assert "python" in cmd_str
+        assert "rag_mcp.cli" in cmd_str
+
+    def test_rag_server_command_includes_workspace(self):
+        """RAG server command should include workspace path."""
+        from workflow_lib.rag_integration import start_rag_server
+        import workflow_lib.rag_integration as rag_mod
+        import os
+
+        mock_proc = MagicMock()
+        workspace = "/workspace"
+
+        with patch.object(rag_mod, "RAG_TOOL_DIR", "/fake/rag/tool/dir"), \
+             patch.object(os.path, "isdir", return_value=True), \
+             patch("pathlib.Path.exists", return_value=False), \
+             patch("pathlib.Path.read_text", return_value=""), \
+             patch("pathlib.Path.unlink"), \
+             patch("pathlib.Path.write_text"), \
+             patch("subprocess.run") as mock_run:
+            start_rag_server(workspace, verbose=False, container_name="ctr")
+
+        call_args = mock_run.call_args[0][0]
+        # Workspace should be in the command via --workdir
+        assert "--workdir" in call_args
+        assert workspace in call_args
+
+    def test_rag_server_verbose_flag_passed(self):
+        """RAG server verbose setting should print status messages."""
+        from workflow_lib.rag_integration import start_rag_server
+        import workflow_lib.rag_integration as rag_mod
+        import os
+        import io
+
+        # Capture stdout to verify verbose output
+        captured = io.StringIO()
+
+        with patch.object(rag_mod, "RAG_TOOL_DIR", "/fake/rag/tool/dir"), \
+             patch.object(os.path, "isdir", return_value=True), \
+             patch("pathlib.Path.exists", return_value=False), \
+             patch("pathlib.Path.read_text", return_value=""), \
+             patch("pathlib.Path.unlink"), \
+             patch("pathlib.Path.write_text"), \
+             patch("subprocess.run") as mock_run, \
+             patch("sys.stdout", captured):
+            start_rag_server("/workspace", verbose=True, container_name="ctr")
+
+        # Verbose output should mention starting the server
+        output = captured.getvalue()
+        assert "Starting" in output or "RAG" in output
+
+
+# ---------------------------------------------------------------------------
+# process_task with RAG in Docker
+# ---------------------------------------------------------------------------
+# Note: Full e2e tests for RAG server in Docker require actual Docker daemon
+# and are provided in tests/test_docker_integration.py instead.
+# The unit tests above verify the correct code paths are taken.
+
+
+class TestProcessTaskWithRAGAndDocker:
+    """Tests for process_task with RAG server in Docker containers.
+
+    These tests verify the code paths are correct. Full e2e testing with
+    actual RAG server startup requires Docker daemon and is done separately.
+    """
+
+    def test_rag_server_not_started_when_disabled(self, tmp_path):
+        """RAG server should not start when RAG is disabled."""
+        from workflow_lib.executor import process_task
+        import workflow_lib.executor as executor_mod
+
+        executor_mod.shutdown_requested = False
+        root = str(tmp_path)
+        _init_git_repo_for_docker(root)
+
+        docker_cfg = DockerConfig(image="test-img:latest")
+        rag_started = [False]
+
+        def fake_docker_exec(container_name, cmd, **kwargs):
+            result = MagicMock(returncode=0, stdout="", stderr="")
+            if cmd[:2] == ["git", "status"]:
+                result.stdout = ""
+            return result
+
+        with patch("workflow_lib.executor._write_container_env_file", return_value="/tmp/test.env"), \
+             patch("workflow_lib.executor._start_task_container"), \
+             patch("workflow_lib.executor._stop_task_container"), \
+             patch("workflow_lib.executor._docker_exec", side_effect=fake_docker_exec), \
+             patch("workflow_lib.executor.run_agent", return_value=True), \
+             patch("workflow_lib.executor.get_task_details", return_value="# Task"), \
+             patch("workflow_lib.executor.get_project_context", return_value=""), \
+             patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
+             patch("workflow_lib.rag_integration.start_rag_server",
+                   side_effect=lambda *a, **k: rag_started.__setitem__(0, True) or MagicMock()):
+
+            result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
+                                  backend="gemini", docker_config=docker_cfg, cleanup=True)
+
+        assert result is True
+        assert not rag_started[0], "RAG server should not start when disabled"
+
+
+# ---------------------------------------------------------------------------
 # DockerConfig dataclass
 # ---------------------------------------------------------------------------
 

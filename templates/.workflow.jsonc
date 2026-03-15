@@ -120,3 +120,51 @@
   //   }
   // ]
 }
+
+// ─── Docker Configuration (Optional) ─────────────────────────────────────────
+// When defined, all workflow steps (implementation, review, presubmit, commit,
+// merge) run inside a Docker container. The container is started once per task,
+// git-clones the repo from the pivot remote, and pushes changes back after
+// validation.
+//
+// The template Dockerfile (.tools/templates/Dockerfile) uses build arguments
+// for the non-root user configuration:
+//   - USERNAME (default: weaver) - the non-root user for AI CLI tools
+//   - USER_UID (default: 1000) - the UID for the non-root user
+//
+// AI CLIs (Claude, Gemini, Qwen) refuse --dangerously-skip-permissions when
+// running as root for security reasons, so a non-root user is required.
+//
+// Build your image with:
+//   docker build --build-arg USERNAME=username --build-arg USER_UID=1000 -t <image>:<tag> .
+//
+// Example docker config:
+//
+// "docker": {
+//   "image": "weaver-reloaded:dev",
+//   "copy_files": [
+//     { "src": "/home/<user>/.claude.json", "dest": "/home/username/.claude.json" },
+//     { "src": "/home/<user>/.gemini/oauth_creds.json", "dest": "/home/username/.gemini/oauth_creds.json" },
+//     { "src": "/home/<user>/.gemini/settings.json", "dest": "/home/username/.gemini/settings.json" },
+//     { "src": "/home/<user>/.qwen/settings.json", "dest": "/home/username/.qwen/settings.json" },
+//     { "src": "/home/<user>/.gitconfig", "dest": "/home/username/.gitconfig" },
+//     { "src": "/home/<user>/.git-credentials", "dest": "/home/username/.git-credentials" }
+//   ]
+// },
+//
+// Per-agent docker overrides are also supported. Agent-level copy_files will
+// merge with the global config (agent values win for conflicting paths):
+//
+// "agents": [
+//   {
+//     "name": "gemini-dev",
+//     "backend": "gemini",
+//     "user": "mrwilson",
+//     "docker": {
+//       "image": "weaver-reloaded:dev",
+//       "copy_files": [
+//         { "src": "/home/mrwilson/.gemini/oauth_creds.json", "dest": "/home/weaver/.gemini/oauth_creds.json" }
+//       ]
+//     }
+//   }
+// ]

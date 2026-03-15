@@ -12,11 +12,14 @@ THRESHOLD = 88
 
 
 def test_workflow_lib_coverage():
+    # Coverage doesn't work with xdist parallelization, so run with -n0 (single process)
     result = subprocess.run(
         [
             sys.executable, "-m", "pytest",
             "tests/",
             "--ignore=tests/test_coverage.py",
+            "--ignore=tests/test_docker_integration.py",  # Skip Docker integration tests
+            "-n0",  # Disable xdist for coverage
             "--cov=workflow_lib",
             "--cov-report=json:.coverage_report.json",
             "-q",
