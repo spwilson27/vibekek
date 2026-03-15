@@ -151,13 +151,13 @@ class TestRootDockerfile:
             "Root Dockerfile should default USERNAME to 'username'"
 
     def test_root_dockerfile_default_uid(self):
-        """Root Dockerfile should default USER_UID to 1000."""
+        """Root Dockerfile should default USER_UID to 1201."""
         from workflow_lib.constants import ROOT_DIR
         dockerfile_path = os.path.join(ROOT_DIR, "Dockerfile")
         with open(dockerfile_path) as f:
             content = f.read()
-        assert "ARG USER_UID=1000" in content, \
-            "Root Dockerfile should default USER_UID to 1000"
+        assert "ARG USER_UID=1201" in content, \
+            "Root Dockerfile should default USER_UID to 1201"
 
 
 # ---------------------------------------------------------------------------

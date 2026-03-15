@@ -201,18 +201,22 @@ class TestEarlyOutFunctional(unittest.TestCase):
 
     def test_returns_true_when_branch_exists(self):
         """process_task must return True immediately when the task branch exists."""
-        # process_task derives branch_name as:
-        #   task_id = full_task_id.split("/", 1)[1]  → "04_test_task.md"
-        #   safe_task_id = task_id.replace("/","_").replace(".md","")  → "04_test_task"
-        #   branch_name = f"ai-phase-{safe_task_id}"  → "ai-phase-04_test_task"
+        import uuid
+        # Use a unique task ID to avoid conflicts with parallel test runs
+        unique_suffix = uuid.uuid4().hex[:8]
+        unique_task_id = f"phase_0/04_test_task_{unique_suffix}.md"
+        branch_name = f"ai-phase-04_test_task_{unique_suffix}"
+        
+        # Reset the global shutdown flag to avoid interference from other parallel tests
+        executor_mod.shutdown_requested = False
+        
         with tempfile.TemporaryDirectory() as root_dir:
-            branch_name = "ai-phase-04_test_task"
             self._make_repo_with_task_branch(root_dir, branch_name)
 
             with patch.object(executor_mod, "run_agent") as mock_agent:
                 result = process_task(
                     root_dir=root_dir,
-                    full_task_id="phase_0/04_test_task.md",
+                    full_task_id=unique_task_id,
                     presubmit_cmd="./do presubmit",
                     dev_branch="dev-claude",
                 )
@@ -223,13 +227,21 @@ class TestEarlyOutFunctional(unittest.TestCase):
     def test_agent_runs_when_branch_absent(self):
         """process_task must NOT early-out when the branch does not exist —
         the agent must be invoked so the task is actually implemented."""
+        import uuid
+        # Use a unique task ID to avoid conflicts with parallel test runs
+        unique_suffix = uuid.uuid4().hex[:8]
+        unique_task_id = f"phase_0/04_test_task_{unique_suffix}.md"
+        
+        # Reset the global shutdown flag to avoid interference from other parallel tests
+        executor_mod.shutdown_requested = False
+        
         with tempfile.TemporaryDirectory() as root_dir:
             _make_git_repo(root_dir)
             # No task branch created — process_task should attempt to run the agent.
             with patch.object(executor_mod, "run_agent", return_value=False) as mock_agent:
                 result = process_task(
                     root_dir=root_dir,
-                    full_task_id="phase_0/04_test_task.md",
+                    full_task_id=unique_task_id,
                     presubmit_cmd="./do presubmit",
                     dev_branch="dev-claude",
                 )
