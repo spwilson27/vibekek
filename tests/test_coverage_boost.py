@@ -966,7 +966,7 @@ class TestProcessTaskWithDashboard:
             result = process_task("/root", "phase_1/task.md", "./do presubmit",
                                   max_retries=1, dashboard=dash)
         assert result is False
-        dash.set_agent.assert_any_call("phase_1/task.md", "Verify", "failed", "Failed after 1 attempts")
+        dash.set_agent.assert_any_call("phase_1/task.md", "Verify", "failed", "Failed after 1 attempts", agent_name=None)
 
     def test_presubmit_retry_with_dashboard(self):
         """Presubmit fails once, then succeeds; dashboard gets retry status."""

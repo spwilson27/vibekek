@@ -165,16 +165,23 @@ class Dashboard:
             non-empty, displayed in the header row alongside the stage.  If
             empty, the existing agent_name for this task is preserved so
             callers that only update status/line do not need to re-supply it.
+            Pass ``None`` to explicitly clear the agent name.
         """
         with self._lock:
             # Preserve existing log lines, start time, and agent_name when updating
             if task_id in self._agents:
                 _, _, lines, started, existing_name = self._agents[task_id]
-                effective_name = agent_name if agent_name else existing_name
+                # agent_name="" preserves existing, agent_name=None clears it
+                if agent_name is None:
+                    effective_name = ""
+                elif agent_name:
+                    effective_name = agent_name
+                else:
+                    effective_name = existing_name
             else:
                 lines = deque()
                 started = datetime.now(tz=_PST)
-                effective_name = agent_name
+                effective_name = agent_name if agent_name else ""
             short = last_line.strip() if last_line else ""
             if short:
                 lines.append((_now_short(), short))

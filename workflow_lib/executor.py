@@ -1432,7 +1432,8 @@ def run_validate_stage(
         for attempt in range(1, max_retries + 1):
             _log(f"      [Verification] Running presubmit (Attempt {attempt}/{max_retries})...")
             if dashboard:
-                dashboard.set_agent(full_task_id, "Verify", "running", f"Attempt {attempt}/{max_retries}")
+                # Verify doesn't spawn an agent, so pass agent_name=None to clear the column
+                dashboard.set_agent(full_task_id, "Verify", "running", f"Attempt {attempt}/{max_retries}", agent_name=None)
 
             if _container_name:
                 presubmit_res = _docker_exec(_container_name, cmd_list, env_file=env_file, log=_log)
@@ -1456,7 +1457,8 @@ def run_validate_stage(
                     return False
 
                 if dashboard:
-                    dashboard.set_agent(full_task_id, "Verify", "done", "Presubmit passed")
+                    # Verify doesn't spawn an agent, so clear agent_name
+                    dashboard.set_agent(full_task_id, "Verify", "done", "Presubmit passed", agent_name=None)
                 success = True
                 return True
 
@@ -1470,22 +1472,27 @@ def run_validate_stage(
                     f"{presubmit_res.stdout}\n{presubmit_res.stderr}\n```\n"
                 )
                 if dashboard:
+                    # Review retry - clear agent_name since Review agent will run
                     dashboard.set_agent(full_task_id, "Review", "running",
-                                        "Retry after presubmit failure")
+                                        "Retry after presubmit failure", agent_name=None)
                 if not run_agent("Review (Retry)", "review_task.md", failure_ctx, cwd,
                                  **_run_agent_kwargs):
+                    if dashboard:
+                        dashboard.remove_agent(full_task_id)  # Review retry failed, remove agent
                     return False
 
         _log(f"   -> [!] Task {full_task_id} failed presubmit {max_retries} times. Aborting task.")
         if dashboard:
+            # Verify doesn't spawn an agent, so clear agent_name
             dashboard.set_agent(full_task_id, "Verify", "failed",
-                                 f"Failed after {max_retries} attempts")
+                                 f"Failed after {max_retries} attempts", agent_name=None)
         return False
 
     except RuntimeError as e:
         _log(f"      [!] [Verify] {e}")
         if dashboard:
-            dashboard.set_agent(full_task_id, "Verify", "failed", str(e))
+            # Verify doesn't spawn an agent, so clear agent_name
+            dashboard.set_agent(full_task_id, "Verify", "failed", str(e), agent_name=None)
         return False
     finally:
         _stage_cleanup(tmpdir, _container_name, success, cleanup, branch_name, _log)
@@ -1619,7 +1626,9 @@ def process_task(
         overall_success = True
         return True
     finally:
-        if overall_success:
+        if overall_success or (shutdown_requested and last_completed_stage is not None):
+            # Remove agent from dashboard when task fully completes OR when
+            # graceful shutdown occurs after completing at least one stage
             if dashboard:
                 dashboard.remove_agent(full_task_id)
         elif not shutdown_requested:
