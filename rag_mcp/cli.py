@@ -105,7 +105,7 @@ EXAMPLE WORKFLOWS:
   • Trace call chains:     hierarchy --callers main
 
 GLOBAL OPTIONS:
-  -c, --config    Path to config.jsonc (default: config.jsonc or config.json in current dir)
+  -c, --config    Path to .rag-config.jsonc (default: config.jsonc or config.json in current dir)
   -r, --repo      Path to git repository (default: current directory)
   -v, --verbose   Show detailed progress during indexing
   --no-wait       Don't wait for indexing to complete (results may be incomplete)
@@ -1072,7 +1072,7 @@ def _cmd_serve(args, config):
     # Get config path
     cfg_path = args.config
     if not cfg_path:
-        for c in ["config.jsonc", "config.json"]:
+        for c in [".rag-config.jsonc", "config.jsonc", "config.json"]:
             if os.path.exists(c):
                 cfg_path = c
                 break
@@ -1283,7 +1283,7 @@ def main():
     
     cfg_path = args.config
     if not cfg_path:
-        for c in ["config.jsonc", "config.json"]:
+        for c in [".rag-config.jsonc", "config.jsonc", "config.json"]:
             if os.path.exists(c):
                 cfg_path = c
                 break
