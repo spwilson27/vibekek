@@ -48,6 +48,7 @@ from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_do
 from .discord import notify_failure
 from .dashboard import make_dashboard
 from .agent_pool import AgentPoolManager, QUOTA_RETURN_CODE, QUOTA_PATTERNS, QUOTA_TRANSIENT_PATTERNS, parse_quota_reset_seconds
+from .rag_integration import get_rag_help_text, start_rag_server
 
 shutdown_requested = False
 _active_dashboard: Any = None
@@ -735,6 +736,10 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
     for k, v in task_context.items():
         prompt = prompt.replace(f"{{{k}}}", str(v))
 
+    # Inject RAG MCP tool help text into every agent prompt
+    rag_help = get_rag_help_text()
+    prompt = f"{prompt}\n\n{rag_help}"
+
     msg = f"[{agent_type}] Starting agent in {cwd}..."
     if dashboard:
         dashboard.log(msg)
@@ -1038,6 +1043,9 @@ def _stage_clone(
             _stop_task_container(_container_name, _log)
             raise RuntimeError(f"Clone/checkout failed: {err}") from e
         cwd = "/workspace"
+        
+        # Start RAG MCP server in the container workspace
+        start_rag_server("/workspace", verbose=True, container_name=_container_name)
     else:
         _log(f"      [{stage_label}] Cloning repository to {tmpdir} on {branch_name}...")
         if dashboard:
@@ -1055,6 +1063,9 @@ def _stage_clone(
             err = e.stderr.decode("utf-8") if isinstance(e.stderr, bytes) else str(e.stderr)
             raise RuntimeError(f"Clone/checkout failed: {err}") from e
         cwd = tmpdir
+        
+        # Start RAG MCP server in the cloned repository
+        start_rag_server(tmpdir, verbose=True)
 
     return tmpdir, _container_name, env_file, cwd
 
