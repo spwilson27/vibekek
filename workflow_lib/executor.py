@@ -24,6 +24,7 @@ Signal handling:
 
 import atexit
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -329,10 +330,15 @@ def _start_task_container(
         if result.returncode != 0:
             log(f"      [!] docker cp failed for {cf.src} -> {cf.dest}: {result.stderr.strip()}")
         else:
-            # Make the file readable by the container user
+            # Make the file readable and writable by the container user
             chmod_cmd = ["docker", "exec", "-i", "--workdir", "/workspace",
                         container_name, "sudo", "chmod", "644", cf.dest]
             subprocess.run(chmod_cmd, capture_output=True, check=False)
+            # Chown file and parent dir to the container's default user
+            chown_cmd = ["docker", "exec", "-i", "--workdir", "/workspace",
+                        container_name, "sudo", "sh", "-c",
+                        f"u=$(id -un) && chown \"$u:$u\" {shlex.quote(cf.dest)} && chown \"$u:$u\" {shlex.quote(parent_dir)}"]
+            subprocess.run(chown_cmd, capture_output=True, check=False)
 
 
 def _stop_task_container(container_name: str, log: Callable) -> None:

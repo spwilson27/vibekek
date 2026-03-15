@@ -547,9 +547,11 @@ class TestStartTaskContainer:
         # copy_files should NOT be in volume mounts anymore (uses docker cp instead)
         assert f"{src}:/root/.creds:ro" not in v_args
         
-        # Subsequent calls should be docker cp and chmod for the copy_file
+        # Subsequent calls should be docker cp, chmod, and chown for the copy_file
         assert any("docker" in str(cmd) and "cp" in str(cmd) and str(src) in str(cmd) for cmd in calls)
         assert any("chmod" in str(cmd) and "/root/.creds" in str(cmd) for cmd in calls)
+        assert any("chown" in str(cmd) for cmd in calls), \
+            "copy_files must be chown'd to the container user so CLIs can write back (e.g. oauth token refresh)"
 
     def test_copy_file_missing_src_raises(self, tmp_path):
         dc = _docker_cfg(copy_files=[DockerCopyFile(src="/nonexistent/file.txt", dest="/dest")])

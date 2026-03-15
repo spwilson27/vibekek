@@ -207,6 +207,105 @@ class TestRAGServerInDocker:
 # End-to-end workflow tests
 # ---------------------------------------------------------------------------
 
+class TestCopyFileWriteAccess:
+    """Verify that files copied into the container via docker cp are writable by the container user.
+
+    This captures the requirement that CLIs (e.g. Gemini) can write back to credential
+    files after token refresh — the bug that caused EACCES on oauth_creds.json.
+    """
+
+    def test_copied_file_writable_by_container_user(self, check_docker_image, tmp_path):
+        """A file docker-cp'd into the container must be writable by the non-root user."""
+        # Create a temp file to copy in
+        creds = tmp_path / "oauth_creds.json"
+        creds.write_text('{"token": "old"}')
+
+        container_name = f"weaver-test-cp-{os.getpid()}"
+        dest = "/home/username/.gemini/oauth_creds.json"
+
+        try:
+            # Start a detached container
+            subprocess.run(
+                ["docker", "run", "-d", "--name", container_name,
+                 check_docker_image, "sleep", "infinity"],
+                check=True, capture_output=True, timeout=30,
+            )
+
+            # Copy the file in (runs as root, just like executor.py)
+            subprocess.run(
+                ["docker", "cp", str(creds), f"{container_name}:{dest}"],
+                check=True, capture_output=True, timeout=10,
+            )
+
+            # chmod 644 (matches executor.py behaviour)
+            subprocess.run(
+                ["docker", "exec", container_name, "sudo", "chmod", "644", dest],
+                check=True, capture_output=True, timeout=10,
+            )
+
+            # chown to container user (the fix)
+            subprocess.run(
+                ["docker", "exec", container_name, "sudo", "chown", "username:username", dest],
+                check=True, capture_output=True, timeout=10,
+            )
+
+            # Now verify the non-root user can WRITE to the file
+            result = subprocess.run(
+                ["docker", "exec", container_name,
+                 "bash", "-c", f'echo \'{{"token": "new"}}\' > {dest} && cat {dest}'],
+                capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode == 0, f"Write failed: {result.stderr}"
+            assert '"new"' in result.stdout
+
+        finally:
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                capture_output=True, timeout=10,
+            )
+
+    def test_copied_file_not_writable_without_chown(self, check_docker_image, tmp_path):
+        """Without chown, a docker-cp'd file is NOT writable — proving the fix is needed."""
+        creds = tmp_path / "oauth_creds.json"
+        creds.write_text('{"token": "old"}')
+
+        container_name = f"weaver-test-nofix-{os.getpid()}"
+        dest = "/home/username/.gemini/oauth_creds.json"
+
+        try:
+            subprocess.run(
+                ["docker", "run", "-d", "--name", container_name,
+                 check_docker_image, "sleep", "infinity"],
+                check=True, capture_output=True, timeout=30,
+            )
+
+            subprocess.run(
+                ["docker", "cp", str(creds), f"{container_name}:{dest}"],
+                check=True, capture_output=True, timeout=10,
+            )
+
+            # Only chmod, NO chown — simulates the old broken behaviour
+            subprocess.run(
+                ["docker", "exec", container_name, "sudo", "chmod", "644", dest],
+                check=True, capture_output=True, timeout=10,
+            )
+
+            # Write should fail because file is owned by root
+            result = subprocess.run(
+                ["docker", "exec", container_name,
+                 "bash", "-c", f'echo "new" > {dest}'],
+                capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode != 0, \
+                "Write should have failed without chown — if this passes, the test premise is wrong"
+
+        finally:
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                capture_output=True, timeout=10,
+            )
+
+
 class TestDockerWorkflow:
     """End-to-end tests for Docker-based workflow execution."""
 
