@@ -447,6 +447,7 @@ class TestAgentNameColumn:
         with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
              patch("workflow_lib.executor.get_project_images", return_value=[]), \
              patch("workflow_lib.config.get_config_defaults", return_value={}), \
+             patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
              patch("builtins.open", mock_open(read_data="prompt {task_name}")):
             run_agent("Implementation", "implement_task.md",
                       {"task_name": "t", "phase_filename": "p"},
@@ -488,6 +489,7 @@ class TestAgentNameColumn:
             make_runner=patch("workflow_lib.executor.make_runner", return_value=mock_runner),
             images=patch("workflow_lib.executor.get_project_images", return_value=[]),
             cfg=patch("workflow_lib.config.get_config_defaults", return_value={}),
+            rag=patch("workflow_lib.executor.get_rag_enabled", return_value=False),
             open=patch("builtins.open", mock_open(read_data="hello {task_name}")),
         )
 
@@ -495,7 +497,7 @@ class TestAgentNameColumn:
         ctx = {"task_name": "01_setup", "phase_filename": "phase_1"}
 
         with common_patches["make_runner"], common_patches["images"], \
-             common_patches["cfg"], common_patches["open"]:
+             common_patches["cfg"], common_patches["rag"], common_patches["open"]:
             # Step 1: Implementation (→ develop step → dev-agent)
             run_agent("Implementation", "implement_task.md", ctx, "/tmp",
                       dashboard=dashboard, task_id=task_id, agent_pool=pool)

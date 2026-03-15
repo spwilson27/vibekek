@@ -73,6 +73,7 @@ PROMPT_PLACEHOLDERS = {
 
     # Fixup operations
     "fix_description_length.md": {"description_ctx", "requirements_context", "short_reqs_list"},
+    "fix_phase_mappings.md": {"description_ctx", "phases_content", "unmapped_reqs_list", "requirements_context"},
 }
 
 

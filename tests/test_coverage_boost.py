@@ -4767,6 +4767,7 @@ class TestSoftInterrupt:
         self._mod.shutdown_requested = True
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
+             patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt")):
             result = self._mod.run_agent("Merge", "merge_task.md", {}, "/tmp")
         assert result is True
@@ -4776,6 +4777,7 @@ class TestSoftInterrupt:
         self._mod.shutdown_requested = False
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
+             patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt {task_name}")):
             result = self._mod.run_agent(
                 "Implementation", "implement_task.md",
@@ -4917,6 +4919,7 @@ class TestSoftInterrupt:
              patch('tempfile.mkdtemp', return_value="/tmp/fake"), \
              patch('os.chmod'), \
              patch('shutil.rmtree'), \
+             patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt {task_name}")):
             result = self._mod.process_task(
                 "/root", "phase_1/task", "./presubmit",

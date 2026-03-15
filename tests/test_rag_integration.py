@@ -90,6 +90,29 @@ def test_rag_help_text_mentions_docker():
     print("✓ get_rag_help_text is suitable for containerized workflows")
 
 
+def test_start_rag_server_with_container_name():
+    """Test that start_rag_server accepts container_name parameter."""
+    import inspect
+    sig = inspect.signature(start_rag_server)
+    params = list(sig.parameters.keys())
+    assert "container_name" in params
+    print("✓ start_rag_server accepts container_name parameter")
+
+
+def test_start_rag_server_returns_none_for_missing_rag_tool():
+    """Test that start_rag_server returns None when RAG tool dir doesn't exist."""
+    result = start_rag_server("/nonexistent", verbose=False)
+    assert result is None
+    print("✓ start_rag_server returns None for missing RAG tool")
+
+
+def test_stop_rag_server_returns_false_for_missing_pid():
+    """Test that stop_rag_server returns False when PID file doesn't exist."""
+    result = stop_rag_server("/nonexistent", verbose=False)
+    assert result is False
+    print("✓ stop_rag_server returns False for missing PID file")
+
+
 if __name__ == "__main__":
     # Run tests
     tests = [
@@ -101,6 +124,9 @@ if __name__ == "__main__":
         test_rag_help_text_format,
         test_rag_help_text_mentions_auto_start,
         test_rag_help_text_mentions_docker,
+        test_start_rag_server_with_container_name,
+        test_start_rag_server_returns_none_for_missing_rag_tool,
+        test_stop_rag_server_returns_false_for_missing_pid,
     ]
     
     passed = 0
