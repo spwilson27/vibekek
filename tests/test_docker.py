@@ -1117,3 +1117,307 @@ class TestSetCargoTargetDir:
         with patch("builtins.open", side_effect=OSError("disk full")):
             _set_cargo_target_dir(str(tmp_path), "/new/target", logs.append)
         assert any("Warning" in m or "disk full" in m for m in logs)
+
+
+# ---------------------------------------------------------------------------
+# cmd_docker tests
+# ---------------------------------------------------------------------------
+
+class TestCmdDocker:
+    """Tests for the docker subcommand."""
+
+    def test_docker_config_not_found_exits(self, capsys):
+        """cmd_docker should exit with error if no docker config found."""
+        from workflow_lib.cli import cmd_docker
+        import workflow_lib.cli as cli_mod
+        import argparse
+
+        with patch.object(cli_mod, "get_docker_config", return_value=None):
+            args = argparse.Namespace(image=None)
+
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_docker(args)
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "no 'docker' configuration found" in captured.err
+
+    def test_git_remote_not_found_exits(self, capsys, tmp_path):
+        """cmd_docker should exit with error if git remote URL cannot be retrieved."""
+        from workflow_lib.cli import cmd_docker
+        import workflow_lib.cli as cli_mod
+        import argparse
+        from workflow_lib.agent_pool import DockerConfig, DockerCopyFile
+
+        docker_cfg = DockerConfig(image="test:latest")
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "remote", "get-url"]:
+                return MagicMock(returncode=1, stdout="", stderr="error")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
+             patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
+             patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod.subprocess, "run", side_effect=fake_run):
+
+            args = argparse.Namespace(image=None)
+
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_docker(args)
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "could not get URL for remote" in captured.err
+
+    def test_copies_config_files_to_temp(self, tmp_path, capsys):
+        """cmd_docker should copy configured files to temp directory."""
+        from workflow_lib.cli import cmd_docker
+        import workflow_lib.cli as cli_mod
+        import argparse
+        from workflow_lib.agent_pool import DockerConfig, DockerCopyFile
+
+        # Create source files
+        src_file = tmp_path / "source_creds.json"
+        src_file.write_text('{"key": "value"}')
+
+        docker_cfg = DockerConfig(
+            image="test:latest",
+            copy_files=[DockerCopyFile(src=str(src_file), dest="/home/username/.creds.json")]
+        )
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "remote", "get-url"]:
+                return MagicMock(returncode=0, stdout="https://github.com/test/repo.git", stderr="")
+            # Mock docker run, docker cp, docker exec, docker stop
+            if len(cmd) >= 2 and cmd[0] == "docker":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
+             patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
+             patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod.subprocess, "run", side_effect=fake_run):
+
+            args = argparse.Namespace(image=None)
+            cmd_docker(args)
+
+        captured = capsys.readouterr()
+        assert "Copied:" in captured.out
+        assert str(src_file) in captured.out
+
+    def test_image_override_from_args(self, tmp_path):
+        """cmd_docker should use --image argument if provided."""
+        from workflow_lib.cli import cmd_docker
+        import workflow_lib.cli as cli_mod
+        import argparse
+        from workflow_lib.agent_pool import DockerConfig
+
+        docker_cfg = DockerConfig(image="base:latest")
+
+        run_cmd_captured = []
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "remote", "get-url"]:
+                return MagicMock(returncode=0, stdout="https://github.com/test/repo.git", stderr="")
+            if len(cmd) >= 2 and cmd[0] == "docker" and cmd[1] == "run":
+                run_cmd_captured.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        def fake_execvp(cmd, args):
+            pass
+
+        with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
+             patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
+             patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
+             patch.object(cli_mod.os, "execvp", side_effect=fake_execvp):
+
+            args = argparse.Namespace(image="override:custom")
+            cmd_docker(args)
+
+        assert run_cmd_captured, "docker run should be called"
+        run_cmd = run_cmd_captured[0]
+        assert "override:custom" in run_cmd
+        assert "base:latest" not in run_cmd
+
+    def test_uses_pivot_remote_from_config(self, tmp_path):
+        """cmd_docker should use pivot_remote from docker config."""
+        from workflow_lib.cli import cmd_docker
+        import workflow_lib.cli as cli_mod
+        import argparse
+        from workflow_lib.agent_pool import DockerConfig
+
+        docker_cfg = DockerConfig(image="test:latest", pivot_remote="upstream")
+
+        remote_queries = []
+        def fake_run(cmd, **kwargs):
+            remote_queries.append(cmd)
+            if cmd[:3] == ["git", "remote", "get-url"]:
+                return MagicMock(returncode=0, stdout="https://github.com/test/repo.git", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
+             patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
+             patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
+             patch.object(cli_mod.os, "execvp", side_effect=lambda cmd, args: None):
+
+            args = argparse.Namespace(image=None)
+            cmd_docker(args)
+
+        # Verify git remote query used configured pivot_remote
+        assert any("upstream" in cmd for cmd in remote_queries), \
+            "Should query git remote using configured pivot_remote"
+
+    def test_uses_docker_cp_for_config_files(self, tmp_path):
+        """cmd_docker should use docker cp to copy config files into container."""
+        from workflow_lib.cli import cmd_docker
+        import workflow_lib.cli as cli_mod
+        import argparse
+        from workflow_lib.agent_pool import DockerConfig, DockerCopyFile
+
+        src_file = tmp_path / "creds.json"
+        src_file.write_text('{"key": "value"}')
+
+        docker_cfg = DockerConfig(
+            image="test:latest",
+            copy_files=[DockerCopyFile(src=str(src_file), dest="/home/username/.creds.json")]
+        )
+
+        docker_cp_calls = []
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "remote", "get-url"]:
+                return MagicMock(returncode=0, stdout="https://github.com/test/repo.git", stderr="")
+            if len(cmd) >= 2 and cmd[0] == "docker" and cmd[1] == "cp":
+                docker_cp_calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        def fake_execvp(cmd, args):
+            pass
+
+        with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
+             patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
+             patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
+             patch.object(cli_mod.os, "execvp", side_effect=fake_execvp):
+
+            args = argparse.Namespace(image=None)
+            cmd_docker(args)
+
+        # Verify docker cp was called with correct paths
+        assert len(docker_cp_calls) >= 1, "Should call docker cp at least once"
+        cp_cmd = docker_cp_calls[0]
+        assert cp_cmd[0:2] == ["docker", "cp"]
+        # Dest should be container:path format with the correct destination
+        assert any("/home/username/.creds.json" in str(c) for c in cp_cmd), \
+            f"Destination path not found in cp command: {cp_cmd}"
+
+    def test_volumes_from_config_added(self, tmp_path):
+        """cmd_docker should add configured volumes to docker run command."""
+        from workflow_lib.cli import cmd_docker
+        import workflow_lib.cli as cli_mod
+        import argparse
+        from workflow_lib.agent_pool import DockerConfig
+
+        docker_cfg = DockerConfig(
+            image="test:latest",
+            volumes=["/host/data:/container/data:ro", "/tmp:/tmp"]
+        )
+
+        run_cmd_captured = []
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "remote", "get-url"]:
+                return MagicMock(returncode=0, stdout="https://github.com/test/repo.git", stderr="")
+            if len(cmd) >= 2 and cmd[0] == "docker" and cmd[1] == "run":
+                run_cmd_captured.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        def fake_execvp(cmd, args):
+            pass
+
+        with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
+             patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
+             patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
+             patch.object(cli_mod.os, "execvp", side_effect=fake_execvp):
+
+            args = argparse.Namespace(image=None)
+            cmd_docker(args)
+
+        # Verify docker run was called with volumes
+        assert run_cmd_captured, "docker run should be called"
+        run_cmd = run_cmd_captured[0]
+        run_cmd_str = " ".join(run_cmd)
+        assert "/host/data:/container/data:ro" in run_cmd_str, \
+            f"Volume not found in run command: {run_cmd_str}"
+        assert "/tmp:/tmp" in run_cmd_str, \
+            f"Volume not found in run command: {run_cmd_str}"
+
+    def test_clones_dev_branch(self, tmp_path):
+        """cmd_docker should clone and checkout the configured dev branch."""
+        from workflow_lib.cli import cmd_docker
+        import workflow_lib.cli as cli_mod
+        import argparse
+        from workflow_lib.agent_pool import DockerConfig
+
+        docker_cfg = DockerConfig(image="test:latest")
+
+        docker_exec_calls = []
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "remote", "get-url"]:
+                return MagicMock(returncode=0, stdout="https://github.com/test/repo.git", stderr="")
+            if len(cmd) >= 2 and cmd[0] == "docker" and cmd[1] == "exec":
+                docker_exec_calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
+             patch.object(cli_mod, "get_dev_branch", return_value="feature-branch"), \
+             patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod.subprocess, "run", side_effect=fake_run):
+
+            args = argparse.Namespace(image=None)
+            cmd_docker(args)
+
+        # Verify docker exec was called with the clone command
+        assert docker_exec_calls, "docker exec should be called"
+        # Find the exec call with git clone
+        clone_cmd = None
+        for call in docker_exec_calls:
+            call_str = " ".join(call)
+            if "git clone" in call_str:
+                clone_cmd = call_str
+                break
+        
+        assert clone_cmd is not None, "Should have git clone in docker exec command"
+        assert "git clone --branch feature-branch" in clone_cmd
+        assert "git submodule update --init --recursive" in clone_cmd
+
+    def test_warns_on_missing_source_file(self, tmp_path, capsys):
+        """cmd_docker should warn if a configured source file doesn't exist."""
+        from workflow_lib.cli import cmd_docker
+        import workflow_lib.cli as cli_mod
+        import argparse
+        from workflow_lib.agent_pool import DockerConfig, DockerCopyFile
+
+        docker_cfg = DockerConfig(
+            image="test:latest",
+            copy_files=[DockerCopyFile(src="/nonexistent/file.json", dest="/home/username/.file.json")]
+        )
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "remote", "get-url"]:
+                return MagicMock(returncode=0, stdout="https://github.com/test/repo.git", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
+             patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
+             patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
+             patch.object(cli_mod.os, "execvp", side_effect=lambda cmd, args: None):
+
+            args = argparse.Namespace(image=None)
+            cmd_docker(args)
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.out
+        assert "/nonexistent/file.json" in captured.out

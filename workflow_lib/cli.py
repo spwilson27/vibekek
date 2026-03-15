@@ -20,6 +20,10 @@ Available commands
     Execute the parallel implementation workflow, processing tasks from the
     generated DAGs and merging results into ``dev``.
 
+``docker``
+    Start an interactive Docker container with the configured image, copying
+    config files and cloning the repository on the dev branch.
+
 ``status``
     Show current plan and execution progress.
 
@@ -63,6 +67,8 @@ import subprocess
 import threading
 import argparse
 import signal
+import shutil
+import tempfile
 from typing import Optional
 
 from .constants import TOOLS_DIR, ROOT_DIR
@@ -71,7 +77,7 @@ from .context import ProjectContext
 from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_add_feature, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade, cmd_fixup
 from .executor import execute_dag, Logger, signal_handler
 from .dashboard import make_dashboard, _DashboardStream
-from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override, set_agent_context_limit
+from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override, set_agent_context_limit, get_docker_config
 from .agent_pool import AgentPoolManager
 from .state import load_workflow_state, load_dags, get_tasks_dir, restore_state_from_branch
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner, QwenRunner, VALID_BACKENDS
@@ -287,6 +293,156 @@ def cmd_run(args: argparse.Namespace) -> None:
     finally:
         sys.stderr = original_stderr
 
+
+def cmd_docker(args: argparse.Namespace) -> None:
+    """Start an interactive Docker container with the configured image.
+
+    This command:
+
+    1. Loads the Docker configuration from ``.workflow.jsonc``.
+    2. Creates a temporary directory for the container workspace.
+    3. Copies the configured config files into the temp directory.
+    4. Starts a ``docker run -it`` container with the configured image.
+    5. Uses ``docker cp`` to copy config files into the container.
+    6. Inside the container, clones the git repository and checks out the dev branch.
+
+    :param args: Parsed :mod:`argparse` namespace with attributes:
+
+        - ``image`` (Optional[str]) — override the Docker image from config.
+    :type args: argparse.Namespace
+    """
+    # Load docker config from .workflow.jsonc
+    docker_config = get_docker_config()
+    if docker_config is None:
+        print("Error: no 'docker' configuration found in .workflow.jsonc", file=sys.stderr)
+        sys.exit(1)
+
+    # Allow CLI override of the image
+    image = args.image if args.image else docker_config.image
+    pivot_remote = docker_config.pivot_remote
+    dev_branch = get_dev_branch()
+
+    # Get the current git remote URL for cloning
+    result = subprocess.run(
+        ["git", "remote", "get-url", pivot_remote],
+        capture_output=True,
+        text=True,
+        cwd=ROOT_DIR
+    )
+    if result.returncode != 0:
+        print(f"Error: could not get URL for remote '{pivot_remote}'", file=sys.stderr)
+        sys.exit(1)
+    repo_url = result.stdout.strip()
+
+    # Create a temporary directory to stage config files
+    temp_dir = tempfile.mkdtemp(prefix="workflow-docker-")
+    print(f"Using temporary directory: {temp_dir}")
+
+    try:
+        # Copy configured files into the temp directory (preserving dest structure)
+        copied_files = []
+        for cf in docker_config.copy_files:
+            if not os.path.exists(cf.src):
+                print(f"Warning: source file does not exist: {cf.src}")
+                continue
+            dest_dir = os.path.dirname(cf.dest)
+            dest_path = os.path.join(temp_dir, dest_dir.lstrip("/"))
+            os.makedirs(dest_path, exist_ok=True)
+            dest_file = os.path.join(dest_path, os.path.basename(cf.dest))
+            shutil.copy2(cf.src, dest_file)
+            print(f"Copied: {cf.src} -> {dest_file}")
+            # Track relative path from temp_dir for docker cp
+            rel_path = os.path.relpath(dest_file, temp_dir)
+            copied_files.append((rel_path, cf.dest))
+
+        # Start container in detached mode (detached, interactive, with pseudo-tty)
+        container_name = f"workflow-docker-{os.getpid()}"
+        docker_run_cmd = [
+            "docker", "run", "-d", "-it", "--rm", "--name", container_name,
+            "-w", "/workspace",
+        ]
+
+        # Add volume mounts if configured
+        for vol in docker_config.volumes:
+            docker_run_cmd.extend(["-v", vol])
+
+        docker_run_cmd.extend([image, "sleep", "infinity"])  # Keep container running
+
+        print(f"Starting Docker container with image: {image}")
+        print(f"Git remote: {pivot_remote} -> {repo_url}")
+        print(f"Dev branch: {dev_branch}")
+        print()
+
+        # Start the container
+        result = subprocess.run(docker_run_cmd, cwd=ROOT_DIR)
+        if result.returncode != 0:
+            print("Error: failed to start container", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            # Copy config files into the container using docker cp
+            # Then fix ownership to match the container user
+            for rel_path, dest in copied_files:
+                # Remove any existing file/directory at the destination first
+                rm_cmd = ["docker", "exec", container_name, "rm", "-rf", dest]
+                subprocess.run(rm_cmd, capture_output=True)
+                
+                # Ensure parent directory exists
+                parent_dir = os.path.dirname(dest)
+                if parent_dir:
+                    mkdir_cmd = ["docker", "exec", container_name, "sudo", "mkdir", "-p", parent_dir]
+                    subprocess.run(mkdir_cmd, capture_output=True)
+                
+                cp_cmd = ["docker", "cp", os.path.join(temp_dir, rel_path), f"{container_name}:{dest}"]
+                result = subprocess.run(cp_cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    print(f"Copied {rel_path} to container")
+                else:
+                    print(f"Warning: failed to copy {rel_path} to container: {result.stderr}", file=sys.stderr)
+                    continue
+                # Fix ownership to match container user (username:username) using sudo
+                chown_cmd = ["docker", "exec", container_name, "sudo", "chown", "username:username", dest]
+                chown_result = subprocess.run(chown_cmd, capture_output=True, text=True)
+                if chown_result.returncode != 0:
+                    print(f"Warning: chown failed for {dest}: {chown_result.stderr}", file=sys.stderr)
+                # Set correct permissions on .git-credentials (must be 600 for git to use it)
+                if dest.endswith(".git-credentials"):
+                    chmod_cmd = ["docker", "exec", container_name, "sudo", "chmod", "600", dest]
+                    chmod_result = subprocess.run(chmod_cmd, capture_output=True, text=True)
+                    if chmod_result.returncode != 0:
+                        print(f"Warning: chmod failed for {dest}: {chmod_result.stderr}", file=sys.stderr)
+
+            # Fix git credential helper path in .gitconfig to use container path
+            # The host .gitconfig likely has /home/mrwilson/... paths but container uses /home/username/
+            subprocess.run(
+                ["docker", "exec", container_name, "sed", "-i", 
+                 "s|/home/[^/]*|/home/username|g", "/home/username/.gitconfig"],
+                capture_output=True, text=True
+            )
+
+            # Now exec into the container with the actual workflow
+            # Note: .gitconfig is already copied to /home/username/.gitconfig with credentials
+            clone_and_checkout = [
+                f"git clone --branch {dev_branch} {repo_url} /workspace/gooey",
+                "cd /workspace/gooey",
+                "git submodule update --init --recursive",
+                "exec bash"
+            ]
+            full_shell_cmd = " && ".join(clone_and_checkout)
+
+            exec_cmd = ["docker", "exec", "-it", container_name, "bash", "-lc", full_shell_cmd]
+            # Use subprocess.run instead of os.execvp so we can clean up the container
+            subprocess.run(exec_cmd)
+
+        finally:
+            # Stop the container (will be removed due to --rm)
+            print(f"Stopping container {container_name}...", file=sys.stderr)
+            subprocess.run(["docker", "stop", container_name], capture_output=True)
+
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 def main() -> None:
     """Parse CLI arguments and dispatch to the appropriate command handler.
 
@@ -323,6 +479,10 @@ def main() -> None:
     p_run.add_argument("--jobs", type=int, default=1, help="Number of parallel implementation agents")
     p_run.add_argument("--presubmit-cmd", type=str, default="./do presubmit", help="Command to evaluate correctness")
     p_run.add_argument("--cleanup", action="store_true", help="Remove temporary clones even on failure")
+
+    # docker
+    p_docker = sub.add_parser("docker", parents=[shared], help="Start an interactive Docker container for debugging")
+    p_docker.add_argument("--image", default=None, help="Override the Docker image from .workflow.jsonc")
 
     # replan commands
     sub.add_parser("status", parents=[shared], help="Show plan and execution status")
@@ -412,6 +572,7 @@ def main() -> None:
         "setup": cmd_setup,
         "plan": cmd_plan,
         "run": cmd_run,
+        "docker": cmd_docker,
         "status": cmd_status,
         "validate": cmd_validate,
         "block": cmd_block,
