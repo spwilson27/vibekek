@@ -32,10 +32,17 @@ You are an expert Technical Program Manager. Your task is to analyze a set of te
     - `01_mcp_tool_reliability_recovery` (just the sub-epic directory, missing task file)
     - `phase_4/01_mcp_tool_reliability_recovery/01_agent_search_before_read_policy.md` (don't include phase directory)
 
-    **DO NOT include these files in the DAG:**
-    - `README.md` files (sub-epic documentation, not tasks)
-    - `SUB_EPIC_SUMMARY.md` files (organizational summaries, not tasks)
-    - `review_summary.md` files (review artifacts, not tasks)
+    **DO NOT include these files in the DAG (they are documentation/metadata, not tasks):**
+    - `README.md`
+    - `SUB_EPIC_SUMMARY.md`
+    - `REQUIREMENTS_TRACEABILITY.md`
+    - `REQUIREMENTS_COVERAGE_MAP.md`
+    - `REQUIREMENTS_COVERAGE.md`
+    - `REQUIREMENTS_MATRIX.md`
+    - `IMPLEMENTATION_SUMMARY.md`
+    - `review_summary.md`
+    - `cross_phase_review_summary.md` (and `_pass_1.md`, `_pass_2.md` variants)
+    - `reorder_tasks_summary.md` (and `_pass_1.md`, `_pass_2.md` variants)
 
 2.  **Analyze Dependencies:** Carefully read through each task provided in the `<tasks>` section. Identify strict logical dependencies:
     *   **Data/State Dependency:** Does Task B require the database schema created by Task A?

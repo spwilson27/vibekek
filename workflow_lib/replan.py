@@ -1111,6 +1111,8 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
     Runs all verification checks, then for each failure category:
 
     - **verify-desc-length**: Expands short requirement descriptions.
+    - **verify-master**: Appends missing requirement definitions from extracted
+      docs to ``requirements.md``.
     - **verify-phases**: Assigns unmapped requirements to the best-fit phase
       using AI.
     - **verify-tasks**: Generates new task files to cover unmapped requirements
@@ -1145,6 +1147,12 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
     desc_check = results["checks"].get("verify-desc-length", {})
     if not desc_check.get("passed", True):
         if _fix_description_length(ctx, dry_run=dry_run):
+            fixed_anything = True
+
+    # Fix verify-master failures (add missing requirement definitions to master list)
+    master_check = results["checks"].get("verify-master", {})
+    if not master_check.get("passed", True) and master_check.get("missing_reqs"):
+        if _fix_master_list(master_check["missing_reqs"], dry_run=dry_run):
             fixed_anything = True
 
     # Fix verify-phases failures first (must happen before verify-tasks)
@@ -1193,6 +1201,72 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
         sys.exit(1)
     else:
         print("\nAll checks passing.")
+
+
+def _fix_master_list(missing_reqs: List[str], dry_run: bool = False) -> bool:
+    """Append missing requirement definitions to ``requirements.md``.
+
+    Scans ``docs/plan/requirements/*.md`` for heading-level definitions of
+    the missing IDs and appends the full requirement blocks to the master
+    file.
+
+    :param missing_reqs: List of requirement IDs missing from requirements.md.
+    :param dry_run: If ``True``, print what would be added without writing.
+    :returns: ``True`` if any requirements were added.
+    """
+    req_dir = os.path.join(ROOT_DIR, "docs", "plan", "requirements")
+    master_file = os.path.join(ROOT_DIR, "requirements.md")
+    missing_set = set(missing_reqs)
+
+    if not missing_set:
+        return False
+
+    # Build a regex that matches heading definitions for any of the missing IDs
+    # Pattern: ### **[ID]** Title\n followed by metadata lines until the next
+    # heading or --- separator or end of file.
+    block_pattern = re.compile(
+        r"(###\s+\*\*\[(" + "|".join(re.escape(r) for r in missing_set) +
+        r")\]\*\*.*?)(?=\n###\s|\n---|\Z)",
+        re.DOTALL,
+    )
+
+    found_blocks: Dict[str, str] = {}
+
+    for filename in sorted(os.listdir(req_dir)):
+        if not filename.endswith(".md"):
+            continue
+        filepath = os.path.join(req_dir, filename)
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        for match in block_pattern.finditer(content):
+            req_id = match.group(2)
+            block = match.group(1).strip()
+            if req_id in missing_set and req_id not in found_blocks:
+                found_blocks[req_id] = block
+
+    if not found_blocks:
+        print("  Could not find definition blocks for missing requirements.")
+        return False
+
+    not_found = missing_set - set(found_blocks.keys())
+    if not_found:
+        print(f"  WARNING: Could not find definitions for: {sorted(not_found)}")
+
+    print(f"  Adding {len(found_blocks)} requirement(s) to requirements.md:")
+    for req_id in sorted(found_blocks):
+        print(f"    + [{req_id}]")
+
+    if dry_run:
+        return True
+
+    # Append to requirements.md
+    with open(master_file, "a", encoding="utf-8") as f:
+        f.write("\n")
+        for req_id in sorted(found_blocks):
+            f.write(f"\n{found_blocks[req_id]}\n")
+
+    return True
 
 
 def _fix_dag_references(dry_run: bool = False, ctx: Optional[ProjectContext] = None) -> int:
@@ -1258,13 +1332,7 @@ def _fix_dag_references(dry_run: bool = False, ctx: Optional[ProjectContext] = N
             dag = json.load(f)
 
         # Use the same 2-level discovery as _validate_dag: only sub_epic/*.md
-        # Skip non-task files (READMEs, summaries, etc.)
-        _NON_TASK_FILES = {
-            "README.md",
-            "SUB_EPIC_SUMMARY.md",
-            "REQUIREMENTS_TRACEABILITY.md",
-            "review_summary.md",
-        }
+        from .phases import _NON_TASK_FILES
         on_disk = set()
         for sub_epic in sorted(os.listdir(phase_path)):
             se_path = os.path.join(phase_path, sub_epic)
@@ -1322,6 +1390,47 @@ def _fix_dag_references(dry_run: bool = False, ctx: Optional[ProjectContext] = N
                 json.dump(new_dag, f, indent=2)
                 f.write("\n")
             print(f"  Updated {dag_file}")
+
+    # Pass 3: remove phantom references — DAG keys or dependencies that point
+    # to task files which no longer exist on disk.
+    from .phases import _NON_TASK_FILES as _NTF
+    for phase_dir_name, phase_path, dag_file in _iter_phase_dags():
+        with open(dag_file, "r", encoding="utf-8") as f:
+            dag = json.load(f)
+
+        on_disk = set()
+        for sub_epic in sorted(os.listdir(phase_path)):
+            se_path = os.path.join(phase_path, sub_epic)
+            if not os.path.isdir(se_path):
+                continue
+            for fname in sorted(os.listdir(se_path)):
+                if fname.endswith(".md") and fname not in _NTF:
+                    on_disk.add(f"{sub_epic}/{fname}")
+
+        dag_keys = set(dag.keys())
+        phantom_keys = dag_keys - on_disk
+
+        # Also find phantom deps: dependencies referencing non-existent files
+        all_deps = set()
+        for deps in dag.values():
+            all_deps.update(deps)
+        phantom_deps = all_deps - on_disk
+        all_phantoms = phantom_keys | phantom_deps
+
+        if all_phantoms:
+            for p in sorted(phantom_keys):
+                print(f"  Removing phantom DAG key: {p} in {phase_dir_name}")
+            for p in sorted(phantom_deps - phantom_keys):
+                print(f"  Removing phantom DAG dep: {p} in {phase_dir_name}")
+            new_dag = {k: v for k, v in dag.items() if k not in phantom_keys}
+            for task_id in new_dag:
+                new_dag[task_id] = [d for d in new_dag[task_id] if d not in all_phantoms]
+            if not dry_run:
+                with open(dag_file, "w", encoding="utf-8") as f:
+                    json.dump(new_dag, f, indent=2)
+                    f.write("\n")
+                print(f"  Updated {dag_file}")
+            total_fixes += len(all_phantoms)
 
     if total_fixes > 0:
         print(f"\n=> Fixed {total_fixes} DAG reference(s)")

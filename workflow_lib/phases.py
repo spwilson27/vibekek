@@ -69,6 +69,27 @@ BOLD = "\033[1m"
 from .constants import TOOLS_DIR, DOCS, parse_requirements
 from .context import ProjectContext
 
+# Canonical set of non-task markdown files to exclude from DAG generation,
+# task counting, dependency validation, etc.  Keep this in sync with the
+# ``_NON_TASK_FILES`` set in ``verify.py``.
+_NON_TASK_FILES = {
+    "README.md",
+    "SUB_EPIC_SUMMARY.md",
+    "REQUIREMENTS_TRACEABILITY.md",
+    "REQUIREMENTS_COVERAGE_MAP.md",
+    "REQUIREMENTS_COVERAGE.md",
+    "REQUIREMENTS_MATRIX.md",
+    "IMPLEMENTATION_SUMMARY.md",
+    "review_summary.md",
+    "cross_phase_review_summary.md",
+    "cross_phase_review_summary_pass_1.md",
+    "cross_phase_review_summary_pass_2.md",
+    "reorder_tasks_summary.md",
+    "reorder_tasks_summary_pass_1.md",
+    "reorder_tasks_summary_pass_2.md",
+    "00_index.md",
+}
+
 
 class BasePhase:
     """Abstract base class for all planning phases.
@@ -1134,19 +1155,12 @@ class Phase6BReviewTasks(BasePhase):
             if not sub_epics:
                 return True
 
-            # Skip non-task files (READMEs, summaries, etc.)
-            _NON_TASK_FILES = {
-                "README.md",
-                "SUB_EPIC_SUMMARY.md",
-                "REQUIREMENTS_TRACEABILITY.md",
-                "review_summary.md",
-            }
             tasks_content = ""
             for sub_epic in sorted(sub_epics):
                 sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
                 if not os.path.isdir(sub_epic_dir):
                     continue
-                md_files = [f for f in os.listdir(sub_epic_dir) 
+                md_files = [f for f in os.listdir(sub_epic_dir)
                            if f.endswith(".md") and f not in _NON_TASK_FILES]
 
                 for md_file in sorted(md_files):
@@ -1472,14 +1486,7 @@ class Phase7ADAGGeneration(BasePhase):
 
         for sub_epic in sorted(sub_epics):
             sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-            # Skip non-task files (READMEs, summaries, etc.)
-            _NON_TASK_FILES = {
-                "README.md",
-                "SUB_EPIC_SUMMARY.md",
-                "REQUIREMENTS_TRACEABILITY.md",
-                "review_summary.md",
-            }
-            md_files = [f for f in os.listdir(sub_epic_dir) 
+            md_files = [f for f in os.listdir(sub_epic_dir)
                        if f.endswith(".md") and f not in _NON_TASK_FILES]
 
             for md_file in sorted(md_files):
@@ -1523,17 +1530,9 @@ class Phase7ADAGGeneration(BasePhase):
         component_creators = {}  # component_name -> task_id
         component_consumers: Dict[str, List[str]] = {}  # component_name -> [task_ids]
 
-        # Skip non-task files (READMEs, summaries, etc.)
-        _NON_TASK_FILES = {
-            "README.md",
-            "SUB_EPIC_SUMMARY.md",
-            "REQUIREMENTS_TRACEABILITY.md",
-            "review_summary.md",
-        }
-
         for sub_epic in sorted(sub_epics):
             sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-            md_files = [f for f in os.listdir(sub_epic_dir) 
+            md_files = [f for f in os.listdir(sub_epic_dir)
                        if f.endswith(".md") and f not in _NON_TASK_FILES]
             for md_file in sorted(md_files):
                 task_id = f"{sub_epic}/{md_file}"
@@ -1572,13 +1571,7 @@ class Phase7ADAGGeneration(BasePhase):
         :returns: List of error strings (empty means valid).
         """
         errors = []
-        # Collect all .md files on disk (excluding review/summary files and READMEs)
-        _NON_TASK_FILES = {
-            "README.md",
-            "SUB_EPIC_SUMMARY.md",
-            "REQUIREMENTS_TRACEABILITY.md",
-            "review_summary.md",
-        }
+        # Collect all .md files on disk (excluding non-task files)
         on_disk = set()
         for sub_epic in sorted(os.listdir(phase_dir_path)):
             se_path = os.path.join(phase_dir_path, sub_epic)
@@ -1949,13 +1942,6 @@ class Phase6EDependsOnValidation(BasePhase):
         total_tasks = 0
         tasks_with_deps = 0
         all_dependencies = []
-
-        _NON_TASK_FILES = {
-            "README.md",
-            "SUB_EPIC_SUMMARY.md",
-            "REQUIREMENTS_TRACEABILITY.md",
-            "review_summary.md",
-        }
 
         for phase_id in sorted(phase_dirs):
             phase_dir_path = os.path.join(tasks_dir, phase_id)

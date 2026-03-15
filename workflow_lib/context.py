@@ -801,19 +801,8 @@ class ProjectContext:
         :returns: Count of task files (excluding READMEs, summaries, etc.).
         :rtype: int
         """
-        # Non-task files to exclude
-        _NON_TASK_FILES = {
-            "README.md",
-            "SUB_EPIC_SUMMARY.md",
-            "REQUIREMENTS_TRACEABILITY.md",
-            "review_summary.md",
-            "cross_phase_review_summary.md",
-            "reorder_tasks_summary.md",
-            "cross_phase_review_summary_pass_1.md",
-            "cross_phase_review_summary_pass_2.md",
-            "reorder_tasks_summary_pass_1.md",
-            "reorder_tasks_summary_pass_2.md",
-        }
+        # Import the canonical non-task files list from phases module
+        from .phases import _NON_TASK_FILES
         count = 0
         for root, dirs, files in os.walk(directory):
             for f in files:

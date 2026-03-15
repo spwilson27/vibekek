@@ -54,7 +54,18 @@ _NON_TASK_FILES = {
     "README.md",
     "SUB_EPIC_SUMMARY.md",
     "REQUIREMENTS_TRACEABILITY.md",
+    "REQUIREMENTS_COVERAGE_MAP.md",
+    "REQUIREMENTS_COVERAGE.md",
+    "REQUIREMENTS_MATRIX.md",
+    "IMPLEMENTATION_SUMMARY.md",
     "review_summary.md",
+    "cross_phase_review_summary.md",
+    "cross_phase_review_summary_pass_1.md",
+    "cross_phase_review_summary_pass_2.md",
+    "reorder_tasks_summary.md",
+    "reorder_tasks_summary_pass_1.md",
+    "reorder_tasks_summary_pass_2.md",
+    "00_index.md",
 }
 
 
@@ -72,6 +83,28 @@ def parse_requirements(file_path: str) -> Set[str]:
         content = f.read()
 
     return set(REQ_REGEX.findall(content))
+
+
+# Regex to match requirement *definitions* (heading format: ### **[ID]** ...)
+_REQ_DEFINITION_REGEX = re.compile(r"^###\s+\*\*\[([A-Z0-9_]+-[A-Z0-9\._-]+)\]\*\*", re.MULTILINE)
+
+
+def parse_requirement_definitions(file_path: str) -> Set[str]:
+    """Extracts only *defined* requirement IDs (heading declarations) from a file.
+
+    Unlike :func:`parse_requirements` which captures every bracketed ID
+    (including inline prose references like acceptance-criteria sub-IDs,
+    risk IDs, and template placeholders), this function only returns IDs
+    that appear as formal requirement headings (``### **[ID]** ...``).
+    """
+    if not os.path.exists(file_path):
+        print(f"Error: File not found: {file_path}")
+        return set()
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    return set(_REQ_DEFINITION_REGEX.findall(content))
 
 
 # ============================================================================
@@ -217,7 +250,11 @@ def verify_doc(source_file: str, extracted_file: str) -> int:
 
 
 def verify_master(master_file: str, requirements_dir: str) -> int:
-    """Verifies that all requirements from requirements_dir exist in the master_file."""
+    """Verifies that all requirements from requirements_dir exist in the master_file.
+
+    Only *defined* requirements (heading declarations ``### **[ID]** ...``)
+    from the extracted docs are checked, not inline prose references.
+    """
     print(f"Verifying {requirements_dir} against {master_file}...")
 
     all_extracted_reqs = set()
@@ -228,7 +265,7 @@ def verify_master(master_file: str, requirements_dir: str) -> int:
     for filename in os.listdir(requirements_dir):
         if filename.endswith(".md"):
             file_path = os.path.join(requirements_dir, filename)
-            reqs = parse_requirements(file_path)
+            reqs = parse_requirement_definitions(file_path)
             all_extracted_reqs.update(reqs)
 
     master_reqs = parse_requirements(master_file)
