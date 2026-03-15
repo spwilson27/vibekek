@@ -6,6 +6,7 @@ This test verifies that:
 2. The RAG server can be started in a cloned repository
 3. The workflow_lib.executor module properly integrates RAG functionality
 4. The full e2e workflow works with RAG server auto-startup
+5. The RAG config option properly enables/disables the integration
 
 Usage:
     python .tools/tests/test_rag_e2e.py
@@ -26,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from workflow_lib.rag_integration import get_rag_help_text, start_rag_server, stop_rag_server
 from workflow_lib.executor import get_rag_help_text as executor_get_rag_help
+from workflow_lib.config import get_rag_enabled, load_config
 
 
 def test_rag_help_injected_in_executor():
@@ -209,6 +211,74 @@ def test_rag_server_with_container_name_param():
     print("✓ start_rag_server has correct parameters including container_name")
 
 
+def test_get_rag_enabled_default():
+    """Test that get_rag_enabled returns True by default (backward compatibility)."""
+    # When "rag" key is not present, should default to True
+    result = get_rag_enabled()
+    # Note: This test depends on the actual config file
+    # If .workflow.jsonc has "rag": false, this will be False
+    # If .workflow.jsonc has "rag": true or no key, this will be True
+    assert isinstance(result, bool)
+    print(f"✓ get_rag_enabled returns boolean: {result}")
+
+
+def test_get_rag_enabled_with_config():
+    """Test that get_rag_enabled respects config file setting."""
+    # This test verifies the function works with actual config
+    config = load_config()
+    rag_setting = config.get("rag")
+    result = get_rag_enabled()
+    
+    # If rag is explicitly set, result should match
+    # If not set, result should be True (default)
+    if rag_setting is None:
+        assert result is True, "Default should be True when key is absent"
+    else:
+        assert result == bool(rag_setting), "Should match config value"
+    
+    print(f"✓ get_rag_enabled respects config (rag={rag_setting}, result={result})")
+
+
+def test_executor_checks_rag_config():
+    """Test that executor.py checks get_rag_enabled() before RAG operations."""
+    executor_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "workflow_lib", "executor.py"
+    )
+    
+    with open(executor_path, "r") as f:
+        content = f.read()
+    
+    # Check for conditional RAG help injection
+    assert "if get_rag_enabled():" in content
+    
+    # Check for conditional RAG server startup
+    # Should have at least 2 occurrences (Docker and non-Docker paths)
+    lines = content.split('\n')
+    conditional_rag_starts = [
+        i for i, line in enumerate(lines) 
+        if 'if get_rag_enabled()' in line and 'start_rag_server' in ''.join(lines[i:i+3])
+    ]
+    
+    assert len(conditional_rag_starts) >= 2, \
+        f"Expected at least 2 conditional RAG server starts, found {len(conditional_rag_starts)}"
+    
+    print(f"✓ executor.py checks get_rag_enabled() ({len(conditional_rag_starts)} conditional start sites)")
+
+
+def test_config_imports_rag_enabled():
+    """Test that config module exports get_rag_enabled."""
+    from workflow_lib.config import get_rag_enabled as config_get_rag_enabled
+    
+    assert callable(config_get_rag_enabled)
+    
+    # Verify it returns a boolean
+    result = config_get_rag_enabled()
+    assert isinstance(result, bool)
+    
+    print("✓ config.get_rag_enabled() is callable and returns boolean")
+
+
 if __name__ == "__main__":
     # Run tests
     tests = [
@@ -221,6 +291,10 @@ if __name__ == "__main__":
         test_executor_starts_rag_server,
         test_rag_help_text_length,
         test_rag_server_with_container_name_param,
+        test_get_rag_enabled_default,
+        test_get_rag_enabled_with_config,
+        test_executor_checks_rag_config,
+        test_config_imports_rag_enabled,
     ]
     
     passed = 0

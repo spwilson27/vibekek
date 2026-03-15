@@ -282,6 +282,7 @@ class TestRunAgentWithPool:
         with patch("workflow_lib.executor.make_runner", return_value=runner), \
              patch("workflow_lib.executor.get_project_images", return_value=[]), \
              patch("workflow_lib.config.get_config_defaults", return_value={}), \
+             patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
              patch("builtins.open", mock_open(read_data="hello {task_name}")):
             result = run_agent("Impl", "implement_task.md", {"task_name": "t", "phase_filename": "p"}, "/tmp", agent_pool=pool)
 
@@ -312,6 +313,7 @@ class TestRunAgentWithPool:
         with patch("workflow_lib.executor.make_runner", return_value=mock_runner), \
              patch("workflow_lib.executor.get_project_images", return_value=[]), \
              patch("workflow_lib.config.get_config_defaults", return_value={}), \
+             patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
              patch("builtins.open", mock_open(read_data="hello {task_name}")):
             result = run_agent("Impl", "implement_task.md", {"task_name": "t", "phase_filename": "p"}, "/tmp", agent_pool=pool)
 
@@ -345,6 +347,7 @@ class TestRunAgentWithPool:
              patch("workflow_lib.executor.run_ai_command", side_effect=fake_run_ai_command), \
              patch("workflow_lib.executor.get_project_images", return_value=[]), \
              patch("workflow_lib.config.get_config_defaults", return_value={}), \
+             patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
              patch("builtins.open", mock_open(read_data="hello {task_name}")):
             result = run_agent(
                 "Impl", "implement_task.md",
@@ -384,6 +387,7 @@ class TestRunAgentWithPool:
              patch("workflow_lib.executor.run_ai_command", return_value=(0, "")), \
              patch("workflow_lib.executor.get_project_images", return_value=[]), \
              patch("workflow_lib.config.get_config_defaults", return_value={}), \
+             patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
              patch("builtins.open", mock_open(read_data="hello {task_name}")):
             run_agent(
                 "Impl", "implement_task.md",
@@ -896,6 +900,7 @@ class TestExhaustedCapacityE2E:
         with patch("workflow_lib.executor.make_runner", side_effect=fake_make_runner), \
              patch("workflow_lib.executor.get_project_images", return_value=[]), \
              patch("workflow_lib.config.get_config_defaults", return_value={}), \
+             patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
              patch("workflow_lib.executor._set_dir_owner"), \
              patch("builtins.open", mock_open(read_data="implement {task_name}")):
             result = run_agent(

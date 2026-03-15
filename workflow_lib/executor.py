@@ -44,7 +44,7 @@ from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR, REPLAN_STATE_FILE, STATE_
 from .context import ProjectContext
 from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state, load_dags, get_tasks_dir
-from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config
+from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config, get_rag_enabled
 from .discord import notify_failure
 from .dashboard import make_dashboard
 from .agent_pool import AgentPoolManager, QUOTA_RETURN_CODE, QUOTA_PATTERNS, QUOTA_TRANSIENT_PATTERNS, parse_quota_reset_seconds
@@ -736,9 +736,10 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
     for k, v in task_context.items():
         prompt = prompt.replace(f"{{{k}}}", str(v))
 
-    # Inject RAG MCP tool help text into every agent prompt
-    rag_help = get_rag_help_text()
-    prompt = f"{prompt}\n\n{rag_help}"
+    # Inject RAG MCP tool help text into every agent prompt (if enabled)
+    if get_rag_enabled():
+        rag_help = get_rag_help_text()
+        prompt = f"{prompt}\n\n{rag_help}"
 
     msg = f"[{agent_type}] Starting agent in {cwd}..."
     if dashboard:
@@ -1044,8 +1045,9 @@ def _stage_clone(
             raise RuntimeError(f"Clone/checkout failed: {err}") from e
         cwd = "/workspace"
         
-        # Start RAG MCP server in the container workspace
-        start_rag_server("/workspace", verbose=True, container_name=_container_name)
+        # Start RAG MCP server in the container workspace (if enabled)
+        if get_rag_enabled():
+            start_rag_server("/workspace", verbose=True, container_name=_container_name)
     else:
         _log(f"      [{stage_label}] Cloning repository to {tmpdir} on {branch_name}...")
         if dashboard:
@@ -1064,8 +1066,9 @@ def _stage_clone(
             raise RuntimeError(f"Clone/checkout failed: {err}") from e
         cwd = tmpdir
         
-        # Start RAG MCP server in the cloned repository
-        start_rag_server(tmpdir, verbose=True)
+        # Start RAG MCP server in the cloned repository (if enabled)
+        if get_rag_enabled():
+            start_rag_server(tmpdir, verbose=True)
 
     return tmpdir, _container_name, env_file, cwd
 

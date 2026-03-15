@@ -45,7 +45,8 @@ def _call_run_agent(pool, dashboard=None) -> bool:
          patch("workflow_lib.executor.get_project_images", return_value=[]), \
          patch("workflow_lib.executor._set_dir_owner"), \
          patch("workflow_lib.executor._set_cargo_target_dir"), \
-         patch("workflow_lib.executor._get_cargo_target_dir", return_value=None):
+         patch("workflow_lib.executor._get_cargo_target_dir", return_value=None), \
+         patch("workflow_lib.executor.get_rag_enabled", return_value=False):
         return run_agent(
             "Review", "review_task.md", context,
             "/tmp/fake_cwd", backend="gemini",

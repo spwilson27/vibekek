@@ -4,6 +4,17 @@
   // it after each successful merge so agents have up-to-date code search.
   "serena": true,
 
+  // Enable RAG MCP server integration for AI agents.
+  // When true (default), the workflow automatically:
+  //   1. Starts a RAG MCP server in each cloned repository
+  //   2. Injects RAG CLI help text into every agent prompt
+  // This provides agents with powerful code search capabilities including:
+  //   - Natural language RAG search ("how does auth work?")
+  //   - Semantic symbol search (definitions, references)
+  //   - Call hierarchy analysis (callers/callees)
+  // Set to false to disable RAG integration and reduce overhead.
+  "rag": true,
+
   // AI CLI backend: "gemini", "claude", "opencode", "copilot", "cline", "aider", "codex", or "qwen"
   // "backend": "gemini",
 
