@@ -4,7 +4,8 @@
 phase.  It owns:
 
 * Directory paths derived from the project root.
-* The AI runner (Gemini, Claude, or Copilot) used to call external CLI tools.
+* The AI runner (Gemini, Claude, Codex, Copilot, or another supported backend)
+  used to call external CLI tools.
 * Persistent planning state read from / written to ``GEN_STATE_FILE``.
 * Helper utilities for prompt formatting and workspace snapshotting.
 """
@@ -872,4 +873,3 @@ class ProjectContext:
                     if re.match(r'^#{1,2}\s+', line):
                         headers.append(line.strip())
         return headers
-

@@ -6,7 +6,7 @@ import tempfile
 import pytest
 from unittest.mock import patch
 
-BLOCKED_COMMANDS = {"gemini", "claude", "copilot"}
+BLOCKED_COMMANDS = {"gemini", "claude", "copilot", "opencode", "cline", "aider", "codex", "qwen"}
 
 # Save before any mocking so fixtures can call real git regardless of subprocess patches.
 _real_subprocess_run = subprocess.run

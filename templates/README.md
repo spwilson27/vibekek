@@ -17,7 +17,7 @@ This directory contains template files for setting up new projects with the Weav
 
 The included `Dockerfile` provides a complete development environment with:
 
-- AI CLI tools (Claude, Gemini, Qwen Code)
+- AI CLI tools (Claude, Codex, Gemini, Qwen Code)
 - Rust toolchain (1.82.0)
 - Python 3 with common packages
 - Node.js LTS
@@ -25,7 +25,7 @@ The included `Dockerfile` provides a complete development environment with:
 
 ### Non-Root User
 
-AI CLI tools require a non-root user to run with `--dangerously-skip-permissions` for security reasons. The Dockerfile uses build arguments to configure this:
+AI CLI tools require a non-root user for their less-restricted execution modes. The Dockerfile uses build arguments to configure this:
 
 ```bash
 # Build with defaults (user: username, UID: 1000)
@@ -48,6 +48,7 @@ To enable Docker-based execution, add a `docker` section to your `.workflow.json
     "image": "weaver-reloaded:dev",
     "copy_files": [
       { "src": "/home/<your-user>/.claude.json", "dest": "/home/username/.claude.json" },
+      { "src": "/home/<your-user>/.codex/config.toml", "dest": "/home/username/.codex/config.toml" },
       { "src": "/home/<your-user>/.gemini/oauth_creds.json", "dest": "/home/username/.gemini/oauth_creds.json" },
       { "src": "/home/<your-user>/.gitconfig", "dest": "/home/username/.gitconfig" },
       { "src": "/home/<your-user>/.git-credentials", "dest": "/home/username/.git-credentials" }
@@ -78,7 +79,8 @@ Individual agents can override or extend the global Docker config:
       "docker": {
         "image": "weaver-reloaded:dev",
         "copy_files": [
-          { "src": "/home/sub/.gemini/oauth_creds.json", "dest": "/home/weaver/.gemini/oauth_creds.json" }
+          { "src": "/home/sub/.gemini/oauth_creds.json", "dest": "/home/weaver/.gemini/oauth_creds.json" },
+          { "src": "/home/sub/.codex/config.toml", "dest": "/home/weaver/.codex/config.toml" }
         ]
       }
     }

@@ -53,7 +53,7 @@ flowchart TD
 |---|---|
 | Python 3.9+ | Runtime |
 | `git` | Worktree and branch management |
-| `gemini` CLI (or `claude` / `copilot` / `opencode`) | AI backend |
+| `gemini` CLI (or `claude` / `codex` / `copilot` / `opencode` / `cline` / `aider` / `qwen`) | AI backend |
 | `uvx` *(optional)* | Serena MCP integration |
 
 ---
@@ -157,7 +157,7 @@ Phase slugs: `3a-conflicts`, `3b-adversarial`, `4-merge`, `4-scope`, `4-order`, 
 python .tools/workflow.py plan --backend claude
 ```
 
-Available backends: `gemini` (default), `claude`, `copilot`, `opencode`.
+Available backends: `gemini` (default), `claude`, `codex`, `copilot`, `opencode`, `cline`, `aider`, `qwen`.
 
 **Control retries and timeout:**
 
@@ -397,7 +397,7 @@ Rescans tasks, checks requirement coverage, rebuilds the DAG, and validates.
     executor.py        # Parallel DAG execution engine
     replan.py          # Mid-run replan commands
     context.py         # Shared project context + AI runner wrapper
-    runners.py         # AI backend adapters (Gemini, Claude, Copilot, Opencode)
+    runners.py         # AI backend adapters (Gemini, Claude, Codex, Copilot, Opencode, Cline, Aider, Qwen)
     state.py           # Workflow + replan state persistence
     config.py          # .workflow.jsonc loader
     constants.py       # Paths + document catalogue

@@ -1,7 +1,7 @@
 """AI CLI runner abstractions.
 
-Each runner wraps a specific AI command-line tool (Gemini, Claude, Copilot)
-behind a common interface so that the rest of the workflow can switch
+Each runner wraps a specific AI command-line tool (Gemini, Claude, Codex,
+Copilot, and others) behind a common interface so that the rest of the workflow can switch
 backends without changing its logic.
 
 Runner selection is handled at construction time in :mod:`workflow_lib.cli`

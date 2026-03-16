@@ -141,8 +141,8 @@
 //   - USERNAME (default: weaver) - the non-root user for AI CLI tools
 //   - USER_UID (default: 1000) - the UID for the non-root user
 //
-// AI CLIs (Claude, Gemini, Qwen) refuse --dangerously-skip-permissions when
-// running as root for security reasons, so a non-root user is required.
+// AI CLIs (Claude, Gemini, Codex, Qwen) refuse sandbox-bypass or auto-permission
+// modes when running as root for security reasons, so a non-root user is required.
 //
 // Build your image with:
 //   docker build --build-arg USERNAME=username --build-arg USER_UID=1000 -t <image>:<tag> .
@@ -153,6 +153,7 @@
 //   "image": "weaver-reloaded:dev",
 //   "copy_files": [
 //     { "src": "/home/<user>/.claude.json", "dest": "/home/username/.claude.json" },
+//     { "src": "/home/<user>/.codex/config.toml", "dest": "/home/username/.codex/config.toml" },
 //     { "src": "/home/<user>/.gemini/oauth_creds.json", "dest": "/home/username/.gemini/oauth_creds.json" },
 //     { "src": "/home/<user>/.gemini/settings.json", "dest": "/home/username/.gemini/settings.json" },
 //     { "src": "/home/<user>/.qwen/settings.json", "dest": "/home/username/.qwen/settings.json" },

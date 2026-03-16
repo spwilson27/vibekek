@@ -3,7 +3,7 @@
 # Build with: docker build -t <image-name>:<tag> .
 # 
 # The USERNAME and USER_UID build arguments allow customizing the non-root user.
-# AI CLI tools (Claude, Gemini, Qwen) require a non-root user to run with
+# AI CLI tools (Claude, Gemini, Codex, Qwen) require a non-root user to run with
 # --dangerously-skip-permissions for security reasons.
 #
 # Example:
@@ -63,6 +63,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends capnproto \
 # ─── AI CLIs (installed globally as root so all users can invoke them) ───────
 RUN npm install -g \
     @anthropic-ai/claude-code \
+    @openai/codex \
     @google/gemini-cli \
     @qwen-code/qwen-code
 
@@ -104,12 +105,12 @@ RUN pip3 install --break-system-packages -r /tmp/requirements.txt \
   && rm /tmp/requirements.txt
 
 # ─── Non-root user for AI CLI tools ──────────────────────────────────────────
-# AI CLIs (Claude, Gemini, Qwen) refuse --dangerously-skip-permissions when
-# running as root for security reasons. Create a non-root user so the workflow
-# can run agents inside Docker containers.
+# AI CLIs (Claude, Gemini, Codex, Qwen) refuse sandbox-bypass or auto-permission
+# modes when running as root. Create a non-root user so the workflow can run
+# agents inside Docker containers.
 RUN useradd -m -s /bin/bash -u ${USER_UID} ${USERNAME} \
   && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
-  && mkdir -p /home/${USERNAME}/.claude /home/${USERNAME}/.gemini /home/${USERNAME}/.qwen \
+  && mkdir -p /home/${USERNAME}/.claude /home/${USERNAME}/.codex /home/${USERNAME}/.gemini /home/${USERNAME}/.qwen \
   && chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
 
 # ─── Working directory ───────────────────────────────────────────────────────
