@@ -319,8 +319,12 @@ class TestProcessTaskWithRAGAndDocker:
                 result.stdout = ""
             return result
 
+        def fake_start_task_container(container_name, *args, **kwargs):
+            # Register the container name in the module's active set
+            executor_mod._active_containers.add(container_name)
+
         with patch("workflow_lib.executor._write_container_env_file", return_value="/tmp/test.env"), \
-             patch("workflow_lib.executor._start_task_container"), \
+             patch("workflow_lib.executor._start_task_container", side_effect=fake_start_task_container), \
              patch("workflow_lib.executor._stop_task_container"), \
              patch("workflow_lib.executor._docker_exec", side_effect=fake_docker_exec), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
@@ -494,6 +498,9 @@ class TestStartTaskContainer:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
+            # Make files exist for copy_files validation
+            if cmd[:3] == ["sudo", "test", "-e"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=fake_run):

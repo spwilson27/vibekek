@@ -4074,7 +4074,8 @@ class TestDashboardUpdateLastLine:
         with Dashboard(log_file=io.StringIO()) as d:
             d.set_agent("t1", "Generate", "running", "")
             d.update_last_line("t1", "new output line")
-            lines = list(d._agents["t1"][2])
+            _cmd, _st, lines_deque, _started, _name = d._agents["t1"]
+            lines = list(lines_deque)
             assert any("new output line" in t for _, t in lines)
 
     def test_update_last_line_preserves_command_and_status(self):
@@ -4919,6 +4920,8 @@ class TestSoftInterrupt:
              patch('workflow_lib.executor.get_project_context', return_value="ctx"), \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
              patch('workflow_lib.executor.get_memory_context', return_value="mem"), \
+             patch('workflow_lib.executor.get_sccache_config', return_value=None), \
+             patch('workflow_lib.executor.get_sccache_dist_config', return_value=None), \
              patch('subprocess.run', side_effect=fake_subprocess_run), \
              patch('tempfile.mkdtemp', return_value="/tmp/fake"), \
              patch('os.chmod'), \
