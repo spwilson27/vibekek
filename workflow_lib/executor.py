@@ -345,6 +345,7 @@ def _start_task_container(
     for cf in dc.copy_files:
         result = subprocess.run(["sudo", "test", "-e", cf.src], check=False)
         if result.returncode != 0:
+            log(f"      [!] docker copy_files src does not exist: {cf.src!r}")
             raise FileNotFoundError(f"docker copy_files src does not exist: {cf.src!r}")
         if cf.dest in mounted_dests:
             _warnings.warn(
@@ -396,15 +397,40 @@ def _start_task_container(
         _active_containers.add(container_name)
     log(f"      [docker] Container {container_name} registered in _active_containers")
 
+    # Verify container is running after creation
+    verify_res = subprocess.run(
+        ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+        capture_output=True, text=True, check=False
+    )
+    if verify_res.returncode != 0 or verify_res.stdout.strip() != "true":
+        log(f"      [!] Container {container_name} failed to start or exited immediately")
+        with _active_containers_lock:
+            _active_containers.discard(container_name)
+        raise RuntimeError(f"Container {container_name} is not running after creation")
+    log(f"      [docker] Container {container_name} verified as running")
+
     # Copy files into the container after it starts to avoid permission issues
     # with bind-mounted files (e.g. .git-credentials with mode 0600)
     for cf in copy_files_to_cp:
+        # Verify container still exists before each copy operation
+        check_res = subprocess.run(
+            ["docker", "ps", "-q", "--filter", f"name=^{container_name}$"],
+            capture_output=True, text=True, check=False
+        )
+        if not check_res.stdout.strip():
+            log(f"      [!] Container {container_name} disappeared during copy_files loop")
+            with _active_containers_lock:
+                _active_containers.discard(container_name)
+            raise RuntimeError(f"Container {container_name} disappeared during file copy")
+        
         # Ensure parent directory exists
         parent_dir = os.path.dirname(cf.dest)
         if parent_dir:
             mkdir_cmd = ["docker", "exec", "-i", "--workdir", "/workspace",
                         container_name, "sudo", "mkdir", "-p", parent_dir]
-            subprocess.run(mkdir_cmd, capture_output=True, check=False)
+            mkdir_result = subprocess.run(mkdir_cmd, capture_output=True, text=True, check=False)
+            if mkdir_result.returncode != 0:
+                log(f"      [!] docker exec mkdir failed: {mkdir_result.stderr.strip()}")
         # Copy the file (use sudo to read files owned by other users)
         cp_cmd = ["sudo", "docker", "cp", cf.src, f"{container_name}:{cf.dest}"]
         result = subprocess.run(cp_cmd, capture_output=True, text=True, check=False)
@@ -427,6 +453,18 @@ def _start_task_container(
                             f"{container_user}:{container_user}",
                             cf.dest, parent_dir]
                 subprocess.run(chown_cmd, capture_output=True, check=False)
+
+    # Final verification before returning to caller
+    final_check = subprocess.run(
+        ["docker", "ps", "-q", "--filter", f"name=^{container_name}$"],
+        capture_output=True, text=True, check=False
+    )
+    if not final_check.stdout.strip():
+        log(f"      [!] Container {container_name} disappeared after copy_files loop")
+        with _active_containers_lock:
+            _active_containers.discard(container_name)
+        raise RuntimeError(f"Container {container_name} disappeared before git clone")
+    log(f"      [docker] Container {container_name} verified after copy_files loop")
 
 
 def _stop_task_container(container_name: str, log: Callable) -> None:
@@ -1193,6 +1231,18 @@ def _stage_clone(
         _log(f"      [{stage_label}] Cloning repository into container...")
         if dashboard:
             dashboard.set_agent(full_task_id, stage_label, "cloning", "")
+        
+        # Verify container exists before git clone (defensive check)
+        container_check = subprocess.run(
+            ["docker", "ps", "-q", "--filter", f"name=^{_container_name}$"],
+            capture_output=True, text=True, check=False
+        )
+        if not container_check.stdout.strip():
+            _log(f"      [!] Container {_container_name} not found before git clone")
+            _stop_task_container(_container_name, _log)
+            raise RuntimeError(f"Container {_container_name} disappeared before git clone")
+        _log(f"      [{stage_label}] Container {_container_name} verified before git clone")
+        
         try:
             _docker_exec(_container_name, ["git", "clone", clone_remote, "/workspace"],
                          env_file=env_file, check=True, log=_log)
@@ -2335,6 +2385,57 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
         remote_url = None
 
     docker_config = get_docker_config()
+
+    # Validate ALL copy_files sources exist on the host BEFORE starting execution
+    # This includes global docker config AND per-agent docker config overrides
+    # to fail fast if any required files are missing, preventing mid-execution failures
+    from .config import get_agent_pool_configs
+    all_docker_configs = []
+    if docker_config:
+        all_docker_configs.append(("global", docker_config))
+    
+    # Add per-agent docker configs (may override or extend global config)
+    try:
+        agent_configs = get_agent_pool_configs()
+        for agent in agent_configs:
+            if agent.docker_config:
+                all_docker_configs.append((agent.name, agent.docker_config))
+    except Exception:
+        pass  # Agents may not be configured
+    
+    # Only validate if there are copy_files to check
+    has_copy_files = any(cfg.copy_files for _, cfg in all_docker_configs)
+    
+    if has_copy_files:
+        dashboard.log("=> Validating docker copy_files sources...")
+        missing_files = {}
+        checked_files = set()
+        
+        for cfg_label, cfg in all_docker_configs:
+            for cf in cfg.copy_files:
+                if cf.src in checked_files:
+                    continue  # Already checked this file
+                checked_files.add(cf.src)
+                
+                # Use sudo to check existence (file may exist but be owned by another user)
+                result = subprocess.run(["sudo", "test", "-e", cf.src], check=False)
+                if result.returncode != 0:
+                    if cf.src not in missing_files:
+                        missing_files[cf.src] = []
+                    missing_files[cf.src].append(cfg_label)
+        
+        if missing_files:
+            dashboard.log(f"[!] FATAL: {len(missing_files)} docker copy_files source(s) do not exist:")
+            for path, configs in missing_files.items():
+                dashboard.log(f"    - {path} (required by: {', '.join(configs)})")
+            dashboard.log("[!] Fix the missing file(s) or update docker configuration, then re-run.")
+            notify_failure("DAG execution aborted: docker copy_files sources missing",
+                          context="\n".join(f"Missing: {p} (required by: {', '.join(configs)})" 
+                                          for p, configs in missing_files.items()))
+            sys.exit(1)
+        
+        total_files = len(checked_files)
+        dashboard.log(f"   All {total_files} copy_files sources validated across {len(all_docker_configs)} config(s).")
 
     if serena_enabled:
         # Ensure .mcp.json exists at project root (copy from template if missing)
