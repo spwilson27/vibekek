@@ -16,6 +16,7 @@ Example ``.workflow.jsonc``::
 import os
 import re
 import json
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -50,8 +51,7 @@ def load_config() -> Dict[str, Any]:
     cfg = _config_file()
     if not os.path.exists(cfg):
         return {}
-    with open(cfg, "r", encoding="utf-8") as f:
-        raw = f.read()
+    raw = Path(cfg).read_text(encoding="utf-8")
     # Strip // line comments (only when // appears at start of line or after whitespace)
     # and trailing commas before parsing. Be careful not to strip // inside strings (e.g., URLs).
     stripped = re.sub(r"(?m)^\s*//[^\n]*", "", raw)  # Only strip // at start of lines

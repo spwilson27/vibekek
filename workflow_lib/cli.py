@@ -86,7 +86,7 @@ from .executor import (
     _write_container_env_file,
 )
 from .dashboard import make_dashboard, _DashboardStream
-from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override, set_agent_context_limit, get_docker_config, get_sccache_config, get_sccache_dist_config, get_sccache_services_config
+from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override, set_agent_context_limit, get_docker_config, get_sccache_config, get_sccache_dist_config, get_sccache_services_config, ensure_sccache_services
 from .agent_pool import AgentPoolManager, DockerConfig
 from .state import load_workflow_state, load_dags, get_tasks_dir, restore_state_from_branch
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner, QwenRunner, VALID_BACKENDS
@@ -364,6 +364,16 @@ def cmd_docker(args: argparse.Namespace) -> None:
     print(f"Dev branch: {dev_branch}")
     print()
 
+    if configure_containers and (
+        (sccache_config is not None and sccache_config.enabled) or
+        (sccache_dist_config is not None and sccache_dist_config.enabled)
+    ):
+        sccache_ok, sccache_dist_ok = ensure_sccache_services()
+        if sccache_config is not None and sccache_config.enabled and not sccache_ok:
+            print("Warning: failed to auto-start the host sccache server via .tools/start-sccache.sh", file=sys.stderr)
+        if sccache_dist_config is not None and sccache_dist_config.enabled and not sccache_dist_ok:
+            print("Warning: failed to auto-start the host sccache-dist scheduler via .tools/start-sccache-dist.sh", file=sys.stderr)
+
     with tempfile.TemporaryDirectory(prefix="workflow-docker-") as temp_dir:
         env_file = _write_container_env_file(temp_dir)
         _start_task_container(
@@ -412,6 +422,26 @@ def cmd_docker(args: argparse.Namespace) -> None:
                 else:
                     print(
                         f"Warning: expected {route_var}={route_target} inside the Docker container",
+                        file=sys.stderr,
+                    )
+
+            if (
+                configure_containers and
+                sccache_config is not None and
+                sccache_config.enabled and
+                route_var == "SCCACHE_SERVER"
+            ):
+                stats_result = _docker_exec(
+                    container_name,
+                    ["bash", "-lc", "sccache --show-stats >/dev/null"],
+                    env_file=env_file,
+                    capture=True,
+                )
+                if stats_result.returncode == 0:
+                    print("      [sccache] Host server reachable from container")
+                else:
+                    print(
+                        "Warning: sccache could not reach the host server from inside the Docker container",
                         file=sys.stderr,
                     )
 

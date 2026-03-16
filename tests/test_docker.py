@@ -1186,6 +1186,7 @@ class TestCmdDocker:
             MagicMock(returncode=0, stdout="/usr/local/cargo/bin/sccache\n", stderr=""),
             MagicMock(returncode=0, stdout="", stderr=""),
             MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
         ]
 
         def fake_run(cmd, **kwargs):
@@ -1198,6 +1199,7 @@ class TestCmdDocker:
              patch.object(cli_mod, "get_sccache_config", return_value=sccache_cfg), \
              patch.object(cli_mod, "get_sccache_dist_config", return_value=None), \
              patch.object(cli_mod, "get_sccache_services_config", return_value=MagicMock(configure_containers=True)), \
+             patch.object(cli_mod, "ensure_sccache_services", return_value=(True, True)) as mock_ensure, \
              patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
              patch.object(cli_mod, "_write_container_env_file", return_value="/tmp/container.env"), \
              patch.object(cli_mod, "_start_task_container") as mock_start, \
@@ -1209,6 +1211,7 @@ class TestCmdDocker:
             cmd_docker(args)
 
         mock_start.assert_called_once()
+        mock_ensure.assert_called_once()
         _, kwargs = mock_start.call_args
         assert kwargs["sccache_config"] == sccache_cfg
         assert kwargs["configure_containers"] is True
@@ -1312,6 +1315,8 @@ class TestCmdDocker:
             cmd = args[1]
             if cmd == ["bash", "-lc", "command -v sccache"]:
                 return MagicMock(returncode=0, stdout="/usr/local/cargo/bin/sccache\n", stderr="")
+            if cmd == ["bash", "-lc", "sccache --show-stats >/dev/null"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
@@ -1320,6 +1325,7 @@ class TestCmdDocker:
              patch.object(cli_mod, "get_sccache_config", return_value=sccache_cfg), \
              patch.object(cli_mod, "get_sccache_dist_config", return_value=None), \
              patch.object(cli_mod, "get_sccache_services_config", return_value=MagicMock(configure_containers=True)), \
+             patch.object(cli_mod, "ensure_sccache_services", return_value=(True, True)), \
              patch.object(cli_mod, "_write_container_env_file", return_value="/tmp/container.env"), \
              patch.object(cli_mod, "_start_task_container"), \
              patch.object(cli_mod, "_stop_task_container"), \
@@ -1337,6 +1343,7 @@ class TestCmdDocker:
         assert route_checks
         assert 'test "$RUSTC_WRAPPER" = "sccache"' in route_checks[0][2]
         assert 'test "${SCCACHE_SERVER}" = host.docker.internal:6301' in route_checks[0][2]
+        assert any(args[1] == ["bash", "-lc", "sccache --show-stats >/dev/null"] for args, _kwargs in docker_exec_calls)
 
     def test_volumes_from_config_added(self, tmp_path):
         """cmd_docker should pass configured volumes into the shared startup config."""

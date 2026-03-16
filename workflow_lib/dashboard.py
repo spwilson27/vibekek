@@ -78,11 +78,12 @@ class Dashboard:
         self._log_file = log_file
         self._lock = threading.Lock()
         self._ring: Deque[str] = deque(maxlen=log_lines)
-        # task_id -> (stage, status, lines_deque, start_time, agent_name, failed_time)
+        # task_id -> (stage, status, lines_deque, start_time, agent_name)
         # lines_deque holds (timestamp_str, text) pairs for the agent card
         # agent_name is the pool agent label (e.g. "claude-dev"); "" when no pool is active.
-        # failed_time is set when status transitions to "failed" to freeze the elapsed timer.
-        self._agents: Dict[str, Tuple[str, str, Deque[Tuple[str, str]], datetime, str, Optional[datetime]]] = {}
+        self._agents: Dict[str, Tuple[str, str, Deque[Tuple[str, str]], datetime, str]] = {}
+        # task_id -> failed_time used to freeze elapsed timer after failure.
+        self._agent_failed_at: Dict[str, datetime] = {}
         self._live: Optional[Live] = None
         self._console = Console(highlight=False)
         self._spinner_idx = 0
@@ -169,9 +170,9 @@ class Dashboard:
             Pass ``None`` to explicitly clear the agent name.
         """
         with self._lock:
-            # Preserve existing log lines, start time, agent_name, and failed_time when updating
+            # Preserve existing log lines, start time, and agent_name when updating.
             if task_id in self._agents:
-                _, _, lines, started, existing_name, existing_failed_time = self._agents[task_id]
+                _, _, lines, started, existing_name = self._agents[task_id]
                 # agent_name="" preserves existing, agent_name=None clears it
                 if agent_name is None:
                     effective_name = ""
@@ -179,20 +180,18 @@ class Dashboard:
                     effective_name = agent_name
                 else:
                     effective_name = existing_name
-                # Preserve failed_time, or set it when transitioning to "failed"
-                if status == "failed" and existing_failed_time is None:
-                    failed_time = datetime.now(tz=_PST)
-                else:
-                    failed_time = existing_failed_time
             else:
                 lines = deque()
                 started = datetime.now(tz=_PST)
                 effective_name = agent_name if agent_name else ""
-                failed_time = datetime.now(tz=_PST) if status == "failed" else None
             short = last_line.strip() if last_line else ""
             if short:
                 lines.append((_now_short(), short))
-            self._agents[task_id] = (stage, status, lines, started, effective_name, failed_time)
+            self._agents[task_id] = (stage, status, lines, started, effective_name)
+            if status == "failed":
+                self._agent_failed_at.setdefault(task_id, datetime.now(tz=_PST))
+            else:
+                self._agent_failed_at.pop(task_id, None)
         self._refresh()
 
     def update_last_line(self, task_id: str, last_line: str) -> None:
@@ -222,6 +221,7 @@ class Dashboard:
         """
         with self._lock:
             self._agents.pop(task_id, None)
+            self._agent_failed_at.pop(task_id, None)
         self._refresh()
 
     def prompt_input(self, message: str) -> str:
@@ -292,7 +292,7 @@ class Dashboard:
         # --- Gather visible agents ---
         with self._lock:
             visible = {
-                k: (v[0], v[1], list(v[2]), v[3], v[4], v[5])
+                k: (v[0], v[1], list(v[2]), v[3], v[4], self._agent_failed_at.get(k))
                 for k, v in self._agents.items()
                 if v[1] in ("running", "failed", "cloning", "merging", "queued", "waiting")
             }

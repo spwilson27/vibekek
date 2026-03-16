@@ -167,6 +167,10 @@ def temp_workflow_repo(tmp_path, check_docker_image):
     "port": 6301,
     "cache_dir": "{tmp_path}/sccache"
   }},
+  "sccache_services": {{
+    "auto_start": true,
+    "configure_containers": true
+  }},
   "docker": {{
     "image": "{check_docker_image}",
     "volumes": [
@@ -460,6 +464,7 @@ class TestDockerWorkflow:
         assert result.returncode == 0, combined
         assert "[sccache] Available at /usr/local/cargo/bin/sccache" in combined
         assert "[sccache] Routing via SCCACHE_SERVER=host.docker.internal:6301" in combined
+        assert "[sccache] Host server reachable from container" in combined
 
     def test_container_can_clone_git_repo(self, check_docker_image, temp_git_repo):
         """Container should be able to clone a git repository."""
