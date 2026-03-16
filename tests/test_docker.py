@@ -465,6 +465,7 @@ class TestWriteContainerEnvFile:
             "SHELL": "/bin/bash",
             "PWD": "/home/mrwilson/projects",
             "OLDPWD": "/tmp",
+            "PATH": "/home/mrwilson/.cargo/bin:/usr/bin:/bin",
         }, clear=False):
             path = _write_container_env_file(str(tmp_path))
         with open(path) as f:
@@ -1170,41 +1171,50 @@ class TestCmdDocker:
         captured = capsys.readouterr()
         assert "could not get URL for remote" in captured.err
 
-    def test_copies_config_files_to_temp(self, tmp_path, capsys):
-        """cmd_docker should copy configured files to temp directory."""
+    def test_uses_shared_container_startup(self, tmp_path):
+        """cmd_docker should delegate container startup to the shared helper."""
         from workflow_lib.cli import cmd_docker
         import workflow_lib.cli as cli_mod
         import argparse
-        from workflow_lib.agent_pool import DockerConfig, DockerCopyFile
+        from workflow_lib.agent_pool import DockerConfig
+        from workflow_lib.config import SCCacheConfig
 
-        # Create source files
-        src_file = tmp_path / "source_creds.json"
-        src_file.write_text('{"key": "value"}')
+        docker_cfg = DockerConfig(image="test:latest", volumes=["/tmp:/tmp"])
+        sccache_cfg = SCCacheConfig(enabled=True, host="host.docker.internal", port=6301)
 
-        docker_cfg = DockerConfig(
-            image="test:latest",
-            copy_files=[DockerCopyFile(src=str(src_file), dest="/home/username/.creds.json")]
-        )
+        docker_exec_results = [
+            MagicMock(returncode=0, stdout="/usr/local/cargo/bin/sccache\n", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
 
         def fake_run(cmd, **kwargs):
             if cmd[:3] == ["git", "remote", "get-url"]:
                 return MagicMock(returncode=0, stdout="https://github.com/test/repo.git", stderr="")
-            # Mock docker run, docker cp, docker exec, docker stop
-            if len(cmd) >= 2 and cmd[0] == "docker":
-                return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
              patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
+             patch.object(cli_mod, "get_sccache_config", return_value=sccache_cfg), \
+             patch.object(cli_mod, "get_sccache_dist_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_services_config", return_value=MagicMock(configure_containers=True)), \
              patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod, "_write_container_env_file", return_value="/tmp/container.env"), \
+             patch.object(cli_mod, "_start_task_container") as mock_start, \
+             patch.object(cli_mod, "_stop_task_container") as mock_stop, \
+             patch.object(cli_mod, "_docker_exec", side_effect=docker_exec_results), \
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run):
 
             args = argparse.Namespace(image=None)
             cmd_docker(args)
 
-        captured = capsys.readouterr()
-        assert "Copied:" in captured.out
-        assert str(src_file) in captured.out
+        mock_start.assert_called_once()
+        _, kwargs = mock_start.call_args
+        assert kwargs["sccache_config"] == sccache_cfg
+        assert kwargs["configure_containers"] is True
+        assert mock_start.call_args.args[1].image == "test:latest"
+        assert mock_start.call_args.args[1].volumes == ["/tmp:/tmp"]
+        mock_stop.assert_called_once()
 
     def test_image_override_from_args(self, tmp_path):
         """cmd_docker should use --image argument if provided."""
@@ -1215,30 +1225,31 @@ class TestCmdDocker:
 
         docker_cfg = DockerConfig(image="base:latest")
 
-        run_cmd_captured = []
         def fake_run(cmd, **kwargs):
             if cmd[:3] == ["git", "remote", "get-url"]:
                 return MagicMock(returncode=0, stdout="https://github.com/test/repo.git", stderr="")
-            if len(cmd) >= 2 and cmd[0] == "docker" and cmd[1] == "run":
-                run_cmd_captured.append(cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
-
-        def fake_execvp(cmd, args):
-            pass
 
         with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
              patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
              patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod, "get_sccache_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_dist_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_services_config", return_value=None), \
+             patch.object(cli_mod, "_write_container_env_file", return_value="/tmp/container.env"), \
+             patch.object(cli_mod, "_start_task_container") as mock_start, \
+             patch.object(cli_mod, "_stop_task_container"), \
+             patch.object(cli_mod, "_docker_exec", side_effect=[
+                 MagicMock(returncode=0, stdout="/usr/local/cargo/bin/sccache\n", stderr=""),
+                 MagicMock(returncode=0, stdout="", stderr=""),
+             ]), \
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
-             patch.object(cli_mod.os, "execvp", side_effect=fake_execvp):
+             patch.object(cli_mod.os, "getpid", return_value=1234):
 
             args = argparse.Namespace(image="override:custom")
             cmd_docker(args)
 
-        assert run_cmd_captured, "docker run should be called"
-        run_cmd = run_cmd_captured[0]
-        assert "override:custom" in run_cmd
-        assert "base:latest" not in run_cmd
+        assert mock_start.call_args.args[1].image == "override:custom"
 
     def test_uses_pivot_remote_from_config(self, tmp_path):
         """cmd_docker should use pivot_remote from docker config."""
@@ -1259,8 +1270,18 @@ class TestCmdDocker:
         with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
              patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
              patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod, "get_sccache_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_dist_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_services_config", return_value=None), \
+             patch.object(cli_mod, "_write_container_env_file", return_value="/tmp/container.env"), \
+             patch.object(cli_mod, "_start_task_container"), \
+             patch.object(cli_mod, "_stop_task_container"), \
+             patch.object(cli_mod, "_docker_exec", side_effect=[
+                 MagicMock(returncode=0, stdout="/usr/local/cargo/bin/sccache\n", stderr=""),
+                 MagicMock(returncode=0, stdout="", stderr=""),
+             ]), \
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
-             patch.object(cli_mod.os, "execvp", side_effect=lambda cmd, args: None):
+             patch.object(cli_mod.os, "getpid", return_value=1234):
 
             args = argparse.Namespace(image=None)
             cmd_docker(args)
@@ -1269,51 +1290,56 @@ class TestCmdDocker:
         assert any("upstream" in cmd for cmd in remote_queries), \
             "Should query git remote using configured pivot_remote"
 
-    def test_uses_docker_cp_for_config_files(self, tmp_path):
-        """cmd_docker should use docker cp to copy config files into container."""
+    def test_verifies_sccache_routing_in_container(self, tmp_path):
+        """cmd_docker should verify sccache availability and routing after startup."""
         from workflow_lib.cli import cmd_docker
         import workflow_lib.cli as cli_mod
         import argparse
-        from workflow_lib.agent_pool import DockerConfig, DockerCopyFile
+        from workflow_lib.agent_pool import DockerConfig
+        from workflow_lib.config import SCCacheConfig
 
-        src_file = tmp_path / "creds.json"
-        src_file.write_text('{"key": "value"}')
+        docker_cfg = DockerConfig(image="test:latest")
+        sccache_cfg = SCCacheConfig(enabled=True, host="host.docker.internal", port=6301)
 
-        docker_cfg = DockerConfig(
-            image="test:latest",
-            copy_files=[DockerCopyFile(src=str(src_file), dest="/home/username/.creds.json")]
-        )
-
-        docker_cp_calls = []
+        docker_exec_calls = []
         def fake_run(cmd, **kwargs):
             if cmd[:3] == ["git", "remote", "get-url"]:
                 return MagicMock(returncode=0, stdout="https://github.com/test/repo.git", stderr="")
-            if len(cmd) >= 2 and cmd[0] == "docker" and cmd[1] == "cp":
-                docker_cp_calls.append(cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        def fake_execvp(cmd, args):
-            pass
+        def fake_docker_exec(*args, **kwargs):
+            docker_exec_calls.append((args, kwargs))
+            cmd = args[1]
+            if cmd == ["bash", "-lc", "command -v sccache"]:
+                return MagicMock(returncode=0, stdout="/usr/local/cargo/bin/sccache\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
              patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
              patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod, "get_sccache_config", return_value=sccache_cfg), \
+             patch.object(cli_mod, "get_sccache_dist_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_services_config", return_value=MagicMock(configure_containers=True)), \
+             patch.object(cli_mod, "_write_container_env_file", return_value="/tmp/container.env"), \
+             patch.object(cli_mod, "_start_task_container"), \
+             patch.object(cli_mod, "_stop_task_container"), \
+             patch.object(cli_mod, "_docker_exec", side_effect=fake_docker_exec), \
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
-             patch.object(cli_mod.os, "execvp", side_effect=fake_execvp):
+             patch.object(cli_mod.os, "getpid", return_value=1234):
 
             args = argparse.Namespace(image=None)
             cmd_docker(args)
 
-        # Verify docker cp was called with correct paths
-        assert len(docker_cp_calls) >= 1, "Should call docker cp at least once"
-        cp_cmd = docker_cp_calls[0]
-        assert cp_cmd[0:2] == ["docker", "cp"]
-        # Dest should be container:path format with the correct destination
-        assert any("/home/username/.creds.json" in str(c) for c in cp_cmd), \
-            f"Destination path not found in cp command: {cp_cmd}"
+        route_checks = [
+            args[1] for args, _kwargs in docker_exec_calls
+            if args[1][:2] == ["bash", "-lc"] and "SCCACHE_SERVER" in args[1][2]
+        ]
+        assert route_checks
+        assert 'test "$RUSTC_WRAPPER" = "sccache"' in route_checks[0][2]
+        assert 'test "${SCCACHE_SERVER}" = host.docker.internal:6301' in route_checks[0][2]
 
     def test_volumes_from_config_added(self, tmp_path):
-        """cmd_docker should add configured volumes to docker run command."""
+        """cmd_docker should pass configured volumes into the shared startup config."""
         from workflow_lib.cli import cmd_docker
         import workflow_lib.cli as cli_mod
         import argparse
@@ -1324,34 +1350,32 @@ class TestCmdDocker:
             volumes=["/host/data:/container/data:ro", "/tmp:/tmp"]
         )
 
-        run_cmd_captured = []
         def fake_run(cmd, **kwargs):
             if cmd[:3] == ["git", "remote", "get-url"]:
                 return MagicMock(returncode=0, stdout="https://github.com/test/repo.git", stderr="")
-            if len(cmd) >= 2 and cmd[0] == "docker" and cmd[1] == "run":
-                run_cmd_captured.append(cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
-
-        def fake_execvp(cmd, args):
-            pass
 
         with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
              patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
              patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod, "get_sccache_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_dist_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_services_config", return_value=None), \
+             patch.object(cli_mod, "_write_container_env_file", return_value="/tmp/container.env"), \
+             patch.object(cli_mod, "_start_task_container") as mock_start, \
+             patch.object(cli_mod, "_stop_task_container"), \
+             patch.object(cli_mod, "_docker_exec", side_effect=[
+                 MagicMock(returncode=0, stdout="/usr/local/cargo/bin/sccache\n", stderr=""),
+                 MagicMock(returncode=0, stdout="", stderr=""),
+             ]), \
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
-             patch.object(cli_mod.os, "execvp", side_effect=fake_execvp):
+             patch.object(cli_mod.os, "getpid", return_value=1234):
 
             args = argparse.Namespace(image=None)
             cmd_docker(args)
 
-        # Verify docker run was called with volumes
-        assert run_cmd_captured, "docker run should be called"
-        run_cmd = run_cmd_captured[0]
-        run_cmd_str = " ".join(run_cmd)
-        assert "/host/data:/container/data:ro" in run_cmd_str, \
-            f"Volume not found in run command: {run_cmd_str}"
-        assert "/tmp:/tmp" in run_cmd_str, \
-            f"Volume not found in run command: {run_cmd_str}"
+        effective_cfg = mock_start.call_args.args[1]
+        assert effective_cfg.volumes == ["/host/data:/container/data:ro", "/tmp:/tmp"]
 
     def test_clones_dev_branch(self, tmp_path):
         """cmd_docker should clone and checkout the configured dev branch."""
@@ -1373,6 +1397,17 @@ class TestCmdDocker:
         with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
              patch.object(cli_mod, "get_dev_branch", return_value="feature-branch"), \
              patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod, "get_sccache_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_dist_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_services_config", return_value=None), \
+             patch.object(cli_mod, "_write_container_env_file", return_value="/tmp/container.env"), \
+             patch.object(cli_mod, "_start_task_container"), \
+             patch.object(cli_mod, "_stop_task_container"), \
+             patch.object(cli_mod, "_docker_exec", side_effect=[
+                 MagicMock(returncode=0, stdout="/usr/local/cargo/bin/sccache\n", stderr=""),
+                 MagicMock(returncode=0, stdout="", stderr=""),
+             ]), \
+             patch.object(cli_mod.os, "getpid", return_value=1234), \
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run):
 
             args = argparse.Namespace(image=None)
@@ -1392,17 +1427,14 @@ class TestCmdDocker:
         assert "git clone --branch feature-branch" in clone_cmd
         assert "git submodule update --init --recursive" in clone_cmd
 
-    def test_warns_on_missing_source_file(self, tmp_path, capsys):
-        """cmd_docker should warn if a configured source file doesn't exist."""
+    def test_missing_copy_file_matches_shared_startup_failure(self, tmp_path):
+        """cmd_docker should surface shared startup copy-file failures."""
         from workflow_lib.cli import cmd_docker
         import workflow_lib.cli as cli_mod
         import argparse
-        from workflow_lib.agent_pool import DockerConfig, DockerCopyFile
+        from workflow_lib.agent_pool import DockerConfig
 
-        docker_cfg = DockerConfig(
-            image="test:latest",
-            copy_files=[DockerCopyFile(src="/nonexistent/file.json", dest="/home/username/.file.json")]
-        )
+        docker_cfg = DockerConfig(image="test:latest")
 
         def fake_run(cmd, **kwargs):
             if cmd[:3] == ["git", "remote", "get-url"]:
@@ -1412,12 +1444,14 @@ class TestCmdDocker:
         with patch.object(cli_mod, "get_docker_config", return_value=docker_cfg), \
              patch.object(cli_mod, "get_dev_branch", return_value="dev"), \
              patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
+             patch.object(cli_mod, "get_sccache_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_dist_config", return_value=None), \
+             patch.object(cli_mod, "get_sccache_services_config", return_value=None), \
+             patch.object(cli_mod, "_write_container_env_file", return_value="/tmp/container.env"), \
+             patch.object(cli_mod, "_start_task_container", side_effect=FileNotFoundError("missing copy file")), \
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
-             patch.object(cli_mod.os, "execvp", side_effect=lambda cmd, args: None):
+             patch.object(cli_mod.os, "getpid", return_value=1234):
 
             args = argparse.Namespace(image=None)
-            cmd_docker(args)
-
-        captured = capsys.readouterr()
-        assert "Warning" in captured.out
-        assert "/nonexistent/file.json" in captured.out
+            with pytest.raises(FileNotFoundError, match="missing copy file"):
+                cmd_docker(args)

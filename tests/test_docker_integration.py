@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import shutil
 import time
+from pathlib import Path
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -35,7 +36,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def docker_image():
     """Return the Docker image name to use for tests."""
-    return os.environ.get("WEAVER_DOCKER_IMAGE", "weaver-reloaded:dev")
+    return os.environ.get("WEAVER_DOCKER_IMAGE", "gooey-dev:latest")
 
 
 @pytest.fixture(scope="module")
@@ -139,6 +140,62 @@ def temp_git_repo(tmp_path):
     subprocess.run(["git", "commit", "--allow-empty", "-m", "init", "-q"], 
                    cwd=repo_path, check=True, env=env)
     
+    return repo_path
+
+
+@pytest.fixture
+def temp_workflow_repo(tmp_path, check_docker_image):
+    """Create an isolated repo that can run `python3 .tools/workflow.py docker`.
+
+    The repo gets a local bare `origin` remote mounted into the container so
+    the docker subcommand can clone it without depending on external network
+    access or user-specific config.
+    """
+    repo_path = tmp_path / "workflow-repo"
+    repo_path.mkdir()
+
+    tools_src = Path(__file__).resolve().parent.parent
+    os.symlink(tools_src, repo_path / ".tools", target_is_directory=True)
+
+    workflow_config = f"""{{
+  "ignore_sandbox": true,
+  "dev_branch": "dev",
+  "pivot_remote": "origin",
+  "sccache": {{
+    "enabled": true,
+    "host": "host.docker.internal",
+    "port": 6301,
+    "cache_dir": "{tmp_path}/sccache"
+  }},
+  "docker": {{
+    "image": "{check_docker_image}",
+    "volumes": [
+      "{tmp_path}:{tmp_path}"
+    ],
+    "copy_files": []
+  }}
+}}
+"""
+    (repo_path / ".workflow.jsonc").write_text(workflow_config)
+    (repo_path / "README.md").write_text("integration test repo\n")
+
+    bare_repo = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(bare_repo)], check=True, capture_output=True)
+
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "t@t.com",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "t@t.com",
+    }
+    subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True, env=env)
+    subprocess.run(["git", "checkout", "-b", "dev"], cwd=repo_path, check=True, capture_output=True, env=env)
+    subprocess.run(["git", "add", ".workflow.jsonc", "README.md"], cwd=repo_path, check=True, env=env)
+    subprocess.run(["git", "commit", "-m", "init", "-q"], cwd=repo_path, check=True, env=env)
+    subprocess.run(["git", "remote", "add", "origin", str(bare_repo)], cwd=repo_path, check=True, capture_output=True, env=env)
+    subprocess.run(["git", "push", "-u", "origin", "dev"], cwd=repo_path, check=True, capture_output=True, env=env)
+
     return repo_path
 
 
@@ -379,6 +436,30 @@ class TestCopyFileWriteAccess:
 
 class TestDockerWorkflow:
     """End-to-end tests for Docker-based workflow execution."""
+
+    def test_workflow_docker_subcommand_reports_sccache(self, temp_workflow_repo, check_docker_image):
+        """`workflow.py docker` should validate sccache automatically on startup."""
+        if not shutil.which("script"):
+            pytest.skip("`script` is required to run interactive docker subcommand tests")
+
+        result = subprocess.run(
+            [
+                "script",
+                "-qec",
+                f"python3 .tools/workflow.py docker --image {check_docker_image}",
+                "/dev/null",
+            ],
+            cwd=temp_workflow_repo,
+            input="exit\n",
+            text=True,
+            capture_output=True,
+            timeout=300,
+        )
+
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert "[sccache] Available at /usr/local/cargo/bin/sccache" in combined
+        assert "[sccache] Routing via SCCACHE_SERVER=host.docker.internal:6301" in combined
 
     def test_container_can_clone_git_repo(self, check_docker_image, temp_git_repo):
         """Container should be able to clone a git repository."""

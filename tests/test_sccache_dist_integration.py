@@ -100,10 +100,10 @@ def test_config_loading():
 def test_container_env_vars():
     """Test container env vars are set correctly."""
     print("\n[4/4] Testing container env vars...")
-    
+
     with patch('workflow_lib.executor.subprocess.run') as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout='test123')
-        
+
         dist_cfg = SCCacheDistConfig(
             enabled=True,
             scheduler_url="http://host.docker.internal:10600",
@@ -111,6 +111,7 @@ def test_container_env_vars():
             config_file="/tmp/sccache-dist.toml"
         )
         docker_cfg = DockerConfig(image='test:latest', volumes=[], copy_files=[])
+        scc_cfg = None  # Use sccache-dist only
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.env', delete=False) as f:
             f.write('TEST=value\n')
@@ -123,7 +124,8 @@ def test_container_env_vars():
                 env_file,
                 lambda m: None,
                 sccache_config=None,
-                sccache_dist_config=dist_cfg
+                sccache_dist_config=dist_cfg,
+                configure_containers=True
             )
             
             # Check the docker command
@@ -170,22 +172,32 @@ def test_auto_start_config():
     """Test auto_start config option is loaded correctly."""
     print("\n[5/5] Testing auto_start configuration...")
     
-    from workflow_lib.config import get_sccache_config, get_sccache_dist_config, SCCacheConfig, SCCacheDistConfig
+    from workflow_lib.config import get_sccache_config, get_sccache_dist_config, get_sccache_services_config, SCCacheConfig, SCCacheDistConfig, SCCacheServicesConfig
     
-    # Test sccache auto_start
+    # Test sccache_services config
+    services_cfg = get_sccache_services_config()
+    if services_cfg:
+        print(f"  sccache_services auto_start: {services_cfg.auto_start}")
+        print(f"  sccache_services configure_containers: {services_cfg.configure_containers}")
+        print("  ✓ sccache_services config loaded")
+    else:
+        print("  ✗ sccache_services config not found")
+        return False
+    
+    # Test sccache config (no longer has auto_start)
     scc_cfg = get_sccache_config()
     if scc_cfg:
-        print(f"  sccache auto_start: {scc_cfg.auto_start}")
-        print("  ✓ sccache auto_start config loaded")
+        print(f"  sccache enabled: {scc_cfg.enabled}")
+        print("  ✓ sccache config loaded")
     else:
         print("  ✗ sccache config not found")
         return False
     
-    # Test sccache-dist auto_start
+    # Test sccache-dist config (no longer has auto_start)
     dist_cfg = get_sccache_dist_config()
     if dist_cfg:
-        print(f"  sccache_dist auto_start: {dist_cfg.auto_start}")
-        print("  ✓ sccache_dist auto_start config loaded")
+        print(f"  sccache_dist enabled: {dist_cfg.enabled}")
+        print("  ✓ sccache_dist config loaded")
     else:
         print("  ✗ sccache_dist config not found")
         return False
@@ -197,17 +209,19 @@ def test_ensure_sccache_services():
     """Test ensure_sccache_services function."""
     print("\n[6/6] Testing ensure_sccache_services()...")
     
-    from workflow_lib.config import ensure_sccache_services, SCCacheConfig, SCCacheDistConfig
+    from workflow_lib.config import ensure_sccache_services, SCCacheConfig, SCCacheDistConfig, SCCacheServicesConfig
     
     # Mock config with auto_start enabled
     import workflow_lib.config as config
+    original_get_services = config.get_sccache_services_config
     original_get_sccache = config.get_sccache_config
     original_get_dist = config.get_sccache_dist_config
     
     try:
         # Test with auto_start=False (should not try to start)
-        config.get_sccache_config = lambda: SCCacheConfig(enabled=True, auto_start=False)
-        config.get_sccache_dist_config = lambda: SCCacheDistConfig(enabled=True, auto_start=False)
+        config.get_sccache_services_config = lambda: SCCacheServicesConfig(auto_start=False, configure_containers=True)
+        config.get_sccache_config = lambda: SCCacheConfig(enabled=True)
+        config.get_sccache_dist_config = lambda: SCCacheDistConfig(enabled=True)
         
         scc_ok, dist_ok = ensure_sccache_services()
         
@@ -218,8 +232,86 @@ def test_ensure_sccache_services():
             print("  ✗ ensure_sccache_services() returned failure")
             return False
     finally:
+        config.get_sccache_services_config = original_get_services
         config.get_sccache_config = original_get_sccache
         config.get_sccache_dist_config = original_get_dist
+
+
+def test_configure_containers():
+    """Test configure_containers option controls env vars."""
+    print("\n[7/7] Testing configure_containers option...")
+    
+    from workflow_lib.config import SCCacheConfig, SCCacheDistConfig, SCCacheServicesConfig
+    from workflow_lib.agent_pool import DockerConfig
+    from workflow_lib.executor import _start_task_container
+    from unittest.mock import patch, MagicMock
+    import tempfile
+    import os
+    
+    with patch('workflow_lib.executor.subprocess.run') as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout='test123')
+        
+        scc_cfg = SCCacheConfig(enabled=True, host="host.docker.internal", port=6301)
+        dist_cfg = SCCacheDistConfig(enabled=False)
+        docker_cfg = DockerConfig(image='test:latest', volumes=[], copy_files=[])
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.env', delete=False) as f:
+            f.write('TEST=value\n')
+            env_file = f.name
+        
+        try:
+            # Test with configure_containers=True
+            _start_task_container(
+                'test-container-yes',
+                docker_cfg,
+                env_file,
+                lambda m: None,
+                sccache_config=scc_cfg,
+                sccache_dist_config=dist_cfg,
+                configure_containers=True
+            )
+            
+            docker_cmd_yes = mock_run.call_args[0][0]
+            env_vars_yes = []
+            for i, arg in enumerate(docker_cmd_yes):
+                if arg == '-e' and i + 1 < len(docker_cmd_yes):
+                    env_vars_yes.append(docker_cmd_yes[i + 1])
+            
+            has_sccache_env = any('SCCACHE_SERVER' in v for v in env_vars_yes)
+            
+            # Test with configure_containers=False
+            mock_run.reset_mock()
+            _start_task_container(
+                'test-container-no',
+                docker_cfg,
+                env_file,
+                lambda m: None,
+                sccache_config=scc_cfg,
+                sccache_dist_config=dist_cfg,
+                configure_containers=False
+            )
+            
+            docker_cmd_no = mock_run.call_args[0][0]
+            env_vars_no = []
+            for i, arg in enumerate(docker_cmd_no):
+                if arg == '-e' and i + 1 < len(docker_cmd_no):
+                    env_vars_no.append(docker_cmd_no[i + 1])
+            
+            has_no_sccache_env = not any('SCCACHE_SERVER' in v for v in env_vars_no)
+            has_no_host_mapping = '--add-host' not in docker_cmd_no
+            
+            if has_sccache_env and has_no_sccache_env and has_no_host_mapping:
+                print("  ✓ configure_containers=True: adds sccache env vars")
+                print("  ✓ configure_containers=False: skips sccache env vars")
+                return True
+            else:
+                print("  ✗ configure_containers option not working correctly")
+                print(f"    configure_containers=True has SCCACHE_SERVER: {has_sccache_env}")
+                print(f"    configure_containers=False has no SCCACHE_SERVER: {has_no_sccache_env}")
+                print(f"    configure_containers=False has no --add-host: {has_no_host_mapping}")
+                return False
+        finally:
+            os.unlink(env_file)
 
 
 def main():
@@ -236,6 +328,7 @@ def main():
     results.append(("Container env vars", test_container_env_vars()))
     results.append(("Auto-start config", test_auto_start_config()))
     results.append(("Ensure services", test_ensure_sccache_services()))
+    results.append(("Configure containers", test_configure_containers()))
     
     print("\n" + "=" * 60)
     print("Summary")

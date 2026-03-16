@@ -223,15 +223,12 @@ class SCCacheConfig:
         For Docker containers, typically "host.docker.internal".
     :param port: TCP port the sccache server listens on (default: 6301).
     :param cache_dir: Path to the cache directory on the host filesystem.
-    :param auto_start: Whether to auto-start sccache server when workflow runs (default: false).
-        When true, checks if server is running and starts it if not.
     """
 
     enabled: bool = False
     host: str = "host.docker.internal"
     port: int = 6301
     cache_dir: str = "/home/mrwilson/.cache/sccache"
-    auto_start: bool = False
 
 
 def get_sccache_config() -> Optional[SCCacheConfig]:
@@ -256,7 +253,6 @@ def get_sccache_config() -> Optional[SCCacheConfig]:
         host=str(scc.get("host", "host.docker.internal")),
         port=int(scc.get("port", 6301)),
         cache_dir=str(scc.get("cache_dir", "/home/mrwilson/.cache/sccache")),
-        auto_start=bool(scc.get("auto_start", False)),
     )
 
 
@@ -286,15 +282,51 @@ class SCCacheDistConfig:
     :param auth_token: Authentication token for scheduler access.
         Used for client authentication with the scheduler.
     :param config_file: Path to the scheduler config file on the host.
-    :param auto_start: Whether to auto-start scheduler when workflow runs (default: false).
-        When true, checks if scheduler is running and starts it if not.
     """
 
     enabled: bool = False
     scheduler_url: str = "http://host.docker.internal:10600"
     auth_token: str = "gooey-dist-token-2024"
     config_file: str = "/home/mrwilson/.tools/sccache-dist.toml"
+
+
+@dataclass
+class SCCacheServicesConfig:
+    """sccache services control configuration.
+
+    Unified configuration for sccache service auto-start and container integration.
+
+    :param auto_start: Whether to auto-start sccache services when workflow runs (default: false).
+        When true, checks if sccache server and/or sccache-dist scheduler are running
+        (based on their enabled flags) and starts them if not.
+    :param configure_containers: Whether to configure containers with sccache environment
+        variables (default: true). When true, containers are started with RUSTC_WRAPPER,
+        SCCACHE_SERVER, and/or SCCACHE_DIST_SCHEDULER_URL environment variables.
+        When false, containers run without sccache configuration.
+    """
+
     auto_start: bool = False
+    configure_containers: bool = True
+
+
+def get_sccache_services_config() -> Optional[SCCacheServicesConfig]:
+    """Return :class:`SCCacheServicesConfig` from ``.workflow.jsonc``.
+
+    Reads the top-level ``"sccache_services"`` block. Controls unified
+    auto-start behavior and container configuration for sccache services.
+
+    :returns: A :class:`SCCacheServicesConfig` instance, or ``None`` when no
+        ``"sccache_services"`` block is configured.
+    """
+    cfg = load_config()
+    if "sccache_services" not in cfg:
+        return None
+
+    scs = cfg["sccache_services"]
+    return SCCacheServicesConfig(
+        auto_start=bool(scs.get("auto_start", False)),
+        configure_containers=bool(scs.get("configure_containers", True)),
+    )
 
 
 def get_sccache_dist_config() -> Optional[SCCacheDistConfig]:
@@ -319,7 +351,6 @@ def get_sccache_dist_config() -> Optional[SCCacheDistConfig]:
         scheduler_url=str(scd.get("scheduler_url", "http://host.docker.internal:10600")),
         auth_token=str(scd.get("auth_token", "gooey-dist-token-2024")),
         config_file=str(scd.get("config_file", "/home/mrwilson/.tools/sccache-dist.toml")),
-        auto_start=bool(scd.get("auto_start", False)),
     )
 
 
@@ -348,12 +379,16 @@ def ensure_sccache_services():
     import subprocess
     from .constants import ROOT_DIR
 
+    services_cfg = get_sccache_services_config()
+    if not services_cfg or not services_cfg.auto_start:
+        return True, True  # Auto-start disabled, assume OK
+
     sccache_ok = True
     sccache_dist_ok = True
 
-    # Check and start sccache server if auto_start enabled
+    # Check and start sccache server if enabled
     sccache_cfg = get_sccache_config()
-    if sccache_cfg and sccache_cfg.enabled and sccache_cfg.auto_start:
+    if sccache_cfg and sccache_cfg.enabled:
         # Check if running
         result = subprocess.run(["pgrep", "-f", "sccache"], capture_output=True, text=True)
         if result.returncode != 0:
@@ -368,9 +403,9 @@ def ensure_sccache_services():
                 result = subprocess.run(["pgrep", "-f", "sccache"], capture_output=True, text=True)
                 sccache_ok = result.returncode == 0
 
-    # Check and start sccache-dist scheduler if auto_start enabled
+    # Check and start sccache-dist scheduler if enabled
     dist_cfg = get_sccache_dist_config()
-    if dist_cfg and dist_cfg.enabled and dist_cfg.auto_start:
+    if dist_cfg and dist_cfg.enabled:
         # Check if running
         result = subprocess.run(["pgrep", "-f", "sccache-dist"], capture_output=True, text=True)
         if result.returncode != 0:

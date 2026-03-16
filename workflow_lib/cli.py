@@ -63,6 +63,7 @@ Available commands
 
 import os
 import sys
+import shlex
 import subprocess
 import threading
 import argparse
@@ -75,10 +76,18 @@ from .constants import TOOLS_DIR, ROOT_DIR
 from .orchestrator import Orchestrator
 from .context import ProjectContext
 from .replan import _make_runner, cmd_status, cmd_validate, cmd_block, cmd_unblock, cmd_remove, cmd_add, cmd_add_feature, cmd_modify_req, cmd_regen_dag, cmd_regen_tasks, cmd_regen_components, cmd_cascade, cmd_fixup
-from .executor import execute_dag, Logger, signal_handler
+from .executor import (
+    execute_dag,
+    Logger,
+    signal_handler,
+    _docker_exec,
+    _start_task_container,
+    _stop_task_container,
+    _write_container_env_file,
+)
 from .dashboard import make_dashboard, _DashboardStream
-from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override, set_agent_context_limit, get_docker_config
-from .agent_pool import AgentPoolManager
+from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override, set_agent_context_limit, get_docker_config, get_sccache_config, get_sccache_dist_config, get_sccache_services_config
+from .agent_pool import AgentPoolManager, DockerConfig
 from .state import load_workflow_state, load_dags, get_tasks_dir, restore_state_from_branch
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner, QwenRunner, VALID_BACKENDS
 
@@ -306,23 +315,34 @@ def cmd_docker(args: argparse.Namespace) -> None:
     5. Uses ``docker cp`` to copy config files into the container.
     6. Inside the container, clones the git repository and checks out the dev branch.
 
+    Configures sccache environment variables if enabled in ``.workflow.jsonc``,
+    using the same logic as workflow agent containers.
+
     :param args: Parsed :mod:`argparse` namespace with attributes:
 
         - ``image`` (Optional[str]) — override the Docker image from config.
     :type args: argparse.Namespace
     """
-    # Load docker config from .workflow.jsonc
     docker_config = get_docker_config()
     if docker_config is None:
         print("Error: no 'docker' configuration found in .workflow.jsonc", file=sys.stderr)
         sys.exit(1)
 
-    # Allow CLI override of the image
+    sccache_config = get_sccache_config()
+    sccache_dist_config = get_sccache_dist_config()
+    services_cfg = get_sccache_services_config()
+    configure_containers = services_cfg.configure_containers if services_cfg else True
+
     image = args.image if args.image else docker_config.image
+    effective_docker_config = DockerConfig(
+        image=image,
+        pivot_remote=docker_config.pivot_remote,
+        volumes=list(docker_config.volumes),
+        copy_files=list(docker_config.copy_files),
+    )
     pivot_remote = docker_config.pivot_remote
     dev_branch = get_dev_branch()
 
-    # Get the current git remote URL for cloning
     result = subprocess.run(
         ["git", "remote", "get-url", pivot_remote],
         capture_output=True,
@@ -334,115 +354,87 @@ def cmd_docker(args: argparse.Namespace) -> None:
         sys.exit(1)
     repo_url = result.stdout.strip()
 
-    # Create a temporary directory to stage config files
-    temp_dir = tempfile.mkdtemp(prefix="workflow-docker-")
-    print(f"Using temporary directory: {temp_dir}")
+    container_name = f"workflow-docker-{os.getpid()}"
 
-    try:
-        # Copy configured files into the temp directory (preserving dest structure)
-        copied_files = []
-        for cf in docker_config.copy_files:
-            if not os.path.exists(cf.src):
-                print(f"Warning: source file does not exist: {cf.src}")
-                continue
-            dest_dir = os.path.dirname(cf.dest)
-            dest_path = os.path.join(temp_dir, dest_dir.lstrip("/"))
-            os.makedirs(dest_path, exist_ok=True)
-            dest_file = os.path.join(dest_path, os.path.basename(cf.dest))
-            if os.path.isfile(cf.src):
-                shutil.copy2(cf.src, dest_file)
-                print(f"Copied: {cf.src} -> {dest_file}")
-                # Track relative path from temp_dir for docker cp
-                rel_path = os.path.relpath(dest_file, temp_dir)
-                copied_files.append((rel_path, cf.dest))
+    def log(msg: str) -> None:
+        print(msg)
 
-        # Start container in detached mode (detached, interactive, with pseudo-tty)
-        container_name = f"workflow-docker-{os.getpid()}"
-        docker_run_cmd = [
-            "docker", "run", "-d", "-it", "--rm", "--name", container_name,
-            "-w", "/workspace",
-        ]
+    print(f"Starting Docker container with image: {image}")
+    print(f"Git remote: {pivot_remote} -> {repo_url}")
+    print(f"Dev branch: {dev_branch}")
+    print()
 
-        # Add volume mounts if configured
-        for vol in docker_config.volumes:
-            docker_run_cmd.extend(["-v", vol])
-
-        docker_run_cmd.extend([image, "sleep", "infinity"])  # Keep container running
-
-        print(f"Starting Docker container with image: {image}")
-        print(f"Git remote: {pivot_remote} -> {repo_url}")
-        print(f"Dev branch: {dev_branch}")
-        print()
-
-        # Start the container
-        result = subprocess.run(docker_run_cmd, cwd=ROOT_DIR)
-        if result.returncode != 0:
-            print("Error: failed to start container", file=sys.stderr)
-            sys.exit(1)
-
+    with tempfile.TemporaryDirectory(prefix="workflow-docker-") as temp_dir:
+        env_file = _write_container_env_file(temp_dir)
+        _start_task_container(
+            container_name,
+            effective_docker_config,
+            env_file,
+            log,
+            sccache_config=sccache_config,
+            sccache_dist_config=sccache_dist_config,
+            configure_containers=configure_containers,
+        )
         try:
-            # Copy config files into the container using docker cp
-            # Then fix ownership to match the container user
-            for rel_path, dest in copied_files:
-                # Remove any existing file/directory at the destination first
-                rm_cmd = ["docker", "exec", container_name, "rm", "-rf", dest]
-                subprocess.run(rm_cmd, capture_output=True)
-                
-                # Ensure parent directory exists
-                parent_dir = os.path.dirname(dest)
-                if parent_dir:
-                    mkdir_cmd = ["docker", "exec", container_name, "sudo", "mkdir", "-p", parent_dir]
-                    subprocess.run(mkdir_cmd, capture_output=True)
-                
-                cp_cmd = ["docker", "cp", os.path.join(temp_dir, rel_path), f"{container_name}:{dest}"]
-                result = subprocess.run(cp_cmd, capture_output=True, text=True)
-                if result.returncode == 0:
-                    print(f"Copied {rel_path} to container")
-                else:
-                    print(f"Warning: failed to copy {rel_path} to container: {result.stderr}", file=sys.stderr)
-                    continue
-                # Fix ownership to match container user (username:username) using sudo
-                chown_cmd = ["docker", "exec", container_name, "sudo", "chown", "username:username", dest]
-                chown_result = subprocess.run(chown_cmd, capture_output=True, text=True)
-                if chown_result.returncode != 0:
-                    print(f"Warning: chown failed for {dest}: {chown_result.stderr}", file=sys.stderr)
-                # Set correct permissions on .git-credentials (must be 600 for git to use it)
-                if dest.endswith(".git-credentials"):
-                    chmod_cmd = ["docker", "exec", container_name, "sudo", "chmod", "600", dest]
-                    chmod_result = subprocess.run(chmod_cmd, capture_output=True, text=True)
-                    if chmod_result.returncode != 0:
-                        print(f"Warning: chmod failed for {dest}: {chmod_result.stderr}", file=sys.stderr)
+            sccache_result = _docker_exec(
+                container_name,
+                ["bash", "-lc", "command -v sccache"],
+                env_file=env_file,
+                capture=True,
+            )
+            if sccache_result.returncode == 0 and sccache_result.stdout.strip():
+                print(f"      [sccache] Available at {sccache_result.stdout.strip()}")
+            else:
+                print("Warning: sccache is not available inside the Docker container", file=sys.stderr)
 
-            # Fix git credential helper path in .gitconfig to use container path
-            # The host .gitconfig likely has /home/mrwilson/... paths but container uses /home/username/
-            subprocess.run(
-                ["docker", "exec", container_name, "sed", "-i", 
-                 "s|/home/[^/]*|/home/username|g", "/home/username/.gitconfig"],
-                capture_output=True, text=True
+            route_var: Optional[str] = None
+            route_target: Optional[str] = None
+            if configure_containers and sccache_dist_config is not None and sccache_dist_config.enabled:
+                route_var = "SCCACHE_DIST_SCHEDULER_URL"
+                route_target = sccache_dist_config.scheduler_url
+            elif configure_containers and sccache_config is not None and sccache_config.enabled:
+                route_var = "SCCACHE_SERVER"
+                route_target = f"{sccache_config.host}:{sccache_config.port}"
+
+            if route_var and route_target:
+                verify_route_cmd = (
+                    f'test "$RUSTC_WRAPPER" = "sccache" && '
+                    f'test "${{{route_var}}}" = {shlex.quote(route_target)}'
+                )
+                route_result = _docker_exec(
+                    container_name,
+                    ["bash", "-lc", verify_route_cmd],
+                    env_file=env_file,
+                    capture=True,
+                )
+                if route_result.returncode == 0:
+                    print(f"      [sccache] Routing via {route_var}={route_target}")
+                else:
+                    print(
+                        f"Warning: expected {route_var}={route_target} inside the Docker container",
+                        file=sys.stderr,
+                    )
+
+            _docker_exec(
+                container_name,
+                ["sed", "-i", "s|/home/[^/]*|/home/username|g", "/home/username/.gitconfig"],
+                env_file=env_file,
+                capture=True,
             )
 
-            # Now exec into the container with the actual workflow
-            # Note: .gitconfig is already copied to /home/username/.gitconfig with credentials
             clone_and_checkout = [
-                f"git clone --branch {dev_branch} {repo_url} /workspace/gooey",
+                f"git clone --branch {shlex.quote(dev_branch)} {shlex.quote(repo_url)} /workspace/gooey",
                 "cd /workspace/gooey",
                 "git submodule update --init --recursive",
-                "exec bash"
+                "exec bash",
             ]
             full_shell_cmd = " && ".join(clone_and_checkout)
-
             exec_cmd = ["docker", "exec", "-it", container_name, "bash", "-lc", full_shell_cmd]
-            # Use subprocess.run instead of os.execvp so we can clean up the container
-            subprocess.run(exec_cmd)
-
+            subprocess.run(exec_cmd, check=False)
         finally:
-            # Stop the container (will be removed due to --rm)
             print(f"Stopping container {container_name}...", file=sys.stderr)
-            subprocess.run(["docker", "stop", container_name], capture_output=True)
+            _stop_task_container(container_name, log)
 
-    finally:
-        # Clean up temp directory
-        shutil.rmtree(temp_dir, ignore_errors=True)
 
 def main() -> None:
     """Parse CLI arguments and dispatch to the appropriate command handler.
@@ -590,6 +582,7 @@ def main() -> None:
     }
 
     commands[args.command](args)
+
 
 if __name__ == "__main__":
     main()

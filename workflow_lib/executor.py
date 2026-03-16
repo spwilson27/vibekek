@@ -208,7 +208,7 @@ def get_gitlab_remote_url(root_dir: str, remote_name: str = "origin") -> str:
 # Host-identity env vars that must not be forwarded into Docker containers.
 # Each AI CLI resolves its config directory from HOME; forwarding a host-side
 # HOME that doesn't exist inside the container causes an immediate ENOENT crash.
-_DOCKER_ENV_SKIP = frozenset({"HOME", "USER", "LOGNAME", "SHELL", "PWD", "OLDPWD"})
+_DOCKER_ENV_SKIP = frozenset({"HOME", "USER", "LOGNAME", "SHELL", "PWD", "OLDPWD", "PATH"})
 
 
 def _write_container_env_file(tmpdir: str) -> str:
@@ -275,6 +275,7 @@ def _start_task_container(
     log: Callable,
     sccache_config: Optional[Any] = None,
     sccache_dist_config: Optional[Any] = None,
+    configure_containers: bool = True,
 ) -> None:
     """Start a detached Docker container for the duration of one workflow task.
 
@@ -297,6 +298,8 @@ def _start_task_container(
         When provided and enabled, adds sccache environment variables and host mapping.
     :param sccache_dist_config: Optional :class:`~workflow_lib.config.SCCacheDistConfig`.
         When provided and enabled, adds sccache-dist environment variables and host mapping.
+    :param configure_containers: Whether to configure containers with sccache environment
+        variables. Defaults to True. When False, containers run without sccache configuration.
     :raises FileNotFoundError: If a ``copy_files`` src path does not exist.
     """
     import warnings as _warnings
@@ -336,8 +339,8 @@ def _start_task_container(
         "--env-file", env_file,
     ] + volume_flags
 
-    # Add sccache host mapping if enabled
-    if sccache_config is not None and sccache_config.enabled:
+    # Add sccache host mapping if enabled and configure_containers is True
+    if configure_containers and sccache_config is not None and sccache_config.enabled:
         # Add --add-host for host.docker.internal resolution (Linux requires host-gateway)
         docker_cmd += ["--add-host", "host.docker.internal:host-gateway"]
         # Add sccache environment variables
@@ -347,8 +350,9 @@ def _start_task_container(
         ]
         log(f"      [sccache] Configuring container for sccache server at {sccache_config.host}:{sccache_config.port}")
 
-    # Add sccache-dist configuration if enabled (takes precedence over local sccache)
-    if sccache_dist_config is not None and sccache_dist_config.enabled:
+    # Add sccache-dist configuration if enabled and configure_containers is True
+    # (sccache-dist takes precedence over local sccache)
+    if configure_containers and sccache_dist_config is not None and sccache_dist_config.enabled:
         # Add --add-host for host.docker.internal if not already added
         if "--add-host" not in docker_cmd:
             docker_cmd += ["--add-host", "host.docker.internal:host-gateway"]
@@ -1129,7 +1133,13 @@ def _stage_clone(
         env_file = _write_container_env_file(tmpdir)
         import uuid as _uuid
         _container_name = f"ai_{stage_label}_{safe_task_id}_{_uuid.uuid4().hex[:8]}"
-        _start_task_container(_container_name, docker_config, env_file, _log, sccache_config, sccache_dist_config)
+        
+        # Get sccache_services config for configure_containers setting
+        from workflow_lib.config import get_sccache_services_config
+        services_cfg = get_sccache_services_config()
+        configure_containers = services_cfg.configure_containers if services_cfg else True
+        
+        _start_task_container(_container_name, docker_config, env_file, _log, sccache_config, sccache_dist_config, configure_containers)
         _log(f"      [{stage_label}] Cloning repository into container...")
         if dashboard:
             dashboard.set_agent(full_task_id, stage_label, "cloning", "")
@@ -2446,5 +2456,4 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
         notify_failure("Run workflow halted due to task failures.",
                        context="\n".join(failed_tasks))
         sys.exit(1)
-
 
