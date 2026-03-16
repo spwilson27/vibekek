@@ -249,6 +249,13 @@ def _docker_exec(
     :param log: Optional callable for logging stderr on failure.
     :returns: :class:`subprocess.CompletedProcess`.
     """
+    import time as _time
+    _exec_start = _time.time()
+    
+    # Log the exec attempt with container name and command
+    if log:
+        log(f"      [docker exec] BEGIN: container={container_name}, cmd={' '.join(cmd[:3])}...")
+    
     exec_cmd = ["docker", "exec", "-i", "--workdir", "/workspace"]
     if env_file:
         exec_cmd += ["--env-file", env_file]
@@ -259,12 +266,24 @@ def _docker_exec(
         text=True,
         check=False,
     )
-    if check and result.returncode != 0:
+    elapsed = _time.time() - _exec_start
+    
+    if result.returncode != 0:
         if log:
+            log(f"      [docker exec] END: container={container_name}, rc={result.returncode}, elapsed={elapsed:.2f}s")
+            if "No such exec instance" in result.stderr:
+                log(f"      [docker exec] ERROR: Container {container_name} does not exist or was removed")
+            if result.stderr.strip():
+                log(f"      [docker exec] stderr: {result.stderr.strip()}")
+        if check:
             log(f"      [!] docker exec failed (rc={result.returncode}): {' '.join(cmd)}")
             if result.stderr:
                 log(f"          {result.stderr.strip()}")
-        raise subprocess.CalledProcessError(result.returncode, exec_cmd, result.stdout, result.stderr)
+            raise subprocess.CalledProcessError(result.returncode, exec_cmd, result.stdout, result.stderr)
+    else:
+        if log:
+            log(f"      [docker exec] OK: container={container_name}, rc=0, elapsed={elapsed:.2f}s")
+    
     return result
 
 
@@ -303,7 +322,11 @@ def _start_task_container(
     :raises FileNotFoundError: If a ``copy_files`` src path does not exist.
     """
     import warnings as _warnings
+    import time as _time
     dc = docker_config
+    
+    _start_time = _time.time()
+    log(f"      [docker] BEGIN container creation: {container_name}")
 
     # Build volume flags
     volume_flags: List[str] = []
@@ -367,9 +390,11 @@ def _start_task_container(
     docker_cmd += [dc.image, "sleep", "infinity"]
 
     log(f"      [docker] Starting container {container_name} ({dc.image})...")
-    subprocess.run(docker_cmd, check=True, capture_output=True)
+    start_result = subprocess.run(docker_cmd, check=True, capture_output=True)
+    log(f"      [docker] Container {container_name} started in {_time.time() - _start_time:.2f}s (rc={start_result.returncode})")
     with _active_containers_lock:
         _active_containers.add(container_name)
+    log(f"      [docker] Container {container_name} registered in _active_containers")
 
     # Copy files into the container after it starts to avoid permission issues
     # with bind-mounted files (e.g. .git-credentials with mode 0600)
@@ -412,8 +437,30 @@ def _stop_task_container(container_name: str, log: Callable) -> None:
     """
     if not container_name:
         return
-    log(f"      [docker] Stopping container {container_name}...")
-    subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, check=False)
+    import time as _time
+    _stop_start = _time.time()
+    log(f"      [docker] BEGIN container removal: {container_name}")
+    
+    # Check if container exists before attempting removal
+    inspect_result = subprocess.run(
+        ["docker", "inspect", container_name],
+        capture_output=True, text=True, check=False
+    )
+    if inspect_result.returncode != 0:
+        log(f"      [docker] Container {container_name} does not exist (already removed?)")
+        with _active_containers_lock:
+            _active_containers.discard(container_name)
+        return
+    
+    stop_result = subprocess.run(
+        ["docker", "rm", "-f", container_name],
+        capture_output=True, text=True, check=False
+    )
+    elapsed = _time.time() - _stop_start
+    if stop_result.returncode == 0:
+        log(f"      [docker] Container {container_name} removed in {elapsed:.2f}s")
+    else:
+        log(f"      [docker] Container {container_name} removal failed in {elapsed:.2f}s: {stop_result.stderr.strip()}")
     with _active_containers_lock:
         _active_containers.discard(container_name)
 
@@ -1120,8 +1167,12 @@ def _stage_clone(
         ``subprocess.CalledProcessError`` / ``RuntimeError`` on clone failure.
     :raises RuntimeError: When the clone or checkout fails.
     """
+    import time as _time
     phase_id, task_id = full_task_id.split("/", 1)
     safe_task_id = task_id.replace("/", "_").replace(".md", "")
+    
+    _stage_start = _time.time()
+    _log(f"      [{stage_label}] BEGIN stage clone for {full_task_id}")
 
     tmpdir = tempfile.mkdtemp(prefix=f"ai_{safe_task_id}_{stage_label}_")
     os.chmod(tmpdir, 0o755)
@@ -1133,12 +1184,11 @@ def _stage_clone(
         env_file = _write_container_env_file(tmpdir)
         import uuid as _uuid
         _container_name = f"ai_{stage_label}_{safe_task_id}_{_uuid.uuid4().hex[:8]}"
-        
         # Get sccache_services config for configure_containers setting
         from workflow_lib.config import get_sccache_services_config
         services_cfg = get_sccache_services_config()
         configure_containers = services_cfg.configure_containers if services_cfg else True
-        
+        _log(f"      [{stage_label}] Container name will be: {_container_name}")
         _start_task_container(_container_name, docker_config, env_file, _log, sccache_config, sccache_dist_config, configure_containers)
         _log(f"      [{stage_label}] Cloning repository into container...")
         if dashboard:
@@ -1157,6 +1207,8 @@ def _stage_clone(
             _stop_task_container(_container_name, _log)
             raise RuntimeError(f"Clone/checkout failed: {err}") from e
         cwd = "/workspace"
+        
+        _log(f"      [{stage_label}] Stage clone completed in {_time.time() - _stage_start:.2f}s: container={_container_name}")
         
         # Start RAG MCP server in the container workspace (if enabled)
         if get_rag_enabled():
@@ -1233,15 +1285,23 @@ def _stage_cleanup(
     _log: Callable,
 ) -> None:
     """Stop container, reclaim ownership, and optionally delete *tmpdir*."""
+    import time as _time
+    _cleanup_start = _time.time()
+    _log(f"      [_stage_cleanup] BEGIN: container={container_name}, success={success}, cleanup={cleanup}")
+    
     if container_name:
+        _log(f"      [_stage_cleanup] Calling _stop_task_container for {container_name}")
         _stop_task_container(container_name, _log)
     if tmpdir and not container_name:
         _reclaim_dir_ownership(tmpdir, _log)
     if success or (cleanup and tmpdir):
         if tmpdir:
+            _log(f"      [_stage_cleanup] Removing tmpdir: {tmpdir}")
             shutil.rmtree(tmpdir, ignore_errors=True)
     else:
         _log(f"      [!] Stage failed. Leaving clone {tmpdir} and branch {branch_name} for investigation.")
+    
+    _log(f"      [_stage_cleanup] END: elapsed={_time.time() - _cleanup_start:.2f}s")
 
 
 def run_impl_stage(
