@@ -926,7 +926,7 @@ class CodexRunner(AIRunner):
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
-        cmd = ["codex", "exec", "--full-auto"]
+        cmd = ["codex", "exec", "--full-auto", '--sandbox=danger-full-access']
         if self.model:
             cmd += ["-m", self.model]
         for path in (image_paths or []):
