@@ -16,7 +16,8 @@ Example ``.workflow.jsonc``::
 import os
 import re
 import json
-from typing import Any, Dict, List
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 from .constants import TOOLS_DIR, ROOT_DIR
 
@@ -51,8 +52,9 @@ def load_config() -> Dict[str, Any]:
         return {}
     with open(cfg, "r", encoding="utf-8") as f:
         raw = f.read()
-    # Strip // line comments and trailing commas before parsing
-    stripped = re.sub(r"//[^\n]*", "", raw)
+    # Strip // line comments (only when // appears at start of line or after whitespace)
+    # and trailing commas before parsing. Be careful not to strip // inside strings (e.g., URLs).
+    stripped = re.sub(r"(?m)^\s*//[^\n]*", "", raw)  # Only strip // at start of lines
     stripped = re.sub(r",\s*([}\]])", r"\1", stripped)
     return json.loads(stripped)
 
@@ -207,6 +209,183 @@ def get_docker_config() -> Any:
     if "docker" not in cfg:
         return None
     return _parse_docker_dict(cfg["docker"], "global")
+
+
+@dataclass
+class SCCacheConfig:
+    """sccache server configuration for shared Rust build cache.
+
+    When enabled, all workflow agents (containerized or native) connect to
+    the sccache server running on the host for accelerated compilation.
+
+    :param enabled: Whether sccache integration is enabled (default: false).
+    :param host: Hostname or IP address for agents to reach the sccache server.
+        For Docker containers, typically "host.docker.internal".
+    :param port: TCP port the sccache server listens on (default: 6301).
+    :param cache_dir: Path to the cache directory on the host filesystem.
+    :param auto_start: Whether to auto-start sccache server when workflow runs (default: false).
+        When true, checks if server is running and starts it if not.
+    """
+
+    enabled: bool = False
+    host: str = "host.docker.internal"
+    port: int = 6301
+    cache_dir: str = "/home/mrwilson/.cache/sccache"
+    auto_start: bool = False
+
+
+def get_sccache_config() -> Optional[SCCacheConfig]:
+    """Return :class:`SCCacheConfig` from ``.workflow.jsonc``.
+
+    Reads the top-level ``"sccache"`` block.  When present and enabled, all
+    workflow steps (implementation, review, presubmit, commit, merge) use
+    the sccache server for Rust compilation caching.
+
+    :raises ValueError: If the ``sccache`` block is present but missing
+        required fields or contains invalid values.
+    :returns: A :class:`SCCacheConfig` instance, or ``None`` when no
+        ``"sccache"`` block is configured.
+    """
+    cfg = load_config()
+    if "sccache" not in cfg:
+        return None
+
+    scc = cfg["sccache"]
+    return SCCacheConfig(
+        enabled=bool(scc.get("enabled", False)),
+        host=str(scc.get("host", "host.docker.internal")),
+        port=int(scc.get("port", 6301)),
+        cache_dir=str(scc.get("cache_dir", "/home/mrwilson/.cache/sccache")),
+        auto_start=bool(scc.get("auto_start", False)),
+    )
+
+
+def get_sccache_enabled() -> bool:
+    """Return whether sccache integration is enabled.
+
+    Reads the ``"sccache.enabled"`` key from ``.workflow.jsonc``.  Defaults to
+    ``False`` when the key is absent or the config file cannot be loaded.
+
+    :returns: ``True`` if sccache is enabled, ``False`` otherwise.
+    :rtype: bool
+    """
+    cfg = get_sccache_config()
+    return cfg is not None and cfg.enabled
+
+
+@dataclass
+class SCCacheDistConfig:
+    """sccache-dist configuration for distributed compilation.
+
+    When enabled, workflow agents connect to the sccache-dist scheduler
+    for remote build execution across multiple machines.
+
+    :param enabled: Whether sccache-dist integration is enabled (default: false).
+    :param scheduler_url: URL of the sccache-dist scheduler endpoint.
+        For Docker containers, use "http://host.docker.internal:10600".
+    :param auth_token: Authentication token for scheduler access.
+        Used for client authentication with the scheduler.
+    :param config_file: Path to the scheduler config file on the host.
+    :param auto_start: Whether to auto-start scheduler when workflow runs (default: false).
+        When true, checks if scheduler is running and starts it if not.
+    """
+
+    enabled: bool = False
+    scheduler_url: str = "http://host.docker.internal:10600"
+    auth_token: str = "gooey-dist-token-2024"
+    config_file: str = "/home/mrwilson/.tools/sccache-dist.toml"
+    auto_start: bool = False
+
+
+def get_sccache_dist_config() -> Optional[SCCacheDistConfig]:
+    """Return :class:`SCCacheDistConfig` from ``.workflow.jsonc``.
+
+    Reads the top-level ``"sccache_dist"`` block.  When present and enabled,
+    workflow agents connect to the sccache-dist scheduler for distributed
+    compilation.
+
+    :raises ValueError: If the ``sccache_dist`` block is present but missing
+        required fields or contains invalid values.
+    :returns: A :class:`SCCacheDistConfig` instance, or ``None`` when no
+        ``"sccache_dist"`` block is configured.
+    """
+    cfg = load_config()
+    if "sccache_dist" not in cfg:
+        return None
+
+    scd = cfg["sccache_dist"]
+    return SCCacheDistConfig(
+        enabled=bool(scd.get("enabled", False)),
+        scheduler_url=str(scd.get("scheduler_url", "http://host.docker.internal:10600")),
+        auth_token=str(scd.get("auth_token", "gooey-dist-token-2024")),
+        config_file=str(scd.get("config_file", "/home/mrwilson/.tools/sccache-dist.toml")),
+        auto_start=bool(scd.get("auto_start", False)),
+    )
+
+
+def get_sccache_dist_enabled() -> bool:
+    """Return whether sccache-dist integration is enabled.
+
+    Reads the ``"sccache_dist.enabled"`` key from ``.workflow.jsonc``.  Defaults to
+    ``False`` when the key is absent or the config file cannot be loaded.
+
+    :returns: ``True`` if sccache-dist is enabled, ``False`` otherwise.
+    :rtype: bool
+    """
+    cfg = get_sccache_dist_config()
+    return cfg is not None and cfg.enabled
+
+
+def ensure_sccache_services():
+    """Auto-start sccache services if configured with auto_start=True.
+
+    Checks if sccache server and/or sccache-dist scheduler are running
+    based on config settings, and starts them if not.
+
+    :returns: Tuple of (sccache_ok, sccache_dist_ok) indicating service status.
+    :rtype: tuple
+    """
+    import subprocess
+    from .constants import ROOT_DIR
+
+    sccache_ok = True
+    sccache_dist_ok = True
+
+    # Check and start sccache server if auto_start enabled
+    sccache_cfg = get_sccache_config()
+    if sccache_cfg and sccache_cfg.enabled and sccache_cfg.auto_start:
+        # Check if running
+        result = subprocess.run(["pgrep", "-f", "sccache"], capture_output=True, text=True)
+        if result.returncode != 0:
+            # Not running, start it
+            sccache_script = os.path.join(ROOT_DIR, ".tools", "start-sccache.sh")
+            if os.path.exists(sccache_script):
+                subprocess.run([sccache_script, "start"], capture_output=True)
+                # Wait for it to be ready
+                import time
+                time.sleep(2)
+                # Verify
+                result = subprocess.run(["pgrep", "-f", "sccache"], capture_output=True, text=True)
+                sccache_ok = result.returncode == 0
+
+    # Check and start sccache-dist scheduler if auto_start enabled
+    dist_cfg = get_sccache_dist_config()
+    if dist_cfg and dist_cfg.enabled and dist_cfg.auto_start:
+        # Check if running
+        result = subprocess.run(["pgrep", "-f", "sccache-dist"], capture_output=True, text=True)
+        if result.returncode != 0:
+            # Not running, start it
+            dist_script = os.path.join(ROOT_DIR, ".tools", "start-sccache-dist.sh")
+            if os.path.exists(dist_script):
+                subprocess.run([dist_script, "start"], capture_output=True)
+                # Wait for it to be ready
+                import time
+                time.sleep(2)
+                # Verify
+                result = subprocess.run(["pgrep", "-f", "sccache-dist"], capture_output=True, text=True)
+                sccache_dist_ok = result.returncode == 0
+
+    return sccache_ok, sccache_dist_ok
 
 
 def get_agent_pool_configs() -> List[Any]:

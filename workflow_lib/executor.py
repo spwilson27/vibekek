@@ -44,7 +44,7 @@ from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR, REPLAN_STATE_FILE, STATE_
 from .context import ProjectContext
 from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state, load_dags, get_tasks_dir
-from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config, get_rag_enabled
+from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config, get_rag_enabled, get_sccache_config, get_sccache_dist_config
 from .discord import notify_failure
 from .dashboard import make_dashboard
 from .agent_pool import AgentPoolManager, QUOTA_RETURN_CODE, QUOTA_PATTERNS, QUOTA_TRANSIENT_PATTERNS, parse_quota_reset_seconds
@@ -273,6 +273,8 @@ def _start_task_container(
     docker_config: Any,
     env_file: str,
     log: Callable,
+    sccache_config: Optional[Any] = None,
+    sccache_dist_config: Optional[Any] = None,
 ) -> None:
     """Start a detached Docker container for the duration of one workflow task.
 
@@ -281,10 +283,20 @@ def _start_task_container(
     After the container starts, ``copy_files`` are copied in via ``docker cp`` to
     avoid permission issues with bind-mounted files (e.g. ``.git-credentials``).
 
+    When *sccache_config* is provided and enabled, configures the container to
+    connect to the host sccache server for Rust build caching.
+
+    When *sccache_dist_config* is provided and enabled, configures the container
+    to connect to the sccache-dist scheduler for distributed compilation.
+
     :param container_name: Unique name for the container.
     :param docker_config: :class:`~workflow_lib.agent_pool.DockerConfig`.
     :param env_file: Path to the env-file written by :func:`_write_container_env_file`.
     :param log: Callable for status messages.
+    :param sccache_config: Optional :class:`~workflow_lib.config.SCCacheConfig`.
+        When provided and enabled, adds sccache environment variables and host mapping.
+    :param sccache_dist_config: Optional :class:`~workflow_lib.config.SCCacheDistConfig`.
+        When provided and enabled, adds sccache-dist environment variables and host mapping.
     :raises FileNotFoundError: If a ``copy_files`` src path does not exist.
     """
     import warnings as _warnings
@@ -317,11 +329,38 @@ def _start_task_container(
         # Use docker cp for all copy_files to avoid permission issues with bind mounts
         copy_files_to_cp.append(cf)
 
+    # Build docker run command
     docker_cmd = [
         "docker", "run", "-d",
         "--name", container_name,
         "--env-file", env_file,
-    ] + volume_flags + [dc.image, "sleep", "infinity"]
+    ] + volume_flags
+
+    # Add sccache host mapping if enabled
+    if sccache_config is not None and sccache_config.enabled:
+        # Add --add-host for host.docker.internal resolution (Linux requires host-gateway)
+        docker_cmd += ["--add-host", "host.docker.internal:host-gateway"]
+        # Add sccache environment variables
+        docker_cmd += [
+            "-e", f"RUSTC_WRAPPER=sccache",
+            "-e", f"SCCACHE_SERVER={sccache_config.host}:{sccache_config.port}",
+        ]
+        log(f"      [sccache] Configuring container for sccache server at {sccache_config.host}:{sccache_config.port}")
+
+    # Add sccache-dist configuration if enabled (takes precedence over local sccache)
+    if sccache_dist_config is not None and sccache_dist_config.enabled:
+        # Add --add-host for host.docker.internal if not already added
+        if "--add-host" not in docker_cmd:
+            docker_cmd += ["--add-host", "host.docker.internal:host-gateway"]
+        # Add sccache-dist environment variables
+        docker_cmd += [
+            "-e", f"RUSTC_WRAPPER=sccache",
+            "-e", f"SCCACHE_DIST_SCHEDULER_URL={sccache_dist_config.scheduler_url}",
+            "-e", f"SCCACHE_AUTH_TOKEN={sccache_dist_config.auth_token}",
+        ]
+        log(f"      [sccache-dist] Configuring container for scheduler at {sccache_dist_config.scheduler_url}")
+
+    docker_cmd += [dc.image, "sleep", "infinity"]
 
     log(f"      [docker] Starting container {container_name} ({dc.image})...")
     subprocess.run(docker_cmd, check=True, capture_output=True)
@@ -1060,6 +1099,8 @@ def _stage_clone(
     docker_config: Optional[Any],
     dashboard: Any,
     _log: Callable,
+    sccache_config: Optional[Any] = None,
+    sccache_dist_config: Optional[Any] = None,
 ) -> "tuple[str, str, str, str]":
     """Create a fresh tmpdir + optional container, clone the repo, and checkout *checkout_ref*.
 
@@ -1067,6 +1108,10 @@ def _stage_clone(
     task branch).  For review / validate stages it is ``origin/{branch_name}``
     (checks out the existing task branch).
 
+    :param sccache_config: Optional :class:`~workflow_lib.config.SCCacheConfig`.
+        When provided and enabled, passes to _start_task_container for sccache setup.
+    :param sccache_dist_config: Optional :class:`~workflow_lib.config.SCCacheDistConfig`.
+        When provided and enabled, passes to _start_task_container for sccache-dist setup.
     :returns: ``(tmpdir, container_name, env_file, cwd)`` on success, or raises
         ``subprocess.CalledProcessError`` / ``RuntimeError`` on clone failure.
     :raises RuntimeError: When the clone or checkout fails.
@@ -1084,7 +1129,7 @@ def _stage_clone(
         env_file = _write_container_env_file(tmpdir)
         import uuid as _uuid
         _container_name = f"ai_{stage_label}_{safe_task_id}_{_uuid.uuid4().hex[:8]}"
-        _start_task_container(_container_name, docker_config, env_file, _log)
+        _start_task_container(_container_name, docker_config, env_file, _log, sccache_config, sccache_dist_config)
         _log(f"      [{stage_label}] Cloning repository into container...")
         if dashboard:
             dashboard.set_agent(full_task_id, stage_label, "cloning", "")
@@ -1229,9 +1274,14 @@ def run_impl_stage(
         clone_remote = remote_url or root_dir
         checkout_ref = f"origin/{dev_branch}"
 
+        # Get sccache and sccache-dist config for container setup
+        from .config import get_sccache_config, get_sccache_dist_config
+        sccache_config = get_sccache_config()
+        sccache_dist_config = get_sccache_dist_config()
+
         tmpdir, _container_name, env_file, cwd = _stage_clone(
             "Impl", full_task_id, branch_name, clone_remote, checkout_ref,
-            docker_config, dashboard, _log,
+            docker_config, dashboard, _log, sccache_config, sccache_dist_config,
         )
 
         if serena:
@@ -1323,9 +1373,14 @@ def run_review_stage(
         clone_remote = remote_url or root_dir
         checkout_ref = f"origin/{branch_name}"
 
+        # Get sccache and sccache-dist config for container setup
+        from .config import get_sccache_config, get_sccache_dist_config
+        sccache_config = get_sccache_config()
+        sccache_dist_config = get_sccache_dist_config()
+
         tmpdir, _container_name, env_file, cwd = _stage_clone(
             "Review", full_task_id, branch_name, clone_remote, checkout_ref,
-            docker_config, dashboard, _log,
+            docker_config, dashboard, _log, sccache_config, sccache_dist_config,
         )
 
         context = {
@@ -1407,9 +1462,14 @@ def run_validate_stage(
         clone_remote = remote_url or root_dir
         checkout_ref = f"origin/{branch_name}"
 
+        # Get sccache and sccache-dist config for container setup
+        from .config import get_sccache_config, get_sccache_dist_config
+        sccache_config = get_sccache_config()
+        sccache_dist_config = get_sccache_dist_config()
+
         tmpdir, _container_name, env_file, cwd = _stage_clone(
             "Verify", full_task_id, branch_name, clone_remote, checkout_ref,
-            docker_config, dashboard, _log,
+            docker_config, dashboard, _log, sccache_config, sccache_dist_config,
         )
 
         task_details = get_task_details(full_task_id)
@@ -2168,6 +2228,14 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
     :type cleanup: bool
     :raises SystemExit: When one or more tasks fail.
     """
+    # Auto-start sccache services if configured
+    from .config import ensure_sccache_services
+    sccache_ok, sccache_dist_ok = ensure_sccache_services()
+    if not sccache_ok:
+        _log("[!] Warning: sccache server failed to auto-start")
+    if not sccache_dist_ok:
+        _log("[!] Warning: sccache-dist scheduler failed to auto-start")
+
     serena_enabled = get_serena_enabled()
     dev_branch = get_dev_branch()
 

@@ -349,11 +349,12 @@ def cmd_docker(args: argparse.Namespace) -> None:
             dest_path = os.path.join(temp_dir, dest_dir.lstrip("/"))
             os.makedirs(dest_path, exist_ok=True)
             dest_file = os.path.join(dest_path, os.path.basename(cf.dest))
-            shutil.copy2(cf.src, dest_file)
-            print(f"Copied: {cf.src} -> {dest_file}")
-            # Track relative path from temp_dir for docker cp
-            rel_path = os.path.relpath(dest_file, temp_dir)
-            copied_files.append((rel_path, cf.dest))
+            if os.path.isfile(cf.src):
+                shutil.copy2(cf.src, dest_file)
+                print(f"Copied: {cf.src} -> {dest_file}")
+                # Track relative path from temp_dir for docker cp
+                rel_path = os.path.relpath(dest_file, temp_dir)
+                copied_files.append((rel_path, cf.dest))
 
         # Start container in detached mode (detached, interactive, with pseudo-tty)
         container_name = f"workflow-docker-{os.getpid()}"

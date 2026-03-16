@@ -1,0 +1,25 @@
+# sccache server configuration for gooey workflow
+# Shared compilation cache for all agent containers
+
+# Server binds to all interfaces on this port
+# Default sccache port is 6301
+port = 6301
+host = "0.0.0.0"
+
+# Cache storage configuration
+# Using local disk cache - shared directory mounted by all containers
+cache_dir = "/home/mrwilson/.cache/sccache"
+
+# Maximum size of the disk cache (in bytes)
+# 10GB = 10 * 1024 * 1024 * 1024
+cache_size = 10737418240
+
+# Compression level for stored objects (0-9)
+# Higher = better compression but slower
+compression_level = 3
+
+# Log file for server output
+log_file = "/home/mrwilson/.cache/sccache/sccache-server.log"
+
+# Enable debug logging (set to true for troubleshooting)
+debug = false

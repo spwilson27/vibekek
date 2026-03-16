@@ -1,0 +1,18 @@
+# sccache-dist scheduler configuration for gooey workflow
+# This scheduler manages distributed compilation across agent containers
+
+# Scheduler listens on all interfaces so containers can connect
+# Port 10600 is the default sccache-dist scheduler port
+public_addr = "0.0.0.0:10600"
+
+# Client authentication - containers connecting to scheduler
+# Using token-based auth for simplicity
+[client_auth]
+type = "token"
+token = "gooey-dist-token-2024"
+
+# Server authentication - for sccache-dist servers that register
+# Using JWT HS256 for secure server authentication
+[server_auth]
+type = "jwt_hs256"
+secret_key = "npy7VVsgbmkP2ilSpvCt7P2wpaAuqven7Mj_UZEf2eg"
