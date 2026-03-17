@@ -105,6 +105,62 @@ def parse_stream_json_line(raw: str) -> Optional[str]:
 
     return None
 
+
+def parse_codex_json_line(raw: str) -> Optional[str]:
+    """Extract human-readable text from a single Codex JSONL line.
+
+    Codex CLI with ``--json`` emits JSONL with types like:
+    - ``thread.started``, ``turn.started``, ``turn.completed`` (metadata, ignored)
+    - ``item.completed`` with ``type: "agent_message"`` (text response)
+    - ``item.completed`` with ``type: "command_execution"`` (tool results)
+
+    :param raw: A single line of JSONL from codex stdout.
+    :returns: Human-readable text or ``None`` if the line should be skipped.
+    """
+    import json as _json
+    stripped = raw.strip()
+    if not stripped or not stripped.startswith("{"):
+        return None
+    try:
+        obj = _json.loads(stripped)
+    except _json.JSONDecodeError:
+        return None
+
+    msg_type = obj.get("type")
+
+    # Skip metadata events
+    if msg_type in ("thread.started", "turn.started", "turn.completed", "item.started"):
+        return None
+
+    if msg_type == "item.completed":
+        item = obj.get("item", {})
+        item_type = item.get("type")
+
+        if item_type == "agent_message":
+            text = item.get("text", "")
+            if text.strip():
+                return text.strip()
+
+        elif item_type == "command_execution":
+            command = item.get("command", "")
+            output = item.get("aggregated_output", "")
+            exit_code = item.get("exit_code")
+            status = item.get("status", "")
+
+            parts = []
+            if command:
+                parts.append(f"[command] {command}")
+            if output:
+                parts.append(f"[result] {output.strip()}")
+            elif status == "completed":
+                parts.append(f"[result] ok (exit_code={exit_code})")
+            elif status == "failed":
+                parts.append(f"[result] error (exit_code={exit_code})")
+            return "\n".join(parts) if parts else None
+
+    return None
+
+
 def _load_resume_prompt() -> str:
     """Load the resume prompt from the prompts directory."""
     prompt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts", "resume.md")
@@ -336,19 +392,23 @@ class AIRunner:
         timeout: Optional[int] = None,
         prompt: str = "",
         abort_event: Optional[threading.Event] = None,
+        parser_fn: Optional[Callable[[str], Optional[str]]] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Run *cmd* and parse its stream-json output, calling *on_line* for
         each meaningful extracted line.
 
         Uses :func:`parse_stream_json_line` to convert Anthropic-style JSONL
-        into human-readable text.
+        into human-readable text, or a custom *parser_fn* if provided.
 
         :param prompt: Optional text written to the process stdin.  If empty,
             stdin is connected to ``/dev/null``.
         :param abort_event: Optional :class:`threading.Event`.  When set, the
             process is killed and the method returns early.
+        :param parser_fn: Optional custom parser function. If not provided,
+            :func:`parse_stream_json_line` is used.
         :raises subprocess.TimeoutExpired: When the process exceeds *timeout*.
         """
+        parser = parser_fn if parser_fn is not None else parse_stream_json_line
         use_stdin = bool(prompt)
 
         actual_cmd = self._build_exec_cmd(self._wrap_cmd(cmd))
@@ -387,7 +447,7 @@ class AIRunner:
                     raw_line = proc.stdout.readline()
                     if not raw_line:
                         break
-                    parsed = parse_stream_json_line(raw_line)
+                    parsed = parser(raw_line)
                     if parsed is None:
                         continue
 
@@ -401,6 +461,7 @@ class AIRunner:
 
                     last_activity[0] = time.monotonic()
 
+                    # Anthropic-specific streaming logic
                     if msg_type == "stream_event":
                         has_deltas = True
                         token_buf += parsed
@@ -430,7 +491,7 @@ class AIRunner:
                                 if sub.strip():
                                     on_line(sub)
                     else:
-                        # user messages (tool results), etc.
+                        # user messages (tool results), etc. or custom formats
                         result_text.append(parsed)
                         for sub in parsed.splitlines():
                             if sub.strip():
@@ -942,11 +1003,12 @@ class QwenRunner(SessionResumableRunner):
 class CodexRunner(AIRunner):
     """Runner for the ``codex`` CLI (OpenAI Codex).
 
-    Uses ``codex exec --full-auto`` for non-interactive execution.
+    Uses ``codex exec --full-auto --json`` for non-interactive execution
+    with structured JSONL output to avoid verbose stderr spam.
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
-        cmd = ["codex", "exec", "--full-auto", '--sandbox=danger-full-access']
+        cmd = ["codex", "exec", "--full-auto", "--json", '--sandbox=danger-full-access']
         if self.model:
             cmd += ["-m", self.model]
         for path in (image_paths or []):
@@ -962,14 +1024,20 @@ class CodexRunner(AIRunner):
         timeout: Optional[int] = None,
         abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
-        """Run ``codex exec --full-auto`` with *full_prompt* as the prompt argument.
+        """Run ``codex exec --full-auto --json`` with *full_prompt* as the prompt argument.
+
+        Uses :meth:`_run_streaming_json` with :func:`parse_codex_json_line` to
+        parse structured JSONL output, avoiding verbose stderr output from codex.
 
         :param on_line: Optional streaming callback; see :meth:`AIRunner.run`.
         """
         cmd = self.get_cmd(image_paths)
         cmd.append(full_prompt)
         if on_line is not None:
-            return self._run_streaming(cmd, "", cwd, on_line, timeout=timeout, abort_event=abort_event)
+            return self._run_streaming_json(
+                cmd, cwd, on_line, timeout=timeout, abort_event=abort_event, prompt="",
+                parser_fn=parse_codex_json_line
+            )
         return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=self._env())
 
 

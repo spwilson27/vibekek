@@ -248,7 +248,7 @@ class TestRunAiCommandQuotaDetection:
         mock_runner.run.return_value = sp.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
         captured = {}
-        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, container_name=None, env=None):
+        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, container_name=None, env=None, idle_timeout=None):
             captured["user"] = user
             return mock_runner
 
@@ -1062,7 +1062,7 @@ class TestExhaustedCapacityE2E:
 
         call_log: list = []
 
-        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, container_name=None, env=None):
+        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, container_name=None, env=None, idle_timeout=None):
             mock_runner = MagicMock()
             if backend == "gemini":
                 def gemini_run(cwd, prompt, image_paths=None, on_line=None, timeout=None, abort_event=None):

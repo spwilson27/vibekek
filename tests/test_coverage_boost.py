@@ -776,6 +776,7 @@ class TestExecuteDag:
              patch("workflow_lib.executor.get_ready_tasks", side_effect=ready_side), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
+             patch("workflow_lib.executor.os._exit", side_effect=SystemExit(1)), \
              pytest.raises(SystemExit):
             execute_dag("/root", dag, state, 1, "./do presubmit")
 
