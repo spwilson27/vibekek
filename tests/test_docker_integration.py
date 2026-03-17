@@ -470,6 +470,7 @@ class TestDockerWorkflow:
         assert "[sccache] SCCACHE_REDIS=" in combined
         assert "[sccache] Local server OK (Redis-backed)" in combined
 
+    @pytest.mark.slow
     def test_workflow_docker_subcommand_reports_sccache_for_fresh_template_image(self, tmp_path, temp_docker_image):
         """A fresh image built from the template should expose sccache to workflow.py docker."""
         if not shutil.which("script"):

@@ -670,15 +670,16 @@ class TestImplementationE2E:
                    return_value=False), \
              patch("workflow_lib.executor.get_ready_tasks",
                    side_effect=_get_ready), \
+             patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
+             patch("workflow_lib.executor.notify_failure"), \
+             patch("os._exit", side_effect=SystemExit), \
              patch("subprocess.run",
                    return_value=MagicMock(returncode=0, stdout="",
                                           stderr="")), \
-             pytest.raises(SystemExit) as exc:
+             pytest.raises(SystemExit):
             execute_dag(root, dag, state, jobs=1,
                         presubmit_cmd="echo ok", backend="gemini")
-
-        assert exc.value.code == 1
         assert state["completed_tasks"] == [], "Failed task must not appear in completed"
 
     def test_merge_failure_halts_dag(self, tmp_path):

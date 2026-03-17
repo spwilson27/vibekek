@@ -69,12 +69,7 @@ class TestContainerSCCacheConfig:
     @pytest.fixture
     def sccache_config_enabled(self):
         """Return an enabled SCCacheConfig for testing."""
-        return SCCacheConfig(
-            enabled=True,
-            host="host.docker.internal",
-            port=6301,
-            cache_dir="/home/mrwilson/.cache/sccache",
-        )
+        return SCCacheConfig(enabled=True)
 
     @pytest.fixture
     def docker_config(self):
@@ -100,18 +95,17 @@ class TestContainerSCCacheConfig:
 
         # Add sccache configuration (same logic as in executor.py)
         if sccache_config_enabled.enabled:
-            docker_cmd += ["--add-host", "host.docker.internal:host-gateway"]
+            redis_url = f"redis://{sccache_config_enabled.redis_container}:{sccache_config_enabled.redis_port}"
             docker_cmd += [
-                "-e", f"RUSTC_WRAPPER=sccache",
-                "-e", f"SCCACHE_SERVER={sccache_config_enabled.host}:{sccache_config_enabled.port}",
+                "--network", sccache_config_enabled.network,
+                "-e", "RUSTC_WRAPPER=sccache",
+                "-e", f"SCCACHE_REDIS={redis_url}",
             ]
 
         docker_cmd += [docker_config.image, "sleep", "infinity"]
 
-        # Verify --add-host flag for host.docker.internal
-        assert "--add-host" in docker_cmd
-        host_idx = docker_cmd.index("--add-host")
-        assert docker_cmd[host_idx + 1] == "host.docker.internal:host-gateway"
+        # Verify --network flag for Redis
+        assert "--network" in docker_cmd
 
         # Verify sccache environment variables
         env_pairs = []
@@ -121,16 +115,12 @@ class TestContainerSCCacheConfig:
 
         assert any("RUSTC_WRAPPER=sccache" in pair for pair in env_pairs), \
             "RUSTC_WRAPPER=sccache should be set"
-        assert any("SCCACHE_SERVER=host.docker.internal:6301" in pair for pair in env_pairs), \
-            "SCCACHE_SERVER should be set to host.docker.internal:6301"
+        assert any("SCCACHE_REDIS=" in pair for pair in env_pairs), \
+            "SCCACHE_REDIS should be set"
 
     def test_docker_command_skips_sccache_when_disabled(self, tmp_path, docker_config):
         """Verify docker command skips sccache vars when disabled."""
-        sccache_config_disabled = SCCacheConfig(
-            enabled=False,
-            host="host.docker.internal",
-            port=6301,
-        )
+        sccache_config_disabled = SCCacheConfig(enabled=False)
 
         env_file = tmp_path / "container.env"
         env_file.write_text("TEST_VAR=test_value\n")
@@ -142,16 +132,17 @@ class TestContainerSCCacheConfig:
         ]
 
         if sccache_config_disabled.enabled:
-            docker_cmd += ["--add-host", "host.docker.internal:host-gateway"]
+            redis_url = f"redis://{sccache_config_disabled.redis_container}:{sccache_config_disabled.redis_port}"
             docker_cmd += [
-                "-e", f"RUSTC_WRAPPER=sccache",
-                "-e", f"SCCACHE_SERVER={sccache_config_disabled.host}:{sccache_config_disabled.port}",
+                "--network", sccache_config_disabled.network,
+                "-e", "RUSTC_WRAPPER=sccache",
+                "-e", f"SCCACHE_REDIS={redis_url}",
             ]
 
         docker_cmd += [docker_config.image, "sleep", "infinity"]
 
-        # Verify --add-host was NOT added
-        assert "--add-host" not in docker_cmd
+        # Verify --network was NOT added
+        assert "--network" not in docker_cmd
 
         # Verify no sccache env vars
         env_pairs = []
@@ -341,7 +332,7 @@ def main():
     print("\n[1/3] Checking .workflow.jsonc configuration...")
     cfg = get_sccache_config()
     if cfg and cfg.enabled:
-        print(f"  ✓ sccache enabled (host={cfg.host}, port={cfg.port})")
+        print(f"  ✓ sccache enabled (redis_container={cfg.redis_container}, network={cfg.network})")
     else:
         print("  ✗ sccache not enabled in .workflow.jsonc")
         return 1

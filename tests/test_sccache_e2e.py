@@ -32,23 +32,13 @@ from workflow_lib.agent_pool import DockerConfig
 @pytest.fixture
 def sccache_config_enabled():
     """Return an enabled SCCacheConfig for testing."""
-    return SCCacheConfig(
-        enabled=True,
-        host="host.docker.internal",
-        port=6301,
-        cache_dir="/tmp/test-sccache",
-    )
+    return SCCacheConfig(enabled=True)
 
 
 @pytest.fixture
 def sccache_config_disabled():
     """Return a disabled SCCacheConfig for testing."""
-    return SCCacheConfig(
-        enabled=False,
-        host="host.docker.internal",
-        port=6301,
-        cache_dir="/tmp/test-sccache",
-    )
+    return SCCacheConfig(enabled=False)
 
 
 @pytest.fixture
@@ -86,20 +76,20 @@ class TestSCCacheConfigLoader:
         {
             "sccache": {
                 "enabled": true,
-                "host": "host.docker.internal",
-                "port": 6301,
-                "cache_dir": "/custom/cache/dir"
+                "redis_container": "my-redis",
+                "network": "my-net",
+                "redis_port": 6380
             }
         }
         """)
-        
+
         with patch.object(config, "_CONFIG_FILE_ROOT", str(config_file)):
             cfg = get_sccache_config()
             assert cfg is not None
             assert cfg.enabled is True
-            assert cfg.host == "host.docker.internal"
-            assert cfg.port == 6301
-            assert cfg.cache_dir == "/custom/cache/dir"
+            assert cfg.redis_container == "my-redis"
+            assert cfg.network == "my-net"
+            assert cfg.redis_port == 6380
 
     def test_get_sccache_config_missing_section(self, tmp_path):
         """get_sccache_config should return None when sccache section absent."""
@@ -165,6 +155,8 @@ class TestContainerSCCacheConfig:
         run_calls = []
         def mock_run(cmd, **kwargs):
             run_calls.append((cmd, kwargs))
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
         
         log_calls = []
@@ -178,27 +170,26 @@ class TestContainerSCCacheConfig:
                 env_file=tmp_env_file,
                 log=mock_log,
                 sccache_config=sccache_config_enabled,
+                configure_containers=True,
             )
-        
+
         # Verify docker run was called
         assert len(run_calls) > 0
         docker_cmd = run_calls[0][0]
-        
-        # Verify --add-host flag was added
-        assert "--add-host" in docker_cmd
-        host_idx = docker_cmd.index("--add-host")
-        assert docker_cmd[host_idx + 1] == "host.docker.internal:host-gateway"
-        
+
+        # Verify --network flag was added for Redis
+        assert "--network" in docker_cmd
+
         # Verify env vars were added
         assert "-e" in docker_cmd
         env_pairs = []
         for i, arg in enumerate(docker_cmd):
             if arg == "-e" and i + 1 < len(docker_cmd):
                 env_pairs.append(docker_cmd[i + 1])
-        
+
         assert any("RUSTC_WRAPPER=sccache" in pair for pair in env_pairs)
-        assert any("SCCACHE_SERVER=host.docker.internal:6301" in pair for pair in env_pairs)
-        
+        assert any("SCCACHE_REDIS=" in pair for pair in env_pairs)
+
         # Verify log message
         assert any("sccache" in msg.lower() for msg in log_calls)
 
@@ -209,6 +200,8 @@ class TestContainerSCCacheConfig:
         run_calls = []
         def mock_run(cmd, **kwargs):
             run_calls.append((cmd, kwargs))
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
         
         with patch.object(subprocess, "run", side_effect=mock_run):
@@ -245,6 +238,8 @@ class TestContainerSCCacheConfig:
         run_calls = []
         def mock_run(cmd, **kwargs):
             run_calls.append((cmd, kwargs))
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
         
         with patch.object(subprocess, "run", side_effect=mock_run):
@@ -442,7 +437,7 @@ class TestContainerSCCacheDistConfig:
             config_file="/tmp/sccache-dist.toml",
         )
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="container123")
+        mock_run.return_value = MagicMock(returncode=0, stdout="true\n")
 
         _start_task_container(
             "test-container",
@@ -451,9 +446,10 @@ class TestContainerSCCacheDistConfig:
             lambda msg: None,
             sccache_config=None,  # No local sccache
             sccache_dist_config=sccache_dist_config,
+            configure_containers=True,
         )
 
-        docker_cmd = mock_run.call_args[0][0]
+        docker_cmd = mock_run.call_args_list[0][0][0]
 
         # Verify env vars are present
         env_pairs = []
@@ -477,7 +473,7 @@ class TestContainerSCCacheDistConfig:
             config_file="/tmp/sccache-dist.toml",
         )
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="container123")
+        mock_run.return_value = MagicMock(returncode=0, stdout="true\n")
 
         _start_task_container(
             "test-container",
@@ -486,9 +482,10 @@ class TestContainerSCCacheDistConfig:
             lambda msg: None,
             sccache_config=sccache_config_enabled,
             sccache_dist_config=sccache_dist_config,
+            configure_containers=True,
         )
 
-        docker_cmd = mock_run.call_args[0][0]
+        docker_cmd = mock_run.call_args_list[0][0][0]
 
         # Verify both configs add their env vars
         env_pairs = []
@@ -496,8 +493,8 @@ class TestContainerSCCacheDistConfig:
             if arg == "-e" and i + 1 < len(docker_cmd):
                 env_pairs.append(docker_cmd[i + 1])
 
-        # Local sccache vars
-        assert any("SCCACHE_SERVER=host.docker.internal:6301" in pair for pair in env_pairs)
+        # Local sccache vars (Redis-backed)
+        assert any("SCCACHE_REDIS=" in pair for pair in env_pairs)
         # Dist scheduler vars
         assert any("SCCACHE_DIST_SCHEDULER_URL=http://host.docker.internal:10600" in pair for pair in env_pairs)
         assert any("SCCACHE_AUTH_TOKEN=dist-token" in pair for pair in env_pairs)
@@ -514,7 +511,7 @@ class TestContainerSCCacheDistConfig:
             config_file="/tmp/sccache-dist.toml",
         )
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="container123")
+        mock_run.return_value = MagicMock(returncode=0, stdout="true\n")
 
         _start_task_container(
             "test-container",
@@ -525,7 +522,7 @@ class TestContainerSCCacheDistConfig:
             sccache_dist_config=sccache_dist_config,
         )
 
-        docker_cmd = mock_run.call_args[0][0]
+        docker_cmd = mock_run.call_args_list[0][0][0]
 
         env_pairs = []
         for i, arg in enumerate(docker_cmd):

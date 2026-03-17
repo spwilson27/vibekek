@@ -654,6 +654,9 @@ class TestStagedExecuteDagIntegration:
              patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.get_ready_tasks", side_effect=_get_ready), \
              patch("workflow_lib.executor.save_workflow_state"), \
+             patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
+             patch("workflow_lib.executor.notify_failure"), \
+             patch("os._exit", side_effect=SystemExit), \
              patch("subprocess.run",
                    return_value=MagicMock(returncode=0, stdout="", stderr="")), \
              pytest.raises(SystemExit):

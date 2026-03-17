@@ -201,9 +201,9 @@ class TestSCCacheConfigIntegration:
         config_file.write_text(json.dumps({
             "sccache": {
                 "enabled": True,
-                "host": "host.docker.internal",
-                "port": 6301,
-                "cache_dir": "/home/mrwilson/.cache/sccache"
+                "redis_container": "my-redis",
+                "network": "my-net",
+                "redis_port": 6380
             }
         }))
 
@@ -212,12 +212,12 @@ class TestSCCacheConfigIntegration:
         try:
             import workflow_lib.config as config
             config._CONFIG_FILE_ROOT = str(config_file)
-            
+
             cfg = get_sccache_config()
             assert cfg is not None, ".workflow.jsonc should have sccache config"
             assert cfg.enabled is True, "sccache should be enabled"
-            assert cfg.port == 6301, "sccache port should be 6301"
-            assert cfg.host == "host.docker.internal", "sccache host should be host.docker.internal"
+            assert cfg.redis_port == 6380, "sccache redis_port should be 6380"
+            assert cfg.redis_container == "my-redis", "sccache redis_container should be my-redis"
         finally:
             config._CONFIG_FILE_ROOT = original
 

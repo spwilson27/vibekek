@@ -102,7 +102,7 @@ def test_container_env_vars():
     print("\n[4/4] Testing container env vars...")
 
     with patch('workflow_lib.executor.subprocess.run') as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout='test123')
+        mock_run.return_value = MagicMock(returncode=0, stdout='true\n')
 
         dist_cfg = SCCacheDistConfig(
             enabled=True,
@@ -249,9 +249,9 @@ def test_configure_containers():
     import os
     
     with patch('workflow_lib.executor.subprocess.run') as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout='test123')
+        mock_run.return_value = MagicMock(returncode=0, stdout='true\n')
         
-        scc_cfg = SCCacheConfig(enabled=True, host="host.docker.internal", port=6301)
+        scc_cfg = SCCacheConfig(enabled=True)
         dist_cfg = SCCacheDistConfig(enabled=False)
         docker_cfg = DockerConfig(image='test:latest', volumes=[], copy_files=[])
         

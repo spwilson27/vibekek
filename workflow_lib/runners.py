@@ -1126,7 +1126,7 @@ def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optiona
         configuration such as API keys or feature flags.
     :returns: An AI runner instance.
     """
-    common = {"model": model, "user": user, "container_name": container_name, "env": env, "idle_timeout": idle_timeout}
+    common: Dict[str, Any] = {"model": model, "user": user, "container_name": container_name, "env": env, "idle_timeout": idle_timeout}
     if backend == "claude":
         return ClaudeRunner(**common)
     elif backend == "copilot":
