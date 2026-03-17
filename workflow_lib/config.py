@@ -121,7 +121,9 @@ def get_config_defaults() -> Dict[str, Any]:
     * ``model`` (str) — Model name passed through to the AI CLI.
     * ``ignore_sandbox`` (bool) — Disable sandbox violation checks.
     * ``timeout`` (int) — Timeout in seconds per AI agent invocation.
-    * ``retries`` (int) — Max retry attempts per phase on failure.
+    * ``retries`` (int) — Max auto-retry attempts per task on failure.
+      When a task fails, it is re-queued from its last completed stage
+      up to this many times.  Defaults to 0 (no auto-retry).
     * ``soft_timeout`` (int) — Soft timeout in seconds for Qwen sessions.
       When reached, the session is interrupted and resumed with a
       "finish up" prompt.  Defaults to 480 (8 minutes).

@@ -2462,6 +2462,9 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
 
     active_tasks: set = set()
     failed_tasks: set = set()
+    task_attempts: Dict[str, int] = {}  # task_id -> number of attempts so far
+    from .config import get_config_defaults as _get_cfg
+    max_task_retries: int = _get_cfg().get("retries", 0)  # 0 = no auto-retry (default)
     state_lock = threading.Lock()
 
     def _make_stage_callback(task_id: str) -> Callable[[str, str], None]:
@@ -2498,9 +2501,14 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
 
                 with state_lock:
                     active_tasks.add(task_id)
+                    task_attempts.setdefault(task_id, 0)
+                    task_attempts[task_id] += 1
 
                 with state_lock:
                     _starting = _starting_stage_for(task_id, state)
+                attempt_num = task_attempts[task_id]
+                if attempt_num > 1:
+                    dashboard.log(f"   -> [Retry] Task {task_id} attempt {attempt_num}/{max_task_retries + 1} from stage {_starting!r}")
                 future = executor.submit(
                     process_task, root_dir, task_id, presubmit_cmd, backend,
                     serena=serena_enabled, dashboard=dashboard, model=model,
@@ -2600,12 +2608,26 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                             with state_lock:
                                 failed_tasks.add(f"Task {task_id} failed merging into {dev_branch}.")
                     else:
+                        # Check if we can retry
                         with state_lock:
-                            failed_tasks.add(f"Task {task_id} failed implementation.")
+                            attempts = task_attempts.get(task_id, 1)
+                        if attempts <= max_task_retries:
+                            dashboard.log(f"   -> [Retry] Task {task_id} failed (attempt {attempts}/{max_task_retries + 1}). Re-queuing...")
+                            # Re-add to ready pool — the next scheduling iteration
+                            # will pick it up via get_ready_tasks since it's neither
+                            # in active_tasks nor completed_tasks.
+                        else:
+                            with state_lock:
+                                failed_tasks.add(f"Task {task_id} failed implementation after {attempts} attempt(s).")
                 except Exception as exc:
                     traceback.print_exc()
                     with state_lock:
-                        failed_tasks.add(f"Task {task_id} generated an exception.")
+                        attempts = task_attempts.get(task_id, 1)
+                    if attempts <= max_task_retries:
+                        dashboard.log(f"   -> [Retry] Task {task_id} raised exception (attempt {attempts}/{max_task_retries + 1}). Re-queuing...")
+                    else:
+                        with state_lock:
+                            failed_tasks.add(f"Task {task_id} generated an exception after {attempts} attempt(s).")
 
     if failed_tasks:
         dashboard.log("\n" + "="*80)
