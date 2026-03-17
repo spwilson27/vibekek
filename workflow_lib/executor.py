@@ -925,7 +925,7 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
         rag_help = get_rag_help_text()
         prompt = f"{prompt}\n\n{rag_help}"
 
-    msg = f"[{agent_type}] Starting agent in {cwd}..."
+    msg = f"[{agent_type}] Starting agent in {cwd}... (backend={backend})"
     if dashboard:
         dashboard.log(msg)
     else:
@@ -984,8 +984,11 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
             if dashboard and task_id:
                 start_msg = f"Retry attempt {attempt} → {agent_cfg.name}" if attempt > 1 else ""
                 dashboard.set_agent(task_id, agent_type, "running", start_msg, agent_name=agent_cfg.name)
-            if attempt > 1 and dashboard:
-                dashboard.log(f"{prefix}[retry] Attempt {attempt}/{max_capacity_retries} starting with {agent_cfg.name} ({active_backend})")
+            if dashboard:
+                if attempt > 1:
+                    dashboard.log(f"{prefix}[retry] Attempt {attempt}/{max_capacity_retries} starting with {agent_cfg.name} ({active_backend})")
+                else:
+                    dashboard.log(f"{prefix}[{agent_type}] Agent selected: {agent_cfg.name} ({active_backend})")
 
         # Transfer directory ownership to the agent's OS user so it can write freely.
         # Always chown when a pool is active: a previous agent may have run as a
@@ -1075,15 +1078,16 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
                 attempt += 1
                 continue
 
-        err = f"[{agent_type}] FATAL: Agent process failed with exit code {returncode}"
+        agent_label = agent_cfg.name if agent_cfg is not None else active_backend
+        err = f"[{agent_type}] FATAL: Agent process failed with exit code {returncode} (agent={agent_label})"
         if dashboard:
             dashboard.log(err)
             if stderr_text.strip():
-                dashboard.log(f"[{agent_type}] stderr: {stderr_text.strip()}")
+                dashboard.log(f"[{agent_type}] stderr (agent={agent_label}): {stderr_text.strip()}")
         else:
             print(f"      {err}")
             if stderr_text.strip():
-                print(f"      [{agent_type}] stderr: {stderr_text.strip()}")
+                print(f"      [{agent_type}] stderr (agent={agent_label}): {stderr_text.strip()}")
         return False
 
     return False
