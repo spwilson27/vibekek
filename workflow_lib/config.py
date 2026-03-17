@@ -127,13 +127,16 @@ def get_config_defaults() -> Dict[str, Any]:
       "finish up" prompt.  Defaults to 480 (8 minutes).
     * ``context_limit`` (int) — Maximum prompt size in words for phases
       that aggregate task content.  Defaults to 126 000.
+    * ``idle_timeout`` (int) — Idle timeout in seconds.  If an agent
+      process produces no output for this duration, it is killed.
+      Defaults to 1200 (20 minutes).
 
     :returns: Dict of config values (only keys present in the file).
     :rtype: dict
     """
     cfg = load_config()
     defaults: Dict[str, Any] = {}
-    for key in ("backend", "model", "ignore_sandbox", "timeout", "retries", "soft_timeout", "context_limit"):
+    for key in ("backend", "model", "ignore_sandbox", "timeout", "retries", "soft_timeout", "context_limit", "idle_timeout"):
         if key in cfg:
             defaults[key] = cfg[key]
     return defaults

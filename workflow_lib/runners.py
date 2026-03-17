@@ -121,7 +121,7 @@ class AIRunner:
     Subclasses must implement :meth:`run`.
     """
 
-    def __init__(self, model: Optional[str] = None, user: Optional[str] = None, container_name: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> None:
+    def __init__(self, model: Optional[str] = None, user: Optional[str] = None, container_name: Optional[str] = None, env: Optional[Dict[str, str]] = None, idle_timeout: Optional[float] = None) -> None:
         self.model = model
         self.user = user
         # When set, all AI CLI commands are wrapped with ``docker exec`` into
@@ -133,6 +133,9 @@ class AIRunner:
         self._container_env_file: str = ""
         # Per-agent environment variables from AgentConfig.env
         self.env: Dict[str, str] = env or {}
+        # Idle timeout: if the process produces no output for this many seconds,
+        # kill it and treat the collected output as successful.
+        self.idle_timeout: Optional[float] = idle_timeout
 
     def _env(self) -> Dict[str, str]:
         """Return the environment dict to pass to subprocesses.
@@ -364,6 +367,7 @@ class AIRunner:
                 start_new_session=True,
             )
             result_text: List[str] = []
+            last_activity = [time.monotonic()]
 
             if use_stdin:
                 assert proc.stdin is not None
@@ -394,6 +398,8 @@ class AIRunner:
                     except _json.JSONDecodeError:
                         obj = {}
                     msg_type = obj.get("type")
+
+                    last_activity[0] = time.monotonic()
 
                     if msg_type == "stream_event":
                         has_deltas = True
@@ -459,6 +465,7 @@ class AIRunner:
 
             deadline = time.monotonic() + (timeout if timeout is not None else float("inf"))
             aborted = False
+            idle_killed = False
             try:
                 while reader.is_alive():
                     remaining = deadline - time.monotonic()
@@ -471,24 +478,37 @@ class AIRunner:
                         stderr_reader.join(timeout=5.0)
                         aborted = True
                         break
+                    if self.idle_timeout and (time.monotonic() - last_activity[0]) > self.idle_timeout:
+                        self._kill_process(proc)
+                        stderr_reader.join(timeout=5.0)
+                        idle_killed = True
+                        break
                     reader.join(timeout=min(remaining, 1.0))
             except KeyboardInterrupt:
                 reader.join()
 
             # abort_event may have been set while reader.join() was blocking —
             # the reader exits cleanly but the process is still running.
-            if not aborted and abort_event and abort_event.is_set():
+            if not aborted and not idle_killed and abort_event and abort_event.is_set():
                 self._kill_process(proc)
                 stderr_reader.join(timeout=5.0)
                 aborted = True
 
-            if not aborted:
+            if not aborted and not idle_killed:
                 stderr_reader.join()
             proc.wait()
 
+            # Claude agents idle-out because the model keeps reacting to
+            # background task notifications after finishing its work — treat
+            # as success.  Other backends idling likely means a real hang.
+            if idle_killed and isinstance(self, ClaudeRunner):
+                returncode = 0
+            else:
+                returncode = proc.returncode
+
             return subprocess.CompletedProcess(
                 args=cmd,
-                returncode=proc.returncode,
+                returncode=returncode,
                 stdout="\n".join(result_text),
                 stderr="\n".join(stderr_lines),
             )
@@ -537,8 +557,8 @@ class SessionResumableRunner(AIRunner):
     DEFAULT_SOFT_TIMEOUT = 480
     RESUME_HARD_TIMEOUT = 120
 
-    def __init__(self, model: Optional[str] = None, soft_timeout: Optional[int] = DEFAULT_SOFT_TIMEOUT, user: Optional[str] = None, container_name: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> None:
-        super().__init__(model=model, user=user, container_name=container_name, env=env)
+    def __init__(self, model: Optional[str] = None, soft_timeout: Optional[int] = DEFAULT_SOFT_TIMEOUT, user: Optional[str] = None, container_name: Optional[str] = None, env: Optional[Dict[str, str]] = None, idle_timeout: Optional[float] = None) -> None:
+        super().__init__(model=model, user=user, container_name=container_name, env=env, idle_timeout=idle_timeout)
         self.soft_timeout = soft_timeout
 
     def get_cmd(self, image_paths: Optional[List[str]] = None, session_id: Optional[str] = None, resume: bool = False) -> List[str]:
@@ -1017,7 +1037,7 @@ class CopilotRunner(AIRunner):
         raise last_exc if last_exc is not None else RuntimeError("Failed to invoke copilot CLI")
 
 
-def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optional[int] = None, user: Optional[str] = None, container_name: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> AIRunner:
+def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optional[int] = None, user: Optional[str] = None, container_name: Optional[str] = None, env: Optional[Dict[str, str]] = None, idle_timeout: Optional[float] = None) -> AIRunner:
     """Instantiate the correct AI runner for the given backend name.
 
     :param backend: One of ``"gemini"``, ``"claude"``, ``"copilot"``,
@@ -1038,22 +1058,23 @@ def make_runner(backend: str, model: Optional[str] = None, soft_timeout: Optiona
         configuration such as API keys or feature flags.
     :returns: An AI runner instance.
     """
+    common = {"model": model, "user": user, "container_name": container_name, "env": env, "idle_timeout": idle_timeout}
     if backend == "claude":
-        return ClaudeRunner(model=model, user=user, container_name=container_name, env=env)
+        return ClaudeRunner(**common)
     elif backend == "copilot":
-        return CopilotRunner(model=model, user=user, container_name=container_name, env=env)
+        return CopilotRunner(**common)
     elif backend == "opencode":
-        return OpencodeRunner(model=model, user=user, container_name=container_name, env=env)
+        return OpencodeRunner(**common)
     elif backend == "cline":
-        return ClineRunner(model=model, user=user, container_name=container_name, env=env)
+        return ClineRunner(**common)
     elif backend == "aider":
-        return AiderRunner(model=model, user=user, container_name=container_name, env=env)
+        return AiderRunner(**common)
     elif backend == "codex":
-        return CodexRunner(model=model, user=user, container_name=container_name, env=env)
+        return CodexRunner(**common)
     elif backend == "qwen":
-        kwargs: Dict[str, Any] = {"model": model, "user": user, "container_name": container_name, "env": env}
+        kwargs: Dict[str, Any] = dict(common)
         if soft_timeout is not None:
             kwargs["soft_timeout"] = soft_timeout
         return QwenRunner(**kwargs)
     # default: gemini
-    return GeminiRunner(model=model, user=user, container_name=container_name, env=env)
+    return GeminiRunner(**common)

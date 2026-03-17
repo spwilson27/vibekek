@@ -607,7 +607,8 @@ def run_ai_command(
     soft_timeout = cfg.get("soft_timeout")
     hard_timeout = cfg.get("timeout")
 
-    runner = make_runner(backend, model=model, soft_timeout=soft_timeout, user=user, container_name=container_name, env=agent_env)
+    idle_timeout = cfg.get("idle_timeout", 1200)
+    runner = make_runner(backend, model=model, soft_timeout=soft_timeout, user=user, container_name=container_name, env=agent_env, idle_timeout=idle_timeout)
     if container_name and container_env_file:
         runner._container_env_file = container_env_file
 

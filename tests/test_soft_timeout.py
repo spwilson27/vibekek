@@ -345,7 +345,7 @@ class TestRunAiCommand:
 
             run_ai_command("prompt", "/tmp", backend="qwen")
 
-        mock_make.assert_called_once_with("qwen", model=None, soft_timeout=300, user=None, container_name=None)
+        mock_make.assert_called_once_with("qwen", model=None, soft_timeout=300, user=None, container_name=None, env=None, idle_timeout=1200)
 
     def test_handles_timeout_expired(self):
         from workflow_lib.executor import run_ai_command
