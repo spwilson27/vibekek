@@ -35,6 +35,9 @@
   // with a "finish up" prompt using --resume.  Set to null to disable.
   // "soft_timeout": 480,
 
+  // Idle timeout in seconds — kill agent if no output for this long (default: 1200)
+  // "idle_timeout": 1200,
+
   // Maximum prompt size in words for phases that aggregate task content
   // (e.g. cross-phase review, task reordering).  Reduce for models with
   // smaller context windows.  Default: 126000 (~128k token estimate).

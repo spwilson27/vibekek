@@ -276,9 +276,10 @@ def _docker_exec(
             if result.stderr.strip():
                 log(f"      [docker exec] stderr: {result.stderr.strip()}")
         if check:
-            log(f"      [!] docker exec failed (rc={result.returncode}): {' '.join(cmd)}")
-            if result.stderr:
-                log(f"          {result.stderr.strip()}")
+            if log:
+                log(f"      [!] docker exec failed (rc={result.returncode}): {' '.join(cmd)}")
+                if result.stderr:
+                    log(f"          {result.stderr.strip()}")
             raise subprocess.CalledProcessError(result.returncode, exec_cmd, result.stdout, result.stderr)
     else:
         if log:
@@ -430,9 +431,9 @@ def _start_task_container(
                 log(f"      [!] docker exec mkdir failed: {mkdir_result.stderr.strip()}")
         # Copy the file (use sudo to read files owned by other users)
         cp_cmd = ["sudo", "docker", "cp", cf.src, f"{container_name}:{cf.dest}"]
-        result = subprocess.run(cp_cmd, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            log(f"      [!] docker cp failed for {cf.src} -> {cf.dest}: {result.stderr.strip()}")
+        cp_result = subprocess.run(cp_cmd, capture_output=True, text=True, check=False)
+        if cp_result.returncode != 0:
+            log(f"      [!] docker cp failed for {cf.src} -> {cf.dest}: {cp_result.stderr.strip()}")
         else:
             # Make the file readable and writable by the container user
             chmod_cmd = ["docker", "exec", "-i", "--workdir", "/workspace",
@@ -2350,9 +2351,9 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
     from .config import ensure_sccache_services
     sccache_ok, sccache_dist_ok = ensure_sccache_services()
     if not sccache_ok:
-        _log("[!] Warning: sccache server failed to auto-start")
+        print("[!] Warning: sccache server failed to auto-start")
     if not sccache_dist_ok:
-        _log("[!] Warning: sccache-dist scheduler failed to auto-start")
+        print("[!] Warning: sccache-dist scheduler failed to auto-start")
 
     serena_enabled = get_serena_enabled()
     dev_branch = get_dev_branch()
@@ -2406,7 +2407,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
     
     if has_copy_files:
         dashboard.log("=> Validating docker copy_files sources...")
-        missing_files = {}
+        missing_files: Dict[str, List[str]] = {}
         checked_files = set()
         
         for cfg_label, cfg in all_docker_configs:

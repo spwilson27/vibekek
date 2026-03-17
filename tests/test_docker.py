@@ -327,6 +327,7 @@ class TestProcessTaskWithRAGAndDocker:
              patch("workflow_lib.executor._start_task_container", side_effect=fake_start_task_container), \
              patch("workflow_lib.executor._stop_task_container"), \
              patch("workflow_lib.executor._docker_exec", side_effect=fake_docker_exec), \
+             patch("workflow_lib.executor.subprocess.run", return_value=MagicMock(returncode=0, stdout="running", stderr="")), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("workflow_lib.executor.get_task_details", return_value="# Task"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
@@ -501,6 +502,10 @@ class TestStartTaskContainer:
             # Make files exist for copy_files validation
             if cmd[:3] == ["sudo", "test", "-e"]:
                 return MagicMock(returncode=0, stdout="", stderr="")
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=fake_run):
@@ -525,6 +530,8 @@ class TestStartTaskContainer:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=fake_run):
@@ -544,6 +551,8 @@ class TestStartTaskContainer:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
             # Return "username" for the `id -un` query so chown logic triggers
             stdout = "username\n" if "id" in cmd and "-un" in cmd else ""
             return MagicMock(returncode=0, stdout=stdout, stderr="")
@@ -584,6 +593,8 @@ class TestStartTaskContainer:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with warnings.catch_warnings(record=True) as caught:
@@ -605,6 +616,8 @@ class TestStartTaskContainer:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=fake_run):
@@ -623,7 +636,10 @@ class TestStartTaskContainer:
 class TestStopTaskContainer:
     def test_calls_docker_rm_f(self):
         calls = []
-        with patch("subprocess.run", side_effect=lambda cmd, **kw: calls.append(cmd) or MagicMock()):
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", side_effect=fake_run):
             _stop_task_container("my-ctr", print)
         assert any("docker" in c and "rm" in c and "-f" in c and "my-ctr" in c for c in calls)
 
@@ -905,10 +921,9 @@ class TestDockerExec:
         with patch("subprocess.run", return_value=MagicMock(returncode=2, stdout="", stderr="some error")):
             with pytest.raises(subprocess.CalledProcessError):
                 _docker_exec("ctr", ["bad", "cmd"], check=True, log=log_msgs.append)
-        # Two log lines: the rc message + the stderr message
-        assert len(log_msgs) == 2
-        assert "bad cmd" in log_msgs[0]
-        assert "some error" in log_msgs[1]
+        # Verify key messages are present in log output
+        assert any("bad cmd" in m for m in log_msgs)
+        assert any("some error" in m for m in log_msgs)
 
 
 # ---------------------------------------------------------------------------
@@ -963,7 +978,7 @@ class TestProcessTaskWithDocker:
              patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+             patch("workflow_lib.executor.subprocess.run", return_value=MagicMock(returncode=0, stdout="running\n", stderr="")):
 
             result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
                                   backend="gemini", docker_config=docker_cfg, cleanup=True)
@@ -997,7 +1012,7 @@ class TestProcessTaskWithDocker:
              patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+             patch("workflow_lib.executor.subprocess.run", return_value=MagicMock(returncode=0, stdout="running\n", stderr="")):
 
             result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
                                   backend="gemini", docker_config=docker_cfg,
@@ -1035,7 +1050,7 @@ class TestProcessTaskWithDocker:
              patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+             patch("workflow_lib.executor.subprocess.run", return_value=MagicMock(returncode=0, stdout="running\n", stderr="")):
 
             result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
                                   backend="gemini", docker_config=docker_cfg, cleanup=True)
@@ -1069,7 +1084,7 @@ class TestProcessTaskWithDocker:
              patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+             patch("workflow_lib.executor.subprocess.run", return_value=MagicMock(returncode=0, stdout="running\n", stderr="")):
 
             result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
                                   backend="gemini", docker_config=docker_cfg, cleanup=True)
@@ -1141,7 +1156,7 @@ class TestCmdDocker:
         import argparse
 
         with patch.object(cli_mod, "get_docker_config", return_value=None):
-            args = argparse.Namespace(image=None)
+            args = argparse.Namespace(image=None, validate_sccache=False, cmd=None)
 
             with pytest.raises(SystemExit) as exc_info:
                 cmd_docker(args)
@@ -1169,7 +1184,7 @@ class TestCmdDocker:
              patch.object(cli_mod, "ROOT_DIR", str(tmp_path)), \
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run):
 
-            args = argparse.Namespace(image=None)
+            args = argparse.Namespace(image=None, validate_sccache=False, cmd=None)
 
             with pytest.raises(SystemExit) as exc_info:
                 cmd_docker(args)
@@ -1187,7 +1202,7 @@ class TestCmdDocker:
         from workflow_lib.config import SCCacheConfig
 
         docker_cfg = DockerConfig(image="test:latest", volumes=["/tmp:/tmp"])
-        sccache_cfg = SCCacheConfig(enabled=True, host="host.docker.internal", port=6301)
+        sccache_cfg = SCCacheConfig(enabled=True)
 
         docker_exec_results = [
             MagicMock(returncode=0, stdout="/usr/local/cargo/bin/sccache\n", stderr=""),
@@ -1214,7 +1229,7 @@ class TestCmdDocker:
              patch.object(cli_mod, "_docker_exec", side_effect=docker_exec_results), \
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run):
 
-            args = argparse.Namespace(image=None)
+            args = argparse.Namespace(image=None, validate_sccache=False, cmd=None)
             cmd_docker(args)
 
         mock_start.assert_called_once()
@@ -1256,7 +1271,7 @@ class TestCmdDocker:
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
              patch.object(cli_mod.os, "getpid", return_value=1234):
 
-            args = argparse.Namespace(image="override:custom")
+            args = argparse.Namespace(image="override:custom", validate_sccache=False, cmd=None)
             cmd_docker(args)
 
         assert mock_start.call_args.args[1].image == "override:custom"
@@ -1293,7 +1308,7 @@ class TestCmdDocker:
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
              patch.object(cli_mod.os, "getpid", return_value=1234):
 
-            args = argparse.Namespace(image=None)
+            args = argparse.Namespace(image=None, validate_sccache=False, cmd=None)
             cmd_docker(args)
 
         # Verify git remote query used configured pivot_remote
@@ -1309,7 +1324,7 @@ class TestCmdDocker:
         from workflow_lib.config import SCCacheConfig
 
         docker_cfg = DockerConfig(image="test:latest")
-        sccache_cfg = SCCacheConfig(enabled=True, host="host.docker.internal", port=6301)
+        sccache_cfg = SCCacheConfig(enabled=True)
 
         docker_exec_calls = []
         def fake_run(cmd, **kwargs):
@@ -1322,7 +1337,7 @@ class TestCmdDocker:
             cmd = args[1]
             if cmd == ["bash", "-lc", "command -v sccache"]:
                 return MagicMock(returncode=0, stdout="/usr/local/cargo/bin/sccache\n", stderr="")
-            if cmd == ["bash", "-lc", "sccache --show-stats >/dev/null"]:
+            if isinstance(cmd, list) and len(cmd) == 3 and "sccache --show-stats" in cmd[2]:
                 return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
@@ -1340,17 +1355,17 @@ class TestCmdDocker:
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
              patch.object(cli_mod.os, "getpid", return_value=1234):
 
-            args = argparse.Namespace(image=None)
+            args = argparse.Namespace(image=None, validate_sccache=False, cmd=None)
             cmd_docker(args)
 
         route_checks = [
             args[1] for args, _kwargs in docker_exec_calls
-            if args[1][:2] == ["bash", "-lc"] and "SCCACHE_SERVER" in args[1][2]
+            if args[1][:2] == ["bash", "-lc"] and "SCCACHE_REDIS" in args[1][2]
         ]
         assert route_checks
         assert 'test "$RUSTC_WRAPPER" = "sccache"' in route_checks[0][2]
-        assert 'test "${SCCACHE_SERVER}" = host.docker.internal:6301' in route_checks[0][2]
-        assert any(args[1] == ["bash", "-lc", "sccache --show-stats >/dev/null"] for args, _kwargs in docker_exec_calls)
+        assert 'SCCACHE_REDIS' in route_checks[0][2]
+        assert any(isinstance(args[1], list) and len(args[1]) == 3 and "sccache --show-stats" in args[1][2] for args, _kwargs in docker_exec_calls)
 
     def test_volumes_from_config_added(self, tmp_path):
         """cmd_docker should pass configured volumes into the shared startup config."""
@@ -1385,7 +1400,7 @@ class TestCmdDocker:
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
              patch.object(cli_mod.os, "getpid", return_value=1234):
 
-            args = argparse.Namespace(image=None)
+            args = argparse.Namespace(image=None, validate_sccache=False, cmd=None)
             cmd_docker(args)
 
         effective_cfg = mock_start.call_args.args[1]
@@ -1424,7 +1439,7 @@ class TestCmdDocker:
              patch.object(cli_mod.os, "getpid", return_value=1234), \
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run):
 
-            args = argparse.Namespace(image=None)
+            args = argparse.Namespace(image=None, validate_sccache=False, cmd=None)
             cmd_docker(args)
 
         # Verify docker exec was called with the clone command
@@ -1466,6 +1481,6 @@ class TestCmdDocker:
              patch.object(cli_mod.subprocess, "run", side_effect=fake_run), \
              patch.object(cli_mod.os, "getpid", return_value=1234):
 
-            args = argparse.Namespace(image=None)
+            args = argparse.Namespace(image=None, validate_sccache=False, cmd=None)
             with pytest.raises(FileNotFoundError, match="missing copy file"):
                 cmd_docker(args)

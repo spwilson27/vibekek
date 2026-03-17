@@ -744,15 +744,15 @@ class TestRunAiCommandPassesAgentEnv:
         
         captured_env = {}
         
-        def fake_make_runner(backend, model=None, soft_timeout=None, user=None, 
-                             container_name=None, env=None):
+        def fake_make_runner(backend, model=None, soft_timeout=None, user=None,
+                             container_name=None, env=None, idle_timeout=None):
             captured_env["env"] = env
             mock_runner = MagicMock()
             mock_runner.run.return_value = sp.CompletedProcess(
                 args=[], returncode=0, stdout="", stderr=""
             )
             return mock_runner
-        
+
         agent_env = {"AGENT_VAR": "agent_value", "MODEL": "test-model"}
         
         with patch("workflow_lib.executor.make_runner", side_effect=fake_make_runner), \
@@ -769,18 +769,18 @@ class TestRunAiCommandPassesAgentEnv:
         captured_env = {}
         
         def fake_make_runner(backend, model=None, soft_timeout=None, user=None,
-                             container_name=None, env=None):
+                             container_name=None, env=None, idle_timeout=None):
             captured_env["env"] = env
             mock_runner = MagicMock()
             mock_runner.run.return_value = sp.CompletedProcess(
                 args=[], returncode=0, stdout="", stderr=""
             )
             return mock_runner
-        
+
         with patch("workflow_lib.executor.make_runner", side_effect=fake_make_runner), \
              patch("workflow_lib.config.get_config_defaults", return_value={}):
             run_ai_command("prompt", "/tmp", backend="gemini")
-        
+
         assert captured_env["env"] is None
 
 

@@ -467,8 +467,8 @@ class TestDockerWorkflow:
         combined = result.stdout + result.stderr
         assert result.returncode == 0, combined
         assert "[sccache] Available at /usr/local/cargo/bin/sccache" in combined
-        assert "[sccache] Routing via SCCACHE_SERVER=host.docker.internal:6301" in combined
-        assert "[sccache] Host server reachable from container" in combined
+        assert "[sccache] SCCACHE_REDIS=" in combined
+        assert "[sccache] Local server OK (Redis-backed)" in combined
 
     def test_workflow_docker_subcommand_reports_sccache_for_fresh_template_image(self, tmp_path, temp_docker_image):
         """A fresh image built from the template should expose sccache to workflow.py docker."""
@@ -493,8 +493,8 @@ class TestDockerWorkflow:
         combined = result.stdout + result.stderr
         assert result.returncode == 0, combined
         assert "[sccache] Available at /usr/local/cargo/bin/sccache" in combined
-        assert "[sccache] Routing via SCCACHE_SERVER=host.docker.internal:6301" in combined
-        assert "[sccache] Host server reachable from container" in combined
+        assert "[sccache] SCCACHE_REDIS=" in combined
+        assert "[sccache] Local server OK (Redis-backed)" in combined
 
     def test_container_can_clone_git_repo(self, check_docker_image, temp_git_repo):
         """Container should be able to clone a git repository."""

@@ -17,6 +17,7 @@ def super_mock():
     )
     mock_process = MagicMock(returncode=0)
     mock_process.stdout.readline.return_value = ""
+    mock_process.stderr.readline.return_value = ""
     mock_popen = MagicMock(return_value=mock_process)
 
     with contextlib.ExitStack() as stack:
@@ -30,6 +31,7 @@ def super_mock():
         ):
             stack.enter_context(patch(f"{mod}.subprocess.run", mock_run))
         stack.enter_context(patch("workflow_lib.executor.subprocess.Popen", mock_popen))
+        stack.enter_context(patch("workflow_lib.runners.subprocess.Popen", mock_popen))
 
         # Filesystem and process safety
         for p in (

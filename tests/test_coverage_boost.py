@@ -1026,6 +1026,8 @@ class TestExecuteDagWithLogFile:
              patch("workflow_lib.executor.get_ready_tasks", side_effect=ready_side), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
+             patch("workflow_lib.executor.notify_failure"), \
+             patch("os._exit", side_effect=SystemExit), \
              pytest.raises(SystemExit):
             execute_dag("/root", dag, state, 1, "./do presubmit")
 
@@ -3221,7 +3223,7 @@ class TestConfigCoverage:
     def test_load_config_with_comment(self):
         jsonc = '{\n  // comment\n  "serena": true\n}'
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data=jsonc)):
+             patch("pathlib.Path.read_text", return_value=jsonc):
             from workflow_lib.config import load_config
             result = load_config()
         assert result.get("serena") is True
@@ -3231,7 +3233,7 @@ class TestConfigCoverage:
         import json
         bad_jsonc = '{\n  "soft_timeout": 1200\n  "context_limit": 50000\n}'  # missing comma
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data=bad_jsonc)):
+             patch("pathlib.Path.read_text", return_value=bad_jsonc):
             from workflow_lib.config import load_config
             with pytest.raises(json.JSONDecodeError):
                 load_config()
@@ -3259,7 +3261,7 @@ class TestConfigCoverage:
         self._reset_context_limit_state()
         jsonc = '{"context_limit": 60000}'
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data=jsonc)):
+             patch("pathlib.Path.read_text", return_value=jsonc):
             from workflow_lib.config import get_context_limit
             assert get_context_limit() == 60_000
 
@@ -3268,7 +3270,7 @@ class TestConfigCoverage:
         self._reset_context_limit_state()
         jsonc = '{"context_limit": 60000}'
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data=jsonc)):
+             patch("pathlib.Path.read_text", return_value=jsonc):
             from workflow_lib.config import get_context_limit, set_agent_context_limit
             set_agent_context_limit(40_000)
             try:
@@ -3281,7 +3283,7 @@ class TestConfigCoverage:
         self._reset_context_limit_state()
         jsonc = '{"context_limit": 60000}'
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data=jsonc)):
+             patch("pathlib.Path.read_text", return_value=jsonc):
             from workflow_lib.config import (
                 get_context_limit,
                 set_agent_context_limit,
@@ -3307,7 +3309,7 @@ class TestConfigCoverage:
             ]
         }'''
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data=jsonc)):
+             patch("pathlib.Path.read_text", return_value=jsonc):
             from workflow_lib.config import get_agent_pool_configs
             configs = get_agent_pool_configs()
         assert len(configs) == 1
@@ -3325,7 +3327,7 @@ class TestConfigCoverage:
             ]
         }'''
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data=jsonc)):
+             patch("pathlib.Path.read_text", return_value=jsonc):
             from workflow_lib.config import get_agent_pool_configs
             configs = get_agent_pool_configs()
         assert configs[0].context_limit == 45_000
@@ -3338,7 +3340,7 @@ class TestConfigCoverage:
             ]
         }'''
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data=jsonc)):
+             patch("pathlib.Path.read_text", return_value=jsonc):
             from workflow_lib.config import get_agent_pool_configs
             configs = get_agent_pool_configs()
         assert configs[0].context_limit is None
@@ -3413,7 +3415,7 @@ class TestConfigCoverage:
         """get_dev_branch returns configured branch name."""
         jsonc = '{"dev_branch": "integration"}'
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data=jsonc)):
+             patch("pathlib.Path.read_text", return_value=jsonc):
             from workflow_lib.config import get_dev_branch
             result = get_dev_branch()
         assert result == "integration"
@@ -3429,7 +3431,7 @@ class TestConfigCoverage:
         """get_pivot_remote returns the configured remote name."""
         jsonc = '{"pivot_remote": "github"}'
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data=jsonc)):
+             patch("pathlib.Path.read_text", return_value=jsonc):
             from workflow_lib.config import get_pivot_remote
             result = get_pivot_remote()
         assert result == "github"
@@ -3476,22 +3478,23 @@ class TestConfigCoverage:
 
     def test_dev_branch_created_custom(self):
         """When dev_branch is customized, execute_dag creates that branch."""
-        run_results = [
-            MagicMock(returncode=1),  # rev-parse fails
-            MagicMock(returncode=0),  # branch creation
-        ]
+        def smart_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and cmd[:2] == ["git", "rev-parse"]:
+                return MagicMock(returncode=1)  # rev-parse fails
+            return MagicMock(returncode=0, stdout="", stderr="")
+
         state = {"completed_tasks": [], "merged_tasks": []}
-        with patch("subprocess.run", side_effect=run_results + [MagicMock(returncode=0)] * 100) as mock_run, \
+        with patch("subprocess.run", side_effect=smart_run) as mock_run, \
              patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.get_dev_branch", return_value="integration"), \
              patch("workflow_lib.executor.get_ready_tasks", return_value=[]), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
             execute_dag("/root", {}, state, 1, "./do presubmit")
-        # First call: rev-parse --verify integration
-        assert mock_run.call_args_list[0][0][0] == ["git", "rev-parse", "--verify", "integration"]
-        # Second call: branch integration main
-        assert mock_run.call_args_list[1][0][0] == ["git", "branch", "integration", "main"]
+        # Find the git calls (skip sccache calls)
+        git_calls = [c for c in mock_run.call_args_list if isinstance(c[0][0], list) and c[0][0][0] == "git"]
+        assert git_calls[0][0][0] == ["git", "rev-parse", "--verify", "integration"]
+        assert git_calls[1][0][0] == ["git", "branch", "integration", "main"]
 
 
 class TestTemplateContainsAllConfigKeys:
@@ -4635,13 +4638,13 @@ class TestCodexRunnerCoverage:
         import io
         r = CodexRunner()
         proc = MagicMock()
-        proc.stdout = io.StringIO("output\n")
+        proc.stdout = io.StringIO('{"type":"item.completed","item":{"type":"agent_message","text":"output"}}\n')
         proc.stderr = io.StringIO("")
         proc.returncode = 0
         proc.stdin = MagicMock()
         proc.wait.return_value = None
         collected = []
-        with patch("subprocess.Popen", return_value=proc):
+        with patch("workflow_lib.runners.subprocess.Popen", return_value=proc):
             r.run("/tmp", "prompt", on_line=collected.append)
         assert "output" in collected
 
@@ -5036,7 +5039,10 @@ class TestSoftInterrupt:
             return False  # task failed
 
         with patch('workflow_lib.executor.process_task', side_effect=fake_process_task), \
-             patch('workflow_lib.executor.load_blocked_tasks', return_value=set()):
+             patch('workflow_lib.executor.load_blocked_tasks', return_value=set()), \
+             patch('workflow_lib.executor.subprocess.run', return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+             patch('workflow_lib.config.get_config_defaults', return_value={"retries": 0}), \
+             patch('workflow_lib.executor.notify_failure'):
             # Task failure causes sys.exit(1) via the failed_tasks path
             with pytest.raises(SystemExit):
                 self._mod._execute_dag_inner(
