@@ -41,10 +41,10 @@ from zoneinfo import ZoneInfo
 _PST = ZoneInfo("America/Los_Angeles")
 
 from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR, REPLAN_STATE_FILE, STATE_DIR, WORKFLOW_STATE_FILE
-from .context import ProjectContext
+from .context import ProjectContext, fit_lines_to_budget
 from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state, load_dags, get_tasks_dir
-from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config, get_rag_enabled, get_sccache_config, get_sccache_dist_config
+from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config, get_rag_enabled, get_sccache_config, get_sccache_dist_config, get_context_limit, set_agent_context_limit
 from .discord import notify_failure
 from .dashboard import make_dashboard
 from .agent_pool import AgentPoolManager, QUOTA_RETURN_CODE, QUOTA_PATTERNS, QUOTA_TRANSIENT_PATTERNS, parse_quota_reset_seconds
@@ -879,6 +879,87 @@ def get_shared_components_context() -> str:
     return "\n\n".join(parts)
 
 
+# Keys in task_context whose values are large file content eligible for
+# truncation.  Order determines budget priority (earlier = more budget
+# when splitting evenly doesn't work).
+_TRUNCATABLE_CONTEXT_KEYS = [
+    "task_details",
+    "spec_ctx",
+    "description_ctx",
+    "shared_components_ctx",
+    "memory_ctx",
+]
+
+
+def truncate_task_context(
+    task_context: Dict[str, Any],
+    word_budget: int,
+    prompt_tmpl: str = "",
+) -> Dict[str, Any]:
+    """Return a copy of *task_context* with large text values truncated to fit *word_budget*.
+
+    Only keys listed in :data:`_TRUNCATABLE_CONTEXT_KEYS` are candidates for
+    truncation.  The budget is first reduced by the word count of the static
+    template text (with placeholders removed) and any non-truncatable context
+    values.  The remaining budget is split evenly across the truncatable keys
+    that have non-empty content.
+
+    Each truncatable value is treated as a single "file" and truncated using
+    :func:`~workflow_lib.context.fit_lines_to_budget` — the same binary-search
+    algorithm used in the planning phases.  Truncated values receive an
+    appended note indicating how many lines were omitted.
+
+    :param task_context: Original key/value substitution map.
+    :param word_budget: Maximum total words for the fully-substituted prompt.
+    :param prompt_tmpl: The raw prompt template (before substitution).  Used to
+        account for static text that consumes part of the budget.
+    :returns: A shallow copy of *task_context* with truncatable values trimmed.
+    """
+    if word_budget <= 0:
+        return dict(task_context)
+
+    # Count words in the static template (strip placeholders).
+    static_text = prompt_tmpl
+    for k in task_context:
+        static_text = static_text.replace(f"{{{k}}}", "")
+    static_words = len(static_text.split())
+
+    # Count words in non-truncatable context values.
+    fixed_words = static_words
+    for k, v in task_context.items():
+        if k not in _TRUNCATABLE_CONTEXT_KEYS:
+            fixed_words += len(str(v).split())
+
+    available = max(word_budget - fixed_words, 0)
+
+    # Collect truncatable entries that have content.
+    trunc_items: List[tuple] = []
+    for key in _TRUNCATABLE_CONTEXT_KEYS:
+        val = str(task_context.get(key, ""))
+        if val.strip():
+            trunc_items.append((key, val))
+
+    if not trunc_items:
+        return dict(task_context)
+
+    per_key_budget = max(available // len(trunc_items), 1)
+
+    result = dict(task_context)
+    for key, val in trunc_items:
+        lines = val.splitlines(keepends=True)
+        lines_limit = fit_lines_to_budget([lines], per_key_budget)
+        if lines_limit < len(lines):
+            truncated = "".join(lines[:lines_limit]).rstrip()
+            omitted = len(lines) - lines_limit
+            truncated += (
+                f"\n\n... ({omitted} more lines truncated to fit context budget"
+                f" — source: {key})\n"
+            )
+            result[key] = truncated
+
+    return result
+
+
 def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], cwd: str, backend: str = "gemini", dashboard: Any = None, task_id: str = "", model: Optional[str] = None, agent_pool: Optional[AgentPoolManager] = None, container_name: Optional[str] = None, container_env_file: str = "", _pre_acquired_agent: Optional[Any] = None) -> bool:
     """Format a prompt template and execute an AI agent subprocess.
 
@@ -914,16 +995,6 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
     prompt_path = os.path.join(TOOLS_DIR, "prompts", prompt_file)
     with open(prompt_path, "r", encoding="utf-8") as f:
         prompt_tmpl = f.read()
-
-    # Simple template replacement
-    prompt = prompt_tmpl
-    for k, v in task_context.items():
-        prompt = prompt.replace(f"{{{k}}}", str(v))
-
-    # Inject RAG MCP tool help text into every agent prompt (if enabled)
-    if get_rag_enabled():
-        rag_help = get_rag_help_text()
-        prompt = f"{prompt}\n\n{rag_help}"
 
     msg = f"[{agent_type}] Starting agent in {cwd}... (backend={backend})"
     if dashboard:
@@ -1004,6 +1075,26 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
             cargo_target = _get_cargo_target_dir(cwd)
             if cargo_target and os.path.exists(cargo_target):
                 _set_dir_owner(cargo_target, active_user, _log)
+
+        # Apply per-agent context_limit so get_context_limit() returns the
+        # right value for this agent (falls back to global config if None).
+        if agent_cfg is not None:
+            set_agent_context_limit(agent_cfg.context_limit)
+        else:
+            set_agent_context_limit(None)
+
+        # Build the prompt with budget-aware truncation of large context values.
+        effective_ctx = truncate_task_context(
+            task_context, get_context_limit(), prompt_tmpl=prompt_tmpl,
+        )
+        prompt = prompt_tmpl
+        for k, v in effective_ctx.items():
+            prompt = prompt.replace(f"{{{k}}}", str(v))
+
+        # Inject RAG MCP tool help text into every agent prompt (if enabled)
+        if get_rag_enabled():
+            rag_help = get_rag_help_text()
+            prompt = f"{prompt}\n\n{rag_help}"
 
         returncode = 1
         stderr_text = ""
