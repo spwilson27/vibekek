@@ -70,6 +70,7 @@ import argparse
 import signal
 import shutil
 import tempfile
+import json
 from typing import Optional
 
 from .constants import TOOLS_DIR, ROOT_DIR
@@ -304,23 +305,28 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_docker(args: argparse.Namespace) -> None:
-    """Start an interactive Docker container with the configured image.
+    """Start a Docker container for debugging or run a command non-interactively.
 
     This command:
 
     1. Loads the Docker configuration from ``.workflow.jsonc``.
     2. Creates a temporary directory for the container workspace.
     3. Copies the configured config files into the temp directory.
-    4. Starts a ``docker run -it`` container with the configured image.
+    4. Starts a Docker container with the configured image.
     5. Uses ``docker cp`` to copy config files into the container.
     6. Inside the container, clones the git repository and checks out the dev branch.
 
     Configures sccache environment variables if enabled in ``.workflow.jsonc``,
     using the same logic as workflow agent containers.
 
+    If ``--cmd`` is provided, runs the command and exits without git clone.
+    If ``--validate-sccache`` is provided, validates sccache connectivity and exits.
+
     :param args: Parsed :mod:`argparse` namespace with attributes:
 
         - ``image`` (Optional[str]) — override the Docker image from config.
+        - ``cmd`` (Optional[str]) — command to run non-interactively.
+        - ``validate_sccache`` (bool) — validate sccache and exit.
     :type args: argparse.Namespace
     """
     docker_config = get_docker_config()
@@ -397,19 +403,37 @@ def cmd_docker(args: argparse.Namespace) -> None:
             else:
                 print("Warning: sccache is not available inside the Docker container", file=sys.stderr)
 
-            route_var: Optional[str] = None
-            route_target: Optional[str] = None
-            if configure_containers and sccache_dist_config is not None and sccache_dist_config.enabled:
-                route_var = "SCCACHE_DIST_SCHEDULER_URL"
-                route_target = sccache_dist_config.scheduler_url
-            elif configure_containers and sccache_config is not None and sccache_config.enabled:
-                route_var = "SCCACHE_SERVER"
-                route_target = f"{sccache_config.host}:{sccache_config.port}"
+            # Verify Redis-backed sccache works inside container
+            if configure_containers and sccache_config is not None and sccache_config.enabled:
+                redis_url = f"redis://{sccache_config.redis_container}:{sccache_config.redis_port}"
+                verify_cmd = f'test "$SCCACHE_REDIS" = {shlex.quote(redis_url)} && test "$RUSTC_WRAPPER" = "sccache"'
+                env_result = _docker_exec(
+                    container_name,
+                    ["bash", "-lc", verify_cmd],
+                    env_file=env_file,
+                    capture=True,
+                )
+                if env_result.returncode == 0:
+                    print(f"      [sccache] SCCACHE_REDIS={redis_url}")
+                else:
+                    print(f"Warning: SCCACHE_REDIS not set correctly inside container", file=sys.stderr)
 
-            if route_var and route_target:
+                # Verify sccache can reach Redis and show stats
+                stats_result = _docker_exec(
+                    container_name,
+                    ["bash", "-lc", "sccache --show-stats 2>&1 | head -5"],
+                    env_file=env_file,
+                    capture=True,
+                )
+                if stats_result.returncode == 0:
+                    print(f"      [sccache] Local server OK (Redis-backed)")
+                else:
+                    print("Warning: sccache --show-stats failed inside container", file=sys.stderr)
+
+            if configure_containers and sccache_dist_config is not None and sccache_dist_config.enabled:
                 verify_route_cmd = (
                     f'test "$RUSTC_WRAPPER" = "sccache" && '
-                    f'test "${{{route_var}}}" = {shlex.quote(route_target)}'
+                    f'test "$SCCACHE_DIST_SCHEDULER_URL" = {shlex.quote(sccache_dist_config.scheduler_url)}'
                 )
                 route_result = _docker_exec(
                     container_name,
@@ -418,32 +442,128 @@ def cmd_docker(args: argparse.Namespace) -> None:
                     capture=True,
                 )
                 if route_result.returncode == 0:
-                    print(f"      [sccache] Routing via {route_var}={route_target}")
+                    print(f"      [sccache] Routing via SCCACHE_DIST_SCHEDULER_URL={sccache_dist_config.scheduler_url}")
                 else:
                     print(
-                        f"Warning: expected {route_var}={route_target} inside the Docker container",
+                        f"Warning: expected SCCACHE_DIST_SCHEDULER_URL={sccache_dist_config.scheduler_url} inside container",
                         file=sys.stderr,
                     )
 
-            if (
-                configure_containers and
-                sccache_config is not None and
-                sccache_config.enabled and
-                route_var == "SCCACHE_SERVER"
-            ):
+            # Write sccache config file for distributed compilation if enabled
+            if configure_containers and sccache_dist_config is not None and sccache_dist_config.enabled:
+                # Write config file inside container
+                mkdir_result = _docker_exec(
+                    container_name,
+                    ["bash", "-lc", "mkdir -p ~/.config/sccache"],
+                    env_file=env_file,
+                    capture=True,
+                )
+                if mkdir_result.returncode == 0:
+                    # Write config using echo commands
+                    write_result = _docker_exec(
+                        container_name,
+                        ["bash", "-lc", f'echo "[dist]" > ~/.config/sccache/config.toml && echo "scheduler_url = {sccache_dist_config.scheduler_url}" >> ~/.config/sccache/config.toml && echo "auth_token = {sccache_dist_config.auth_token}" >> ~/.config/sccache/config.toml'],
+                        env_file=env_file,
+                        capture=True,
+                    )
+                    if write_result.returncode == 0:
+                        print(f"      [sccache-dist] Wrote config file to ~/.config/sccache/config.toml")
+
+                        # Verify the config was written
+                        cat_result = _docker_exec(
+                            container_name,
+                            ["bash", "-lc", "cat ~/.config/sccache/config.toml"],
+                            env_file=env_file,
+                            capture=True,
+                        )
+                        if cat_result.returncode == 0:
+                            print(f"              Config content:\n{cat_result.stdout}")
+
+                        # Test dist-status after config is written
+                        dist_status_result = _docker_exec(
+                            container_name,
+                            ["bash", "-lc", "sccache --dist-status"],
+                            env_file=env_file,
+                            capture=True,
+                        )
+                        if dist_status_result.returncode == 0:
+                            output = dist_status_result.stdout.strip()
+                            print(f"      [sccache-dist] --dist-status: {output}")
+                            try:
+                                status_json = json.loads(output)
+                                if "Disabled" in status_json:
+                                    print("      [sccache-dist] Note: sccache-dist client is ready but requires build servers to be registered")
+                                    print("      [sccache-dist] To enable distributed compilation, run: .tools/install-sccache-dist.sh && .tools/start-sccache-dist.sh start")
+                                elif "Scheduler" in status_json:
+                                    print("      [sccache-dist] ✓ Connected to scheduler")
+                                else:
+                                    print("      [sccache-dist] ✓ Distributed compilation configured")
+                            except json.JSONDecodeError:
+                                pass
+                        else:
+                            print(f"      [sccache-dist] ✗ --dist-status failed: {dist_status_result.stderr}")
+                    else:
+                        print(f"      [sccache-dist] Warning: failed to write config file")
+                else:
+                    print(f"      [sccache-dist] Warning: failed to create config directory")
+
+            # Handle --validate-sccache flag
+            if args.validate_sccache:
+                print("\n      [sccache] Running validation...")
+                # Test sccache --show-stats
                 stats_result = _docker_exec(
                     container_name,
-                    ["bash", "-lc", "sccache --show-stats >/dev/null"],
+                    ["bash", "-lc", "sccache --show-stats"],
                     env_file=env_file,
                     capture=True,
                 )
                 if stats_result.returncode == 0:
-                    print("      [sccache] Host server reachable from container")
+                    print("      [sccache] ✓ --show-stats succeeded")
+                    # Parse stats output
+                    for line in stats_result.stdout.split('\n'):
+                        if 'Cache hits' in line or 'Cache misses' in line:
+                            print(f"              {line.strip()}")
                 else:
-                    print(
-                        "Warning: sccache could not reach the host server from inside the Docker container",
-                        file=sys.stderr,
-                    )
+                    print(f"      [sccache] ✗ --show-stats failed: {stats_result.stderr}")
+
+                # Test sccache --dist-status (will show disabled if dist not configured)
+                dist_result = _docker_exec(
+                    container_name,
+                    ["bash", "-lc", "sccache --dist-status"],
+                    env_file=env_file,
+                    capture=True,
+                )
+                if dist_result.returncode == 0:
+                    output = dist_result.stdout.strip()
+                    print(f"      [sccache] --dist-status: {output}")
+                    try:
+                        status_json = json.loads(output)
+                        if "Disabled" in status_json:
+                            print("      [sccache] Note: distributed compilation is not configured (expected)")
+                        else:
+                            print("      [sccache] ✓ Distributed compilation is configured")
+                    except json.JSONDecodeError:
+                        pass
+                else:
+                    print(f"      [sccache] ✗ --dist-status failed: {dist_result.stderr}")
+
+                print("\n      [sccache] Validation complete")
+                print(f"Stopping container {container_name}...", file=sys.stderr)
+                _stop_task_container(container_name, log)
+                return
+
+            # Handle --cmd flag (non-interactive, skip git clone)
+            if args.cmd:
+                print(f"\n      [docker] Running command: {args.cmd}")
+                cmd_result = _docker_exec(
+                    container_name,
+                    ["bash", "-lc", args.cmd],
+                    env_file=env_file,
+                    capture=False,
+                )
+                print(f"Stopping container {container_name}...", file=sys.stderr)
+                _stop_task_container(container_name, log)
+                sys.exit(cmd_result.returncode if hasattr(cmd_result, 'returncode') else 0)
 
             _docker_exec(
                 container_name,
@@ -504,8 +624,10 @@ def main() -> None:
     p_run.add_argument("--cleanup", action="store_true", help="Remove temporary clones even on failure")
 
     # docker
-    p_docker = sub.add_parser("docker", parents=[shared], help="Start an interactive Docker container for debugging")
+    p_docker = sub.add_parser("docker", parents=[shared], help="Start a Docker container for debugging")
     p_docker.add_argument("--image", default=None, help="Override the Docker image from .workflow.jsonc")
+    p_docker.add_argument("--cmd", default=None, help="Run a command non-interactively (skip git clone)")
+    p_docker.add_argument("--validate-sccache", action="store_true", help="Validate sccache connectivity and exit")
 
     # replan commands
     sub.add_parser("status", parents=[shared], help="Show plan and execution status")

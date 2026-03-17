@@ -363,26 +363,23 @@ def _start_task_container(
         "--env-file", env_file,
     ] + volume_flags
 
-    # Add sccache host mapping if enabled and configure_containers is True
+    # Connect agent to the sccache Redis container via a shared Docker network.
+    # Each container runs its own local sccache server backed by Redis.
     if configure_containers and sccache_config is not None and sccache_config.enabled:
-        # Add --add-host for host.docker.internal resolution (Linux requires host-gateway)
-        docker_cmd += ["--add-host", "host.docker.internal:host-gateway"]
-        # Add sccache environment variables
+        redis_url = f"redis://{sccache_config.redis_container}:{sccache_config.redis_port}"
         docker_cmd += [
-            "-e", f"RUSTC_WRAPPER=sccache",
-            "-e", f"SCCACHE_SERVER={sccache_config.host}:{sccache_config.port}",
+            "--network", sccache_config.network,
+            "-e", "RUSTC_WRAPPER=sccache",
+            "-e", f"SCCACHE_REDIS={redis_url}",
         ]
-        log(f"      [sccache] Configuring container for sccache server at {sccache_config.host}:{sccache_config.port}")
+        log(f"      [sccache] Redis backend: {redis_url} (network: {sccache_config.network})")
 
     # Add sccache-dist configuration if enabled and configure_containers is True
-    # (sccache-dist takes precedence over local sccache)
     if configure_containers and sccache_dist_config is not None and sccache_dist_config.enabled:
-        # Add --add-host for host.docker.internal if not already added
-        if "--add-host" not in docker_cmd:
-            docker_cmd += ["--add-host", "host.docker.internal:host-gateway"]
-        # Add sccache-dist environment variables
+        # Add --add-host for host.docker.internal resolution (Linux requires host-gateway)
+        docker_cmd += ["--add-host", "host.docker.internal:host-gateway"]
         docker_cmd += [
-            "-e", f"RUSTC_WRAPPER=sccache",
+            "-e", "RUSTC_WRAPPER=sccache",
             "-e", f"SCCACHE_DIST_SCHEDULER_URL={sccache_dist_config.scheduler_url}",
             "-e", f"SCCACHE_AUTH_TOKEN={sccache_dist_config.auth_token}",
         ]

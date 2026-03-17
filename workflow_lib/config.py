@@ -213,22 +213,27 @@ def get_docker_config() -> Any:
 
 @dataclass
 class SCCacheConfig:
-    """sccache server configuration for shared Rust build cache.
+    """sccache configuration using a Redis-backed Docker container.
 
-    When enabled, all workflow agents (containerized or native) connect to
-    the sccache server running on the host for accelerated compilation.
+    When enabled, a dedicated Redis container (``redis_container``) is started
+    on a Docker bridge network (``network``).  Each agent container joins the
+    same network and sets ``SCCACHE_REDIS`` so its local sccache server uses
+    Redis as the shared cache backend.
 
     :param enabled: Whether sccache integration is enabled (default: false).
-    :param host: Hostname or IP address for agents to reach the sccache server.
-        For Docker containers, typically "host.docker.internal".
-    :param port: TCP port the sccache server listens on (default: 6301).
-    :param cache_dir: Path to the cache directory on the host filesystem.
+    :param redis_container: Name of the Redis Docker container.
+    :param network: Docker bridge network shared by Redis and agent containers.
+    :param redis_port: Port Redis listens on inside the container.
+    :param redis_maxmemory: Redis ``--maxmemory`` value (default: ``"10gb"``).
+    :param redis_image: Docker image for the Redis container.
     """
 
     enabled: bool = False
-    host: str = "host.docker.internal"
-    port: int = 6301
-    cache_dir: str = "/home/mrwilson/.cache/sccache"
+    redis_container: str = "weaver-sccache-redis"
+    network: str = "weaver-sccache-net"
+    redis_port: int = 6379
+    redis_maxmemory: str = "10gb"
+    redis_image: str = "redis:7-alpine"
 
 
 def get_sccache_config() -> Optional[SCCacheConfig]:
@@ -236,10 +241,8 @@ def get_sccache_config() -> Optional[SCCacheConfig]:
 
     Reads the top-level ``"sccache"`` block.  When present and enabled, all
     workflow steps (implementation, review, presubmit, commit, merge) use
-    the sccache server for Rust compilation caching.
+    a shared Redis-backed sccache for Rust compilation caching.
 
-    :raises ValueError: If the ``sccache`` block is present but missing
-        required fields or contains invalid values.
     :returns: A :class:`SCCacheConfig` instance, or ``None`` when no
         ``"sccache"`` block is configured.
     """
@@ -250,9 +253,11 @@ def get_sccache_config() -> Optional[SCCacheConfig]:
     scc = cfg["sccache"]
     return SCCacheConfig(
         enabled=bool(scc.get("enabled", False)),
-        host=str(scc.get("host", "host.docker.internal")),
-        port=int(scc.get("port", 6301)),
-        cache_dir=str(scc.get("cache_dir", "/home/mrwilson/.cache/sccache")),
+        redis_container=str(scc.get("redis_container", "weaver-sccache-redis")),
+        network=str(scc.get("network", "weaver-sccache-net")),
+        redis_port=int(scc.get("redis_port", 6379)),
+        redis_maxmemory=str(scc.get("redis_maxmemory", "10gb")),
+        redis_image=str(scc.get("redis_image", "redis:7-alpine")),
     )
 
 
@@ -368,55 +373,74 @@ def get_sccache_dist_enabled() -> bool:
 
 
 def ensure_sccache_services():
-    """Auto-start sccache services if configured with auto_start=True.
+    """Auto-start sccache Redis container if configured with auto_start=True.
 
-    Checks if sccache server and/or sccache-dist scheduler are running
-    based on config settings, and starts them if not.
+    Creates the Docker bridge network and Redis container if they don't
+    already exist/are not running.
 
     :returns: Tuple of (sccache_ok, sccache_dist_ok) indicating service status.
     :rtype: tuple
     """
     import subprocess
-    from .constants import ROOT_DIR
 
     services_cfg = get_sccache_services_config()
     if not services_cfg or not services_cfg.auto_start:
-        return True, True  # Auto-start disabled, assume OK
+        return True, True
 
     sccache_ok = True
     sccache_dist_ok = True
 
-    # Check and start sccache server if enabled
     sccache_cfg = get_sccache_config()
     if sccache_cfg and sccache_cfg.enabled:
-        # Check if running
-        result = subprocess.run(["pgrep", "-f", "sccache"], capture_output=True, text=True)
-        if result.returncode != 0:
-            # Not running, start it
-            sccache_script = os.path.join(ROOT_DIR, ".tools", "start-sccache.sh")
-            if os.path.exists(sccache_script):
-                subprocess.run([sccache_script, "start"], capture_output=True)
-                # Wait for it to be ready
-                import time
-                time.sleep(2)
-                # Verify
-                result = subprocess.run(["pgrep", "-f", "sccache"], capture_output=True, text=True)
-                sccache_ok = result.returncode == 0
+        net = sccache_cfg.network
+        ctr = sccache_cfg.redis_container
 
-    # Check and start sccache-dist scheduler if enabled
+        # Ensure Docker network exists
+        result = subprocess.run(
+            ["docker", "network", "inspect", net],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            subprocess.run(
+                ["docker", "network", "create", net],
+                capture_output=True, check=True,
+            )
+
+        # Check if Redis container is running
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", ctr],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0 or result.stdout.strip() != "true":
+            # Remove stopped container if it exists
+            subprocess.run(["docker", "rm", "-f", ctr], capture_output=True)
+            # Start Redis container
+            run_result = subprocess.run(
+                [
+                    "docker", "run", "-d",
+                    "--name", ctr,
+                    "--network", net,
+                    "--restart", "unless-stopped",
+                    sccache_cfg.redis_image,
+                    "redis-server",
+                    "--maxmemory", sccache_cfg.redis_maxmemory,
+                    "--maxmemory-policy", "allkeys-lru",
+                ],
+                capture_output=True, text=True,
+            )
+            sccache_ok = run_result.returncode == 0
+
+    # sccache-dist scheduler (still host-based for now)
     dist_cfg = get_sccache_dist_config()
     if dist_cfg and dist_cfg.enabled:
-        # Check if running
         result = subprocess.run(["pgrep", "-f", "sccache-dist"], capture_output=True, text=True)
         if result.returncode != 0:
-            # Not running, start it
+            from .constants import ROOT_DIR
             dist_script = os.path.join(ROOT_DIR, ".tools", "start-sccache-dist.sh")
             if os.path.exists(dist_script):
                 subprocess.run([dist_script, "start"], capture_output=True)
-                # Wait for it to be ready
                 import time
                 time.sleep(2)
-                # Verify
                 result = subprocess.run(["pgrep", "-f", "sccache-dist"], capture_output=True, text=True)
                 sccache_dist_ok = result.returncode == 0
 

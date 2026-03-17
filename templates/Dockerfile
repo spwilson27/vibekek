@@ -13,7 +13,7 @@ FROM ubuntu:24.04
 
 # Build arguments for non-root user configuration
 ARG USERNAME=username
-ARG USER_UID=1000
+ARG USER_UID=1201
 
 # ─── System packages ─────────────────────────────────────────────────────────
 ENV DEBIAN_FRONTEND=noninteractive
@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Core build tools
     build-essential \
     pkg-config \
+    libssl-dev \
     git \
     curl \
     ca-certificates \
@@ -92,6 +93,7 @@ RUN cargo install --locked cargo-llvm-cov --version 0.6.21 \
   && cargo install --locked cargo-nextest --version 0.9.97-b.2 \
   && cargo install --locked cargo-deny --version 0.17.0 \
   && cargo install --locked cargo-watch \
+  && cargo install --locked sccache --version 0.11.0 \
   && echo "cargo-public-api skipped (requires newer Rust)"
 
 # ─── Linting tools (shellcheck, markdownlint) ────────────────────────────────
@@ -119,6 +121,10 @@ RUN chown ${USERNAME}:${USERNAME} /workspace
 
 # Switch to non-root user for all subsequent operations
 USER ${USERNAME}
+
+# ─── sccache environment variables ───────────────────────────────────────────
+# SCCACHE_SERVER is injected at container runtime by workflow.py docker.
+ENV RUSTC_WRAPPER=sccache
 
 # Default: drop to bash so the container is usable interactively and as a
 # one-shot command runner (docker run --rm -i ... image <cmd>).
