@@ -1883,6 +1883,10 @@ def process_task(
         _log=_log,
     )
 
+    # Load stage-level retry count from config (reuses the same "retries" key).
+    from .config import get_config_defaults as _get_cfg_pt
+    stage_max_retries: int = _get_cfg_pt().get("retries", 0)
+
     overall_success = False
     last_completed_stage = None
     try:
@@ -1898,7 +1902,20 @@ def process_task(
                 # Return True to indicate graceful shutdown (not failure) when we completed at least one stage
                 return last_completed_stage is not None
             extra = _stage_extra_kwargs.get(stage, {})
-            if not _stage_fns[stage](**stage_kwargs, **extra):
+            stage_passed = False
+            for stage_attempt in range(1, stage_max_retries + 2):  # +2: 1 original + retries
+                if stage_attempt > 1:
+                    if shutdown_requested:
+                        break
+                    _log(f"      [Stage Retry] {full_task_id} stage {stage!r} attempt {stage_attempt}/{stage_max_retries + 1}")
+                    if dashboard:
+                        dashboard.set_agent(full_task_id, stage.capitalize(), "retrying",
+                                            f"Attempt {stage_attempt}/{stage_max_retries + 1}")
+                if _stage_fns[stage](**stage_kwargs, **extra):
+                    stage_passed = True
+                    break
+                _log(f"      [!] {full_task_id} stage {stage!r} failed (attempt {stage_attempt}/{stage_max_retries + 1})")
+            if not stage_passed:
                 return False
             last_completed_stage = stage
             _cb(full_task_id, stage)
@@ -2681,8 +2698,17 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                                 "merged_tasks":    list(state.get("merged_tasks", []))    + [task_id],
                             }
 
-                        # Trigger DAG Merge Workflow immediately
-                        if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, workflow_state=pending_state, agent_pool=agent_pool, cleanup=cleanup, docker_config=docker_config):
+                        # Trigger DAG Merge Workflow with stage-level retries
+                        merge_succeeded = False
+                        for merge_attempt in range(1, max_task_retries + 2):
+                            if merge_attempt > 1:
+                                dashboard.log(f"   -> [Merge Retry] Task {task_id} merge attempt {merge_attempt}/{max_task_retries + 1}")
+                                dashboard.set_agent(task_id, "Merge", "retrying", f"Attempt {merge_attempt}/{max_task_retries + 1}")
+                            if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, workflow_state=pending_state, agent_pool=agent_pool, cleanup=cleanup, docker_config=docker_config):
+                                merge_succeeded = True
+                                break
+                            dashboard.log(f"      [!] Task {task_id} merge failed (attempt {merge_attempt}/{max_task_retries + 1})")
+                        if merge_succeeded:
                             dashboard.set_agent(task_id, "Merge", "done", "Merged successfully")
                             with state_lock:
                                 state["completed_tasks"].append(task_id)
@@ -2702,7 +2728,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                         else:
                             dashboard.set_agent(task_id, "Merge", "failed", f"Failed to merge into {dev_branch}")
                             with state_lock:
-                                failed_tasks.add(f"Task {task_id} failed merging into {dev_branch}.")
+                                failed_tasks.add(f"Task {task_id} failed merging into {dev_branch} after {max_task_retries + 1} attempt(s).")
                     else:
                         # Check if we can retry
                         with state_lock:
