@@ -1889,9 +1889,12 @@ def process_task(
 
     overall_success = False
     last_completed_stage = None
+    task_attempt = 0  # total retries consumed across all stages
     try:
         stages_to_run = _STAGE_ORDER[_STAGE_ORDER.index(starting_stage):]
-        for stage in stages_to_run:
+        stage_idx = 0
+        while stage_idx < len(stages_to_run):
+            stage = stages_to_run[stage_idx]
             if shutdown_requested:
                 # Persist progress from any previously completed stage before shutting down
                 if last_completed_stage:
@@ -1902,23 +1905,29 @@ def process_task(
                 # Return True to indicate graceful shutdown (not failure) when we completed at least one stage
                 return last_completed_stage is not None
             extra = _stage_extra_kwargs.get(stage, {})
-            stage_passed = False
-            for stage_attempt in range(1, stage_max_retries + 2):  # +2: 1 original + retries
-                if stage_attempt > 1:
-                    if shutdown_requested:
-                        break
-                    _log(f"      [Stage Retry] {full_task_id} stage {stage!r} attempt {stage_attempt}/{stage_max_retries + 1}")
+            if _stage_fns[stage](**stage_kwargs, **extra):
+                last_completed_stage = stage
+                _cb(full_task_id, stage)
+                stage_idx += 1
+            else:
+                # Stage failed — consume a retry
+                task_attempt += 1
+                _log(f"      [!] {full_task_id} stage {stage!r} failed (retry {task_attempt}/{stage_max_retries})")
+                if task_attempt > stage_max_retries or shutdown_requested:
+                    return False
+                # Validate failure -> fall back to review (if review is in our run)
+                if stage == STAGE_VALIDATE and STAGE_REVIEW in stages_to_run:
+                    review_idx = stages_to_run.index(STAGE_REVIEW)
+                    stage_idx = review_idx
+                    _log(f"      [Stage Retry] {full_task_id} falling back to {STAGE_REVIEW!r} (retry {task_attempt}/{stage_max_retries})")
+                    if dashboard:
+                        dashboard.set_agent(full_task_id, "Review", "retrying",
+                                            f"Retry {task_attempt}/{stage_max_retries}")
+                else:
+                    _log(f"      [Stage Retry] {full_task_id} retrying {stage!r} (retry {task_attempt}/{stage_max_retries})")
                     if dashboard:
                         dashboard.set_agent(full_task_id, stage.capitalize(), "retrying",
-                                            f"Attempt {stage_attempt}/{stage_max_retries + 1}")
-                if _stage_fns[stage](**stage_kwargs, **extra):
-                    stage_passed = True
-                    break
-                _log(f"      [!] {full_task_id} stage {stage!r} failed (attempt {stage_attempt}/{stage_max_retries + 1})")
-            if not stage_passed:
-                return False
-            last_completed_stage = stage
-            _cb(full_task_id, stage)
+                                            f"Retry {task_attempt}/{stage_max_retries}")
         overall_success = True
         return True
     finally:
