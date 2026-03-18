@@ -2728,7 +2728,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                             dashboard.log(f"      [Push] Success.")
                     else:
                         dashboard.log(f"      [!] Task {task_id} merge failed (attempt {attempt}/{max_task_retries + 1})")
-                        if attempt <= max_task_retries:
+                        if attempt <= max_task_retries and not shutdown_requested:
                             _submit_merge(task_id, attempt + 1)
                         else:
                             pending_merge.discard(task_id)

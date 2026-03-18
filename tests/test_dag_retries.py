@@ -136,3 +136,69 @@ class TestDagRetryLogic:
         )
         assert count == 1
         assert "phase_1/01_test/01_task.md" in state["completed_tasks"]
+
+
+class TestMergeRetryDuringShutdown:
+    """Merge retries must not be attempted when shutdown_requested is True."""
+
+    def test_merge_retry_skipped_during_shutdown(self):
+        """When a merge fails and shutdown_requested is set, no retry is submitted."""
+        import workflow_lib.executor as executor_mod
+        from workflow_lib.executor import _execute_dag_inner
+
+        task_id = "phase_1/01_test/01_task.md"
+        master_dag = {task_id: []}
+        state = {"completed_tasks": [], "merged_tasks": [], "task_stages": {}}
+        dashboard = _make_dashboard()
+
+        merge_calls = [0]
+
+        def fake_merge_task(*args, **kwargs):
+            merge_calls[0] += 1
+            # First merge fails; set shutdown before returning
+            executor_mod.shutdown_requested = True
+            return False
+
+        patches = [
+            patch('workflow_lib.executor.process_task', return_value=True),
+            patch('workflow_lib.executor.merge_task', side_effect=fake_merge_task),
+            patch('workflow_lib.config.get_config_defaults', return_value={"retries": 3}),
+            patch('workflow_lib.executor.get_serena_enabled', return_value=False),
+            patch('workflow_lib.executor.get_dev_branch', return_value="dev"),
+            patch('workflow_lib.executor.get_pivot_remote', return_value="origin"),
+            patch('workflow_lib.executor.get_gitlab_remote_url', return_value=None),
+            patch('workflow_lib.executor.get_docker_config', return_value=None),
+            patch('workflow_lib.executor._get_resumable_tasks', return_value=set()),
+            patch('workflow_lib.executor.load_blocked_tasks', return_value=set()),
+            patch('workflow_lib.executor.notify_failure'),
+            patch('os._exit', side_effect=SystemExit(1)),
+            patch('subprocess.run', return_value=MagicMock(returncode=0, stdout="", stderr="")),
+        ]
+
+        executor_mod.shutdown_requested = False
+        for p in patches:
+            p.start()
+        try:
+            try:
+                _execute_dag_inner(
+                    root_dir="/tmp/test",
+                    master_dag=master_dag,
+                    state=state,
+                    jobs=1,
+                    presubmit_cmd="./do presubmit",
+                    backend="claude",
+                    serena_enabled=False,
+                    cache_lock=threading.Lock(),
+                    dashboard=dashboard,
+                )
+            except SystemExit:
+                pass
+        finally:
+            executor_mod.shutdown_requested = False
+            for p in patches:
+                p.stop()
+
+        assert merge_calls[0] == 1, (
+            f"Merge should be called exactly once (no retry during shutdown), "
+            f"but was called {merge_calls[0]} times"
+        )
