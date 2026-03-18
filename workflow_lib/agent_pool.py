@@ -143,7 +143,7 @@ class AgentConfig:
     :param steps: List of workflow steps this agent may perform.  Allowed values
         are ``"develop"``, ``"review"``, ``"merge"``, and ``"all"`` (the default,
         which matches any step).
-    :param context_limit: Optional per-agent context limit in words.  When set,
+    :param context_limit: Optional per-agent context limit in tokens.  When set,
         overrides the global ``"context_limit"`` from ``.workflow.jsonc`` but is
         itself overridden by the CLI ``--context-limit`` flag.
     :param env: Optional dict of environment variables to set when spawning this

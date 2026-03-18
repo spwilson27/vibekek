@@ -302,19 +302,22 @@ class TestAccumulatedContextSummaryPreference:
 class TestAccumulatedContextTruncation:
     """Tests for context_limit enforcement in get_accumulated_context."""
 
-    def _make_long_content(self, num_lines, words_per_line=10):
-        """Generate content with a known number of lines and words."""
+    def _make_long_content(self, num_lines, chars_per_line=100):
+        """Generate content with a known number of lines and approximate tokens.
+        
+        Uses ~100 chars per line which equals ~40 tokens (at 2.5 chars/token).
+        """
         return "\n".join(
-            " ".join(f"word{j}" for j in range(words_per_line))
+            " ".join(f"word{j}" for j in range(20))  # ~100 chars
             for i in range(num_lines)
         ) + "\n"
 
     def test_no_truncation_when_within_limit(self):
-        """All content included when total words fit under context_limit."""
+        """All content included when total tokens fit under context_limit."""
         ctx = _real_ctx()
         prev = {"id": "doc_a", "type": "spec", "name": "Doc A"}
         current = {"id": "doc_b", "type": "spec", "name": "Doc B"}
-        content = self._make_long_content(10, words_per_line=5)  # 50 words
+        content = self._make_long_content(10)  # ~400 tokens (10 lines × ~40 tokens)
 
         with patch("workflow_lib.context.DOCS", [prev, current]), \
              patch("workflow_lib.context.get_context_limit", return_value=126_000), \
@@ -330,8 +333,8 @@ class TestAccumulatedContextTruncation:
         ctx = _real_ctx()
         prev = {"id": "doc_a", "type": "spec", "name": "Doc A"}
         current = {"id": "doc_b", "type": "spec", "name": "Doc B"}
-        # 100 lines * 10 words = 1000 words of content
-        content = self._make_long_content(100, words_per_line=10)
+        # 100 lines × ~100 chars = ~10,000 chars = ~4,000 tokens
+        content = self._make_long_content(100)
 
         with patch("workflow_lib.context.DOCS", [prev, current]), \
              patch("workflow_lib.context.get_context_limit", return_value=200), \
@@ -344,29 +347,36 @@ class TestAccumulatedContextTruncation:
         # Should include the relative file path
         assert "docs/plan/specs/doc_a.md" in result
 
-    def test_truncation_respects_extra_words(self):
-        """extra_words reserves space, causing earlier truncation."""
+    def test_truncation_respects_extra_tokens(self):
+        """extra_tokens reserves space, causing more aggressive truncation."""
         ctx = _real_ctx()
         prev = {"id": "doc_a", "type": "spec", "name": "Doc A"}
         current = {"id": "doc_b", "type": "spec", "name": "Doc B"}
-        content = self._make_long_content(50, words_per_line=10)  # 500 words
+        content = self._make_long_content(50)  # ~2,000 tokens (50 lines × ~40 tokens)
 
-        # With generous limit: no truncation
+        # With 1000 token limit and no extra: should include more lines
         with patch("workflow_lib.context.DOCS", [prev, current]), \
              patch("workflow_lib.context.get_context_limit", return_value=1000), \
              patch("os.path.exists", side_effect=lambda p: "specs" in p), \
              patch("builtins.open", mock_open(read_data=content)):
-            result_no_extra = ctx.get_accumulated_context(current, extra_words=0)
+            result_no_extra = ctx.get_accumulated_context(current, extra_tokens=0)
 
-        # With large extra_words: should truncate
+        # With 800 extra tokens reserved: should include fewer lines
         with patch("workflow_lib.context.DOCS", [prev, current]), \
              patch("workflow_lib.context.get_context_limit", return_value=1000), \
              patch("os.path.exists", side_effect=lambda p: "specs" in p), \
              patch("builtins.open", mock_open(read_data=content)):
-            result_with_extra = ctx.get_accumulated_context(current, extra_words=800)
+            result_with_extra = ctx.get_accumulated_context(current, extra_tokens=800)
 
-        assert "more lines" not in result_no_extra
+        # Both should truncate (50 lines won't fit in 1000 tokens)
+        # but extra_tokens should cause more aggressive truncation
+        assert "more lines" in result_no_extra
         assert "more lines" in result_with_extra
+        # With extra_tokens, fewer lines should be included
+        no_extra_lines = result_no_extra.count("\n")
+        with_extra_lines = result_with_extra.count("\n")
+        assert with_extra_lines < no_extra_lines, \
+            "extra_tokens should reduce lines included"
 
     def test_multiple_docs_truncated_uniformly(self):
         """All docs get the same lines_per_doc limit."""
@@ -375,8 +385,8 @@ class TestAccumulatedContextTruncation:
         doc_b = {"id": "doc_b", "type": "spec", "name": "Doc B"}
         current = {"id": "doc_c", "type": "spec", "name": "Doc C"}
 
-        content_a = self._make_long_content(80, words_per_line=10)  # 800 words
-        content_b = self._make_long_content(80, words_per_line=10)  # 800 words
+        content_a = self._make_long_content(80)  # ~3,200 tokens (80 lines × ~40 tokens)
+        content_b = self._make_long_content(80)  # ~3,200 tokens (80 lines × ~40 tokens)
 
         file_contents = {
             "/fake/root/docs/plan/specs/doc_a.md": content_a,
@@ -389,7 +399,7 @@ class TestAccumulatedContextTruncation:
         def open_side(path, *args, **kwargs):
             return mock_open(read_data=file_contents.get(path, ""))()
 
-        # Limit of 300 words — both docs should be truncated
+        # Limit of 300 tokens — both docs should be truncated
         with patch("workflow_lib.context.DOCS", [doc_a, doc_b, current]), \
              patch("workflow_lib.context.get_context_limit", return_value=300), \
              patch("os.path.exists", side_effect=exists_side), \

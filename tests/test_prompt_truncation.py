@@ -14,22 +14,23 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from workflow_lib.executor import truncate_task_context, _TRUNCATABLE_CONTEXT_KEYS
-from workflow_lib.context import fit_lines_to_budget
+from workflow_lib.context import fit_lines_to_budget, _count_tokens
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_context(words_per_key: int = 100) -> dict:
+def _make_context(tokens_per_key: int = 100) -> dict:
     """Build a task_context dict with controllable content size.
 
-    Content is spread across multiple lines (~10 words each) so that
-    line-based truncation can operate meaningfully.
+    Content is spread across multiple lines (~40 tokens each based on
+    2.5 chars/token ratio) so that line-based truncation can operate
+    meaningfully.
     """
-    words_per_line = 10
-    num_lines = max(words_per_key // words_per_line, 1)
-    content = "\n".join("word " * words_per_line for _ in range(num_lines)) + "\n"
+    chars_per_line = 100  # ~40 tokens per line (100 / 2.5)
+    num_lines = max(tokens_per_key // 40, 1)
+    content = "\n".join("word " * 20 for _ in range(num_lines)) + "\n"
     return {
         "task_details": content,
         "spec_ctx": content,
@@ -43,8 +44,8 @@ def _make_context(words_per_key: int = 100) -> dict:
     }
 
 
-def _word_count(text: str) -> int:
-    return len(text.split())
+def _token_count(text: str) -> int:
+    return _count_tokens(text)
 
 
 # ---------------------------------------------------------------------------
@@ -56,15 +57,15 @@ class TestTruncateTaskContext:
 
     def test_no_truncation_when_within_budget(self):
         """Content that fits within budget should not be modified."""
-        ctx = _make_context(words_per_key=10)  # 50 words total in truncatable keys
-        result = truncate_task_context(ctx, word_budget=10000)
+        ctx = _make_context(tokens_per_key=10)  # ~50 tokens total in truncatable keys
+        result = truncate_task_context(ctx, token_budget=10000)
         for key in _TRUNCATABLE_CONTEXT_KEYS:
             assert result[key] == ctx[key], f"{key} should not be truncated"
 
     def test_truncation_when_exceeding_budget(self):
         """Content exceeding budget should be truncated with a note."""
-        ctx = _make_context(words_per_key=1000)  # 5000 words in truncatable keys
-        result = truncate_task_context(ctx, word_budget=500)
+        ctx = _make_context(tokens_per_key=1000)  # ~5000 tokens in truncatable keys
+        result = truncate_task_context(ctx, token_budget=500)
         truncated_any = False
         for key in _TRUNCATABLE_CONTEXT_KEYS:
             if "truncated to fit context budget" in result[key]:
@@ -73,8 +74,8 @@ class TestTruncateTaskContext:
 
     def test_truncation_note_includes_source(self):
         """Truncation notes should identify the source key."""
-        ctx = _make_context(words_per_key=2000)
-        result = truncate_task_context(ctx, word_budget=200)
+        ctx = _make_context(tokens_per_key=2000)
+        result = truncate_task_context(ctx, token_budget=200)
         for key in _TRUNCATABLE_CONTEXT_KEYS:
             val = result[key]
             if "truncated to fit context budget" in val:
@@ -87,23 +88,23 @@ class TestTruncateTaskContext:
         ctx = {"task_details": lines, "spec_ctx": "", "description_ctx": "",
                "shared_components_ctx": "", "memory_ctx": "",
                "phase_filename": "p", "task_name": "t"}
-        result = truncate_task_context(ctx, word_budget=100)
+        result = truncate_task_context(ctx, token_budget=100)
         assert "more lines" in result["task_details"]
 
     def test_non_truncatable_keys_preserved(self):
         """Keys not in _TRUNCATABLE_CONTEXT_KEYS should pass through unchanged."""
-        ctx = _make_context(words_per_key=2000)
-        result = truncate_task_context(ctx, word_budget=200)
+        ctx = _make_context(tokens_per_key=2000)
+        result = truncate_task_context(ctx, token_budget=200)
         assert result["phase_filename"] == "phase_0"
         assert result["task_name"] == "test_task.md"
         assert result["clone_dir"] == "/tmp/test"
 
     def test_empty_context_values_skipped(self):
         """Empty truncatable values should not consume budget."""
-        ctx = _make_context(words_per_key=500)
+        ctx = _make_context(tokens_per_key=500)
         ctx["spec_ctx"] = ""
         ctx["memory_ctx"] = ""
-        result = truncate_task_context(ctx, word_budget=1000)
+        result = truncate_task_context(ctx, token_budget=1000)
         # Budget should be split among 3 non-empty keys, not 5
         # so each gets more room — task_details should be less truncated
         assert result["spec_ctx"] == ""
@@ -111,29 +112,29 @@ class TestTruncateTaskContext:
 
     def test_template_static_text_counted(self):
         """Static template text should reduce the available budget."""
-        ctx = _make_context(words_per_key=100)
+        ctx = _make_context(tokens_per_key=100)
         # With a large static template, less budget remains for context
         big_template = "static " * 500 + "{task_details}{spec_ctx}{description_ctx}{shared_components_ctx}{memory_ctx}"
-        result_tight = truncate_task_context(ctx, word_budget=600, prompt_tmpl=big_template)
-        result_loose = truncate_task_context(ctx, word_budget=600, prompt_tmpl="{task_details}")
+        result_tight = truncate_task_context(ctx, token_budget=600, prompt_tmpl=big_template)
+        result_loose = truncate_task_context(ctx, token_budget=600, prompt_tmpl="{task_details}")
         # With more static text, truncation should be more aggressive
-        tight_words = sum(_word_count(result_tight[k]) for k in _TRUNCATABLE_CONTEXT_KEYS)
-        loose_words = sum(_word_count(result_loose[k]) for k in _TRUNCATABLE_CONTEXT_KEYS)
-        assert tight_words <= loose_words
+        tight_tokens = sum(_token_count(result_tight[k]) for k in _TRUNCATABLE_CONTEXT_KEYS)
+        loose_tokens = sum(_token_count(result_loose[k]) for k in _TRUNCATABLE_CONTEXT_KEYS)
+        assert tight_tokens <= loose_tokens
 
     def test_zero_budget_returns_copy(self):
         """A zero budget should return the context unchanged (defensive)."""
-        ctx = _make_context(words_per_key=100)
-        result = truncate_task_context(ctx, word_budget=0)
+        ctx = _make_context(tokens_per_key=100)
+        result = truncate_task_context(ctx, token_budget=0)
         assert result is not ctx  # should be a copy
         for key in _TRUNCATABLE_CONTEXT_KEYS:
             assert result[key] == ctx[key]
 
     def test_result_is_a_copy(self):
         """Original context should not be mutated."""
-        ctx = _make_context(words_per_key=2000)
+        ctx = _make_context(tokens_per_key=2000)
         original_details = ctx["task_details"]
-        truncate_task_context(ctx, word_budget=200)
+        truncate_task_context(ctx, token_budget=200)
         assert ctx["task_details"] == original_details
 
 
@@ -175,9 +176,9 @@ class TestRunAgentTruncation:
 
         # The prompt passed to run_ai_command should be truncated
         actual_prompt = mock_run_ai.call_args[0][0]
-        actual_words = _word_count(actual_prompt)
-        # Should be well under the original 1000+ words
-        assert actual_words < 500, f"Prompt should be truncated, got {actual_words} words"
+        actual_tokens = _token_count(actual_prompt)
+        # Should be well under the original 1000+ tokens
+        assert actual_tokens < 500, f"Prompt should be truncated, got {actual_tokens} tokens"
 
     @patch("workflow_lib.executor.run_ai_command", return_value=(0, ""))
     @patch("workflow_lib.executor.get_project_images", return_value=[])

@@ -67,7 +67,7 @@ RESET = "\033[0m"
 BOLD = "\033[1m"
 
 from .constants import TOOLS_DIR, DOCS, parse_requirements
-from .context import ProjectContext
+from .context import ProjectContext, _count_tokens
 
 # Canonical set of non-task markdown files to exclude from DAG generation,
 # task counting, dependency validation, etc.  Keep this in sync with the
@@ -184,8 +184,8 @@ class Phase1GenerateDoc(BasePhase):
         # market/competitive data from influencing architectural decisions
         include_research = self.doc["type"] == "research"
         base_prompt_template = ctx.load_prompt(self.doc["prompt_file"])
-        extra = len(base_prompt_template.split()) + len(ctx.description_ctx.split()) + 100
-        accumulated_context = ctx.get_accumulated_context(self.doc, include_research=include_research, extra_words=extra)
+        extra = _count_tokens(base_prompt_template) + _count_tokens(ctx.description_ctx) + 40
+        accumulated_context = ctx.get_accumulated_context(self.doc, include_research=include_research, extra_tokens=extra)
 
         base_prompt = base_prompt_template.replace("{target_path}", target_path)
         base_prompt = base_prompt.replace("{document_name}", self.doc["name"])
@@ -272,8 +272,8 @@ class Phase2FleshOutDoc(BasePhase):
         out_folder = "specs"
         headers = ctx.parse_markdown_headers(expected_file, doc=self.doc)
         flesh_prompt_tmpl = ctx.load_prompt("flesh_out.md")
-        extra = len(flesh_prompt_tmpl.split()) + len(ctx.description_ctx.split()) + 100
-        accumulated_context = ctx.get_accumulated_context(self.doc, include_research=False, extra_words=extra)
+        extra = _count_tokens(flesh_prompt_tmpl) + _count_tokens(ctx.description_ctx) + 40
+        accumulated_context = ctx.get_accumulated_context(self.doc, include_research=False, extra_tokens=extra)
         
         ctx.state.setdefault("fleshed_out_headers", {})
         ctx.state["fleshed_out_headers"].setdefault(self.doc["id"], [])

@@ -127,8 +127,9 @@ def get_config_defaults() -> Dict[str, Any]:
     * ``soft_timeout`` (int) — Soft timeout in seconds for Qwen sessions.
       When reached, the session is interrupted and resumed with a
       "finish up" prompt.  Defaults to 480 (8 minutes).
-    * ``context_limit`` (int) — Maximum prompt size in words for phases
-      that aggregate task content.  Defaults to 126 000.
+    * ``context_limit`` (int) — Maximum prompt size in tokens for phases
+      that aggregate task content. Uses a character-based estimation with
+      2.5 chars/token ratio. Defaults to 126 000 tokens (~315k chars).
     * ``idle_timeout`` (int) — Idle timeout in seconds.  If an agent
       process produces no output for this duration, it is killed.
       Defaults to 1200 (20 minutes).
@@ -547,7 +548,7 @@ def set_context_limit_override(value: int) -> None:
     called once at startup when the user passes ``--context-limit`` on the
     command line.
 
-    :param value: Maximum prompt size in words to enforce.
+    :param value: Maximum prompt size in tokens to enforce.
     :type value: int
     """
     global _context_limit_override
@@ -564,7 +565,7 @@ def set_agent_context_limit(value: int | None) -> None:
 
     Pass ``None`` to clear any previously set agent-level limit.
 
-    :param value: Maximum prompt size in words for the active agent, or
+    :param value: Maximum prompt size in tokens for the active agent, or
         ``None`` to clear.
     :type value: int or None
     """
@@ -573,7 +574,7 @@ def set_agent_context_limit(value: int | None) -> None:
 
 
 def get_context_limit() -> int:
-    """Return the configured context limit in words.
+    """Return the configured context limit in tokens.
 
     Resolution order (first match wins):
 
@@ -581,9 +582,9 @@ def get_context_limit() -> int:
     2. Per-agent limit set via :func:`set_agent_context_limit` (from the
        active agent's ``"context_limit"`` pool definition).
     3. ``"context_limit"`` key in ``.workflow.jsonc``.
-    4. Built-in default of 126 000.
+    4. Built-in default of 126 000 tokens.
 
-    :returns: Maximum prompt size in words.
+    :returns: Maximum prompt size in tokens.
     :rtype: int
     """
     if _context_limit_override is not None:

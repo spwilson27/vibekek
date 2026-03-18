@@ -19,26 +19,42 @@ from typing import Any, Callable, List, Dict, Optional, Union
 
 from .constants import TOOLS_DIR, INPUT_DIR, GEN_STATE_FILE, DOCS
 from .config import get_context_limit
+
+# Token estimation: ~2.5 characters per token (accounts for code + prose mix)
+CHARS_PER_TOKEN = 2.5
+
 from .runners import AIRunner, GeminiRunner, IMAGE_EXTENSIONS
+
+
+def _count_tokens(text: str) -> int:
+    """Estimate token count using character-based heuristic.
+
+    Uses a 2.5 chars/token ratio which is more accurate than word counting
+    for mixed code/prose content.
+
+    :param text: Text to estimate tokens for.
+    :returns: Estimated token count.
+    """
+    return int(len(text) / CHARS_PER_TOKEN)
 
 
 def build_context_block(
     entries: List[Dict[str, Any]],
-    word_budget: int,
+    token_budget: int,
     label: str = "",
 ) -> str:
     """Format a list of file entries into a budget-bounded context string.
 
     Applies :func:`fit_lines_to_budget` to find the maximum lines-per-file
-    that keeps the total word count within *word_budget*, then renders each
+    that keeps the total token count within *token_budget*, then renders each
     entry as ``### {rel}\\n{content}``, appending a truncation hint when lines
     are omitted.
 
     :param entries: File entries, each a dict with ``"rel"`` (project-root-
         relative path) and ``"lines"`` (list of text lines).
     :type entries: list[dict]
-    :param word_budget: Maximum total words for the formatted block.
-    :type word_budget: int
+    :param token_budget: Maximum total tokens for the formatted block.
+    :type token_budget: int
     :param label: Optional label used in the progress log line.
     :type label: str
     :returns: Formatted, truncated context string, or ``""`` when *entries*
@@ -47,17 +63,17 @@ def build_context_block(
     """
     if not entries:
         return ""
-    # ~15 words overhead per file (header line, path hint, newlines)
-    header_words = len(entries) * 15
+    # ~40 chars overhead per file (header line, path hint, newlines) ≈ 16 tokens
+    header_tokens = len(entries) * 16
     lines_limit = fit_lines_to_budget(
-        [e["lines"] for e in entries], max(word_budget - header_words, 1)
+        [e["lines"] for e in entries], max(token_budget - header_tokens, 1), use_tokens=True
     )
     total = sum(
-        len(line.split()) for e in entries for line in e["lines"][:lines_limit]
-    ) + header_words
+        _count_tokens("".join(e["lines"][:lines_limit])) for e in entries
+    ) + header_tokens
     desc = f"[{label}] " if label else ""
     print(f"   -> Context {desc}{len(entries)} file(s), "
-          f"{lines_limit} lines/file, ~{total} words")
+          f"{lines_limit} lines/file, ~{total} tokens")
 
     parts = []
     for e in entries:
@@ -70,20 +86,27 @@ def build_context_block(
     return "\n\n".join(parts)
 
 
-def fit_lines_to_budget(entries_lines: List[List[str]], word_budget: int) -> int:
-    """Return the maximum lines-per-entry such that total word count ≤ *word_budget*.
+def fit_lines_to_budget(
+    entries_lines: List[List[str]],
+    budget: int,
+    use_tokens: bool = False,
+) -> int:
+    """Return the maximum lines-per-entry such that total count ≤ *budget*.
 
     Uses a binary search over the uniform line limit applied to all entries,
     matching each entry's lines from the start.  All entries are truncated to
     the same limit so no single entry dominates the budget.
 
     :param entries_lines: Each element is the list of lines for one document or
-        file.  Empty entries are allowed and contribute zero words.
+        file.  Empty entries are allowed and contribute zero tokens.
     :type entries_lines: list[list[str]]
-    :param word_budget: Maximum total words across all entries.
-    :type word_budget: int
+    :param budget: Maximum total budget across all entries in tokens.
+    :type budget: int
+    :param use_tokens: When True, use character-based token estimation
+        (2.5 chars/token). When False, use legacy word counting (deprecated).
+    :type use_tokens: bool
     :returns: The largest per-entry line limit that keeps the total within
-        *word_budget*, or ``0`` when *entries_lines* is empty.
+        *budget*, or ``0`` when *entries_lines* is empty.
     :rtype: int
     """
     if not entries_lines:
@@ -93,15 +116,17 @@ def fit_lines_to_budget(entries_lines: List[List[str]], word_budget: int) -> int
         return 0
 
     def _count(limit: int) -> int:
+        if use_tokens:
+            return sum(_count_tokens("".join(e[:limit])) for e in entries_lines)
         return sum(len(line.split()) for e in entries_lines for line in e[:limit])
 
-    if _count(max_lines) <= word_budget:
+    if _count(max_lines) <= budget:
         return max_lines
 
     lo, hi = 1, max_lines
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        if _count(mid) <= word_budget:
+        if _count(mid) <= budget:
             lo = mid
         else:
             hi = mid - 1
@@ -273,12 +298,12 @@ class ProjectContext:
     def build_context_strings(
         self,
         context_files: Dict[str, Union[str, List[str]]],
-        extra_words: int = 0,
+        extra_tokens: int = 0,
     ) -> Dict[str, str]:
         """Load files for each context placeholder and apply budget-aware truncation.
 
-        The total word budget across all context groups is
-        ``context_limit - extra_words``, split equally across groups.  Within
+        The total token budget across all context groups is
+        ``context_limit - extra_tokens``, split equally across groups.  Within
         each group a binary search finds the maximum lines-per-file that fits
         the share, matching the pattern used by :func:`~phases._build_tasks_content`.
 
@@ -292,16 +317,16 @@ class ProjectContext:
         :param context_files: Mapping of template placeholder name to the
             path(s) whose content should fill it.
         :type context_files: dict[str, str | list[str]]
-        :param extra_words: Words already consumed by the template text and
+        :param extra_tokens: Tokens already consumed by the template text and
             small static params — subtracted from the total budget before
             distributing across groups.
-        :type extra_words: int
+        :type extra_tokens: int
         :returns: Mapping of placeholder name to formatted, truncated content
             ready for :meth:`format_prompt`.
         :rtype: dict[str, str]
         """
-        max_words = get_context_limit()
-        available = max(max_words - extra_words, 0)
+        max_tokens = get_context_limit()
+        available = max(max_tokens - extra_tokens, 0)
 
         # Collect file entries per group
         groups: Dict[str, List[Dict[str, Any]]] = {}
@@ -437,7 +462,7 @@ class ProjectContext:
         self,
         current_doc: Dict[str, Any],
         include_research: bool = True,
-        extra_words: int = 0,
+        extra_tokens: int = 0,
     ) -> str:
         """Build an XML-tagged context string from all documents preceding *current_doc*.
 
@@ -458,9 +483,9 @@ class ProjectContext:
         :param include_research: When ``False``, research-type documents are
             skipped.
         :type include_research: bool
-        :param extra_words: Words reserved for the rest of the prompt (template,
+        :param extra_tokens: Tokens reserved for the rest of the prompt (template,
             description context, etc.) so the accumulated context leaves room.
-        :type extra_words: int
+        :type extra_tokens: int
         :returns: Concatenated ``<previous_document>`` XML blocks for each
             existing preceding document.
         :rtype: str
@@ -489,21 +514,20 @@ class ProjectContext:
         if not entries:
             return ""
 
-        # Budget: context_limit minus extra_words minus per-doc header overhead
-        max_words = get_context_limit()
-        header_words = len(entries) * 20  # XML tags, name attr, etc.
-        available_words = max(max_words - extra_words - header_words, 0)
+        # Budget: context_limit minus extra_tokens minus per-doc header overhead
+        max_tokens = get_context_limit()
+        header_tokens = len(entries) * 8  # XML tags, name attr, etc. (~20 chars / 2.5)
+        available_tokens = max(max_tokens - extra_tokens - header_tokens, 0)
 
         lines_per_doc = fit_lines_to_budget(
-            [e[1] for e in entries], available_words
+            [e[1] for e in entries], available_tokens, use_tokens=True
         )
-        total_words = sum(
-            len(line.split())
+        total_tokens = sum(
+            _count_tokens("".join(lines[:lines_per_doc]))
             for _, lines, _, _ in entries
-            for line in lines[:lines_per_doc]
-        ) + header_words
+        ) + header_tokens
         print(f"   -> Accumulated context: {len(entries)} docs, "
-              f"{lines_per_doc} lines/doc, ~{total_words} words")
+              f"{lines_per_doc} lines/doc, ~{total_tokens} tokens")
 
         # Build the context string
         parts: list = []
@@ -697,11 +721,11 @@ class ProjectContext:
         """
         if context_files is not None or params is not None:
             tmpl = self.load_prompt(full_prompt)
-            # Reserve words for template boilerplate and small static params
-            extra = len(tmpl.split()) + sum(
-                len(str(v).split()) for v in (params or {}).values()
+            # Reserve tokens for template boilerplate and small static params
+            extra = _count_tokens(tmpl) + sum(
+                _count_tokens(str(v)) for v in (params or {}).values()
             )
-            ctx_strs = self.build_context_strings(context_files or {}, extra_words=extra)
+            ctx_strs = self.build_context_strings(context_files or {}, extra_tokens=extra)
             full_prompt = self.format_prompt(tmpl, **(params or {}), **ctx_strs)
         before = self.get_workspace_snapshot()
         on_line: Optional[Callable[[str], None]] = None

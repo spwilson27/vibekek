@@ -600,7 +600,7 @@ def main() -> None:
     shared.add_argument("--backend", choices=sorted(VALID_BACKENDS), default=None, help="AI CLI backend to use (default: gemini)")
     shared.add_argument("--model", default=None, help="Model name to pass through to the AI CLI (e.g. 'claude-sonnet-4-5-20250514')")
     shared.add_argument("--ignore-sandbox", action="store_true", default=None, help="Disable sandbox violation checks")
-    shared.add_argument("--context-limit", type=int, default=None, dest="context_limit", help="Override context limit in words (default: 126000)")
+    shared.add_argument("--context-limit", type=int, default=None, dest="context_limit", help="Override context limit in tokens (default: 126000)")
 
     parser = argparse.ArgumentParser(description="AI Project Planning and Execution Workflow")
     sub = parser.add_subparsers(dest="command", required=True)

@@ -41,7 +41,7 @@ from zoneinfo import ZoneInfo
 _PST = ZoneInfo("America/Los_Angeles")
 
 from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR, REPLAN_STATE_FILE, STATE_DIR, WORKFLOW_STATE_FILE
-from .context import ProjectContext, fit_lines_to_budget
+from .context import ProjectContext, fit_lines_to_budget, _count_tokens
 from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state, load_dags, get_tasks_dir
 from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config, get_rag_enabled, get_sccache_config, get_sccache_dist_config, get_context_limit, set_agent_context_limit
@@ -893,13 +893,13 @@ _TRUNCATABLE_CONTEXT_KEYS = [
 
 def truncate_task_context(
     task_context: Dict[str, Any],
-    word_budget: int,
+    token_budget: int,
     prompt_tmpl: str = "",
 ) -> Dict[str, Any]:
-    """Return a copy of *task_context* with large text values truncated to fit *word_budget*.
+    """Return a copy of *task_context* with large text values truncated to fit *token_budget*.
 
     Only keys listed in :data:`_TRUNCATABLE_CONTEXT_KEYS` are candidates for
-    truncation.  The budget is first reduced by the word count of the static
+    truncation.  The budget is first reduced by the token count of the static
     template text (with placeholders removed) and any non-truncatable context
     values.  The remaining budget is split evenly across the truncatable keys
     that have non-empty content.
@@ -910,27 +910,27 @@ def truncate_task_context(
     appended note indicating how many lines were omitted.
 
     :param task_context: Original key/value substitution map.
-    :param word_budget: Maximum total words for the fully-substituted prompt.
+    :param token_budget: Maximum total tokens for the fully-substituted prompt.
     :param prompt_tmpl: The raw prompt template (before substitution).  Used to
         account for static text that consumes part of the budget.
     :returns: A shallow copy of *task_context* with truncatable values trimmed.
     """
-    if word_budget <= 0:
+    if token_budget <= 0:
         return dict(task_context)
 
-    # Count words in the static template (strip placeholders).
+    # Count tokens in the static template (strip placeholders).
     static_text = prompt_tmpl
     for k in task_context:
         static_text = static_text.replace(f"{{{k}}}", "")
-    static_words = len(static_text.split())
+    static_tokens = _count_tokens(static_text)
 
-    # Count words in non-truncatable context values.
-    fixed_words = static_words
+    # Count tokens in non-truncatable context values.
+    fixed_tokens = static_tokens
     for k, v in task_context.items():
         if k not in _TRUNCATABLE_CONTEXT_KEYS:
-            fixed_words += len(str(v).split())
+            fixed_tokens += _count_tokens(str(v))
 
-    available = max(word_budget - fixed_words, 0)
+    available = max(token_budget - fixed_tokens, 0)
 
     # Collect truncatable entries that have content.
     trunc_items: List[tuple] = []
@@ -947,7 +947,7 @@ def truncate_task_context(
     result = dict(task_context)
     for key, val in trunc_items:
         lines = val.splitlines(keepends=True)
-        lines_limit = fit_lines_to_budget([lines], per_key_budget)
+        lines_limit = fit_lines_to_budget([lines], per_key_budget, use_tokens=True)
         if lines_limit < len(lines):
             truncated = "".join(lines[:lines_limit]).rstrip()
             omitted = len(lines) - lines_limit
