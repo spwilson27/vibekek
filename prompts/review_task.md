@@ -53,6 +53,8 @@ You are operating inside of a clean, isolated `git clone` of the task branch. Th
 3.  **Ensure Presubmit Passes:**
     - Run `./do presubmit`.
     - If it fails, fix the code or the tests until it passes perfectly.
+    - **CRITICAL:** You are responsible for making `./do presubmit` pass with ZERO errors. This includes ALL test failures, lint errors, and build errors — even if they appear to be pre-existing or unrelated to the current task's changes. Do NOT skip, ignore, or rationalize away any failure. If a test fails, fix it. No exceptions.
+    - If you are uncertain about the intent behind any code or test, use `git log` and `git blame` to understand the history and requirements before making changes.
 4.  **Update Memory:**
     - If you made or confirmed a durable architectural decision (a pattern, interface choice, or invariant), update `./.agent/DECISIONS.md`. 
     - Update `./.agent/MEMORY.md` with:
@@ -64,7 +66,7 @@ You are operating inside of a clean, isolated `git clone` of the task branch. Th
 # CONSTRAINTS
 - **Your task is FULLY SPECIFIED in the Task Requirements section above. All necessary context is provided.**
 - Do NOT read high-level project spec files (e.g., `requirements.md`, `prd.md`, specs). Focus on the source code directly.
-- ALWAYS end your turn when your code review & refactoring is complete and `./do presubmit` passes.
+- ALWAYS end your turn when your code review & refactoring is complete and `./do presubmit` passes with ZERO errors. Do NOT end your turn if any tests or checks are failing, regardless of whether you believe they were broken before your changes.
 - Do NOT commit your code. The orchestrator will handle the git commits.
 - You must write your output using your file editing tools directly. DO NOT output the code into this chat prompt.
 

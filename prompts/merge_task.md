@@ -34,10 +34,11 @@ You are operating inside of a clean, isolated `git clone` of the repository, cur
     - Run `./do presubmit`.
     - If the merged code breaks tests or the build, fix the code until it passes perfectly.
     - When fixing merge conflicts or broken code, add debug assertions at integration points where merged code from different branches interacts — assert that data passed between merged components meets the expected contract.
-    - **CRITICAL:** `dev` MUST pass `./do presubmit` before you end your turn.
+    - **CRITICAL:** `dev` MUST pass `./do presubmit` with ZERO errors before you end your turn. This includes ALL test failures, lint errors, and build errors — even if they appear to be pre-existing or unrelated to the merge. Do NOT skip, ignore, or rationalize away any failure. If a test fails, fix it. No exceptions.
+    - If you are uncertain about the intent behind any code or test, use `git log` and `git blame` to understand the history and requirements before making changes.
 
 # CONSTRAINTS
-- ALWAYS end your turn when you are on the `dev` branch, all listed branches are merged in, and `./do presubmit` passes.
+- ALWAYS end your turn when you are on the `dev` branch, all listed branches are merged in, and `./do presubmit` passes with ZERO errors. Do NOT end your turn if any tests or checks are failing, regardless of whether you believe they were broken before the merge.
 - Leave the committed, merged changes on `dev`. Do NOT run `git push`. The orchestrator handles the synchronization back to the source repository.
 
 # ERROR HANDLING

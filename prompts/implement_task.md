@@ -54,6 +54,8 @@ You are operating inside of a clean, isolated `git clone` of the repository, che
 4.  **Verify (Presubmit):**
     - Run `./do presubmit`. 
     - If it fails, fix the issues until it passes cleanly.
+    - **CRITICAL:** You must achieve ZERO errors from `./do presubmit`. This includes ALL test failures, lint errors, and build errors — even if they appear to be pre-existing or unrelated to your task. Do NOT skip, ignore, or rationalize away any failure. If a test fails, fix it. No exceptions.
+    - If you are uncertain about the intent behind any code or test, use `git log` and `git blame` to understand the history and requirements before making changes.
 5.  **Document:**
     - If you made a durable architectural decision (a pattern, interface choice, or invariant future tasks must respect), add it to `./.agent/DECISIONS.md` 
     - Update `./.agent/MEMORY.md` with any **Brittle Areas** you discovered and a one-line entry in the **Recent Changelog**.
@@ -61,7 +63,7 @@ You are operating inside of a clean, isolated `git clone` of the repository, che
 # CONSTRAINTS
 - **Your task is FULLY SPECIFIED in the Task Requirements section above. All necessary context is provided.**
 - Do NOT read high-level project spec files (e.g., `requirements.md`, `prd.md`, specs). Focus on the existing source code directly relevant to your task.
-- ALWAYS end your turn when your implementation is complete and `./do presubmit` passes.
+- ALWAYS end your turn when your implementation is complete and `./do presubmit` passes with ZERO errors. Do NOT end your turn if any tests or checks are failing, regardless of whether you believe they were broken before your changes.
 - Do NOT commit your code. The orchestrator will handle the git commits.
 - You must write your output using your file editing tools directly. DO NOT output the code into this chat prompt.
 
