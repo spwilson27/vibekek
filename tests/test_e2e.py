@@ -1517,6 +1517,7 @@ class TestProcessTaskRetryE2E:
              patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("workflow_lib.config.get_config_defaults", return_value={"retries": 0}), \
              patch("subprocess.run") as mock_run:
 
             def _fake_run(cmd, **kwargs):
@@ -1602,6 +1603,7 @@ class TestProcessTaskRetryE2E:
              patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("workflow_lib.config.get_config_defaults", return_value={"retries": 0}), \
              patch("subprocess.run") as mock_run:
 
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr=b"")
@@ -1636,6 +1638,7 @@ class TestProcessTaskRetryE2E:
              patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("workflow_lib.config.get_config_defaults", return_value={"retries": 0}), \
              patch("subprocess.run") as mock_run:
 
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr=b"")

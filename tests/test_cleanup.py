@@ -34,9 +34,10 @@ class TestProcessTaskCleanup:
              patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("workflow_lib.config.get_config_defaults", return_value={"retries": 0}), \
              patch("tempfile.mkdtemp", side_effect=_fake_mkdtemp), \
              patch("subprocess.run") as mock_run:
-            
+
             def _fake_run(cmd, **kwargs):
                 res = MagicMock(returncode=0, stdout="", stderr=b"")
                 # Fail the presubmit
@@ -77,9 +78,10 @@ class TestProcessTaskCleanup:
              patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("workflow_lib.config.get_config_defaults", return_value={"retries": 0}), \
              patch("tempfile.mkdtemp", side_effect=_fake_mkdtemp), \
              patch("subprocess.run") as mock_run:
-            
+
             def _fake_run(cmd, **kwargs):
                 res = MagicMock(returncode=0, stdout="", stderr=b"")
                 if isinstance(cmd, list) and len(cmd) > 0 and "echo ok" in " ".join(cmd):

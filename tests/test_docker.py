@@ -1012,6 +1012,7 @@ class TestProcessTaskWithDocker:
              patch("workflow_lib.executor.get_task_details", return_value="# Task: Test"), \
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
+             patch("workflow_lib.config.get_config_defaults", return_value={"retries": 0}), \
              patch("workflow_lib.executor.subprocess.run", return_value=MagicMock(returncode=0, stdout="running\n", stderr="")):
 
             result = process_task(root, "phase_1/sub/01_a.md", "echo ok",
