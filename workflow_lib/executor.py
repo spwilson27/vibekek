@@ -2605,20 +2605,46 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
 
     dashboard.log("=> Starting Parallel DAG Execution Loop...")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor, \
+         concurrent.futures.ThreadPoolExecutor(max_workers=1) as merge_executor:
         # Dictionary to keep track of futures mapping to task_id
         future_to_task = {}
+        # Merge futures run on a dedicated single-thread executor so they are
+        # serialised (no concurrent pushes) but do NOT block the scheduling of
+        # new implementation tasks.
+        merge_future_to_task = {}   # Future -> (task_id, attempt_num)
+        pending_merge = set()       # task_ids awaiting merge (not yet in completed_tasks)
+
+        def _submit_merge(task_id: str, attempt: int = 1) -> None:
+            """Submit a merge job to the single-thread merge executor."""
+            with state_lock:
+                pending_state = {
+                    "completed_tasks": list(state.get("completed_tasks", [])) + [task_id],
+                    "merged_tasks":    list(state.get("merged_tasks", []))    + [task_id],
+                }
+            if attempt > 1:
+                dashboard.log(f"   -> [Merge Retry] Task {task_id} merge attempt {attempt}/{max_task_retries + 1}")
+                dashboard.set_agent(task_id, "Merge", "retrying", f"Attempt {attempt}/{max_task_retries + 1}")
+            mf = merge_executor.submit(
+                merge_task, root_dir, task_id, presubmit_cmd, backend,
+                cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard,
+                model=model, dev_branch=dev_branch, remote_url=remote_url,
+                workflow_state=pending_state, agent_pool=agent_pool, cleanup=cleanup,
+                docker_config=docker_config,
+            )
+            merge_future_to_task[mf] = (task_id, attempt)
+            pending_merge.add(task_id)
 
         while True:
             # Check for newly ready tasks
             ready_tasks = []
             if not shutdown_requested and not failed_tasks:
                 with state_lock:
-                    ready_tasks = get_ready_tasks(master_dag, state["completed_tasks"], list(active_tasks), resumable_tasks=resumable_tasks)
+                    ready_tasks = get_ready_tasks(master_dag, state["completed_tasks"], list(active_tasks | pending_merge), resumable_tasks=resumable_tasks)
 
             # Submit ready tasks if we have capacity
             for task_id in ready_tasks:
-                if len(active_tasks) >= jobs:
+                if len(active_tasks) + len(pending_merge) >= jobs:
                     break
 
                 with state_lock:
@@ -2641,8 +2667,8 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                 )
                 future_to_task[future] = task_id
 
-            # If no tasks are running and (none are ready or shutdown requested), we are done/deadlocked
-            if not future_to_task:
+            # If no tasks are running (impl or merge) and none are ready, we are done/deadlocked
+            if not future_to_task and not merge_future_to_task:
                 if shutdown_requested:
                     dashboard.log("=> Graceful shutdown complete. Exiting.")
                     break
@@ -2666,13 +2692,52 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                         _restore_terminal()
                         os._exit(1)
 
-            # Wait for at least one future to complete
+            # Wait for at least one future (implementation or merge) to complete
+            all_futures = set(future_to_task.keys()) | set(merge_future_to_task.keys())
             done, not_done = concurrent.futures.wait(
-                future_to_task.keys(),
+                all_futures,
                 return_when=concurrent.futures.FIRST_COMPLETED
             )
 
             for future in done:
+                # --- Handle merge completion ---
+                if future in merge_future_to_task:
+                    task_id, attempt = merge_future_to_task.pop(future)
+                    try:
+                        merge_succeeded = future.result()
+                    except Exception as exc:
+                        traceback.print_exc()
+                        merge_succeeded = False
+
+                    if merge_succeeded:
+                        pending_merge.discard(task_id)
+                        dashboard.set_agent(task_id, "Merge", "done", "Merged successfully")
+                        with state_lock:
+                            state["completed_tasks"].append(task_id)
+                            state["merged_tasks"].append(task_id)
+                            state.get("task_stages", {}).pop(task_id, None)
+                            save_workflow_state(state)
+                        dashboard.log(f"   -> [Success] Task {task_id} fully integrated into {dev_branch}.")
+                        fetch_res = subprocess.run(
+                            ["git", "fetch", pivot_remote, f"+{dev_branch}:{dev_branch}"],
+                            cwd=root_dir, capture_output=True, text=True,
+                        )
+                        if fetch_res.returncode != 0:
+                            dashboard.log(f"      [!] Warning: Failed to sync local {dev_branch}: {fetch_res.stderr.strip()}")
+                        else:
+                            dashboard.log(f"      [Push] Success.")
+                    else:
+                        dashboard.log(f"      [!] Task {task_id} merge failed (attempt {attempt}/{max_task_retries + 1})")
+                        if attempt <= max_task_retries:
+                            _submit_merge(task_id, attempt + 1)
+                        else:
+                            pending_merge.discard(task_id)
+                            dashboard.set_agent(task_id, "Merge", "failed", f"Failed to merge into {dev_branch}")
+                            with state_lock:
+                                failed_tasks.add(f"Task {task_id} failed merging into {dev_branch} after {max_task_retries + 1} attempt(s).")
+                    continue
+
+                # --- Handle implementation completion ---
                 task_id = future_to_task.pop(future)
                 with state_lock:
                     active_tasks.remove(task_id)
@@ -2700,44 +2765,8 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
 
                         dashboard.log(f"   -> [Implementation] Task {task_id} completed successfully.")
 
-                        # Build the pending state the merge commit should reflect
-                        with state_lock:
-                            pending_state = {
-                                "completed_tasks": list(state.get("completed_tasks", [])) + [task_id],
-                                "merged_tasks":    list(state.get("merged_tasks", []))    + [task_id],
-                            }
-
-                        # Trigger DAG Merge Workflow with stage-level retries
-                        merge_succeeded = False
-                        for merge_attempt in range(1, max_task_retries + 2):
-                            if merge_attempt > 1:
-                                dashboard.log(f"   -> [Merge Retry] Task {task_id} merge attempt {merge_attempt}/{max_task_retries + 1}")
-                                dashboard.set_agent(task_id, "Merge", "retrying", f"Attempt {merge_attempt}/{max_task_retries + 1}")
-                            if merge_task(root_dir, task_id, presubmit_cmd, backend, cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard, model=model, dev_branch=dev_branch, remote_url=remote_url, workflow_state=pending_state, agent_pool=agent_pool, cleanup=cleanup, docker_config=docker_config):
-                                merge_succeeded = True
-                                break
-                            dashboard.log(f"      [!] Task {task_id} merge failed (attempt {merge_attempt}/{max_task_retries + 1})")
-                        if merge_succeeded:
-                            dashboard.set_agent(task_id, "Merge", "done", "Merged successfully")
-                            with state_lock:
-                                state["completed_tasks"].append(task_id)
-                                state["merged_tasks"].append(task_id)
-                                state.get("task_stages", {}).pop(task_id, None)
-                                save_workflow_state(state)
-                            dashboard.log(f"   -> [Success] Task {task_id} fully integrated into {dev_branch}.")
-                            # Sync local dev-branch ref from remote (succeeds now: merge_task just pushed there).
-                            fetch_res = subprocess.run(
-                                ["git", "fetch", pivot_remote, f"+{dev_branch}:{dev_branch}"],
-                                cwd=root_dir, capture_output=True, text=True,
-                            )
-                            if fetch_res.returncode != 0:
-                                dashboard.log(f"      [!] Warning: Failed to sync local {dev_branch}: {fetch_res.stderr.strip()}")
-                            else:
-                                dashboard.log(f"      [Push] Success.")
-                        else:
-                            dashboard.set_agent(task_id, "Merge", "failed", f"Failed to merge into {dev_branch}")
-                            with state_lock:
-                                failed_tasks.add(f"Task {task_id} failed merging into {dev_branch} after {max_task_retries + 1} attempt(s).")
+                        # Submit merge asynchronously on the dedicated merge executor
+                        _submit_merge(task_id)
                     else:
                         # Check if we can retry
                         with state_lock:

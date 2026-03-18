@@ -576,6 +576,168 @@ def test_execute_dag_merge_task_failure():
         assert exc_info.value.code == 1
 
 
+def test_execute_dag_merge_runs_async_not_blocking_scheduling():
+    """Merges run asynchronously: the scheduling loop does not block on merge_task.
+
+    With 2 tasks and jobs=2, a slow merge occupies one slot but the second
+    implementation task can still run in the remaining slot — previously the
+    synchronous merge would have blocked all scheduling until it finished.
+    """
+    import threading, time
+    import workflow_lib.executor as executor_mod
+    executor_mod.shutdown_requested = False
+    dag = {"phase_1/01_a": [], "phase_1/01_b": []}
+    state = {"completed_tasks": [], "merged_tasks": []}
+
+    impl_call_count = {"n": 0}
+    impl_lock = threading.Lock()
+
+    def fake_process_task(*args, **kwargs):
+        with impl_lock:
+            impl_call_count["n"] += 1
+        return True
+
+    merge_call_count = {"n": 0}
+    def slow_merge(*args, **kwargs):
+        merge_call_count["n"] += 1
+        time.sleep(0.05)  # simulate slow merge
+        return True
+
+    with patch('workflow_lib.executor.subprocess.run') as mock_run, \
+         patch('workflow_lib.executor.process_task', side_effect=fake_process_task), \
+         patch('workflow_lib.executor.merge_task', side_effect=slow_merge), \
+         patch('workflow_lib.executor.rebuild_serena_cache'), \
+         patch('workflow_lib.executor.save_workflow_state'), \
+         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
+         patch('os.path.isdir', return_value=True):
+
+        mock_run.return_value = MagicMock(returncode=0)
+        execute_dag("/root", dag, state, 2, "cmd", "gemini")
+
+    # All tasks should have completed and merged
+    assert len(state["completed_tasks"]) == 2
+    assert merge_call_count["n"] == 2
+    assert impl_call_count["n"] == 2
+
+
+def test_execute_dag_merge_counts_against_jobs():
+    """Pending merges count against --jobs capacity.
+
+    With 3 tasks, jobs=2, and a slow merge, at most 2 slots (impl + merge
+    combined) should be occupied at any time.
+    """
+    import threading, time
+    import workflow_lib.executor as executor_mod
+    executor_mod.shutdown_requested = False
+    dag = {"phase_1/01_a": [], "phase_1/01_b": [], "phase_1/01_c": []}
+    state = {"completed_tasks": [], "merged_tasks": []}
+
+    # Track max concurrent active slots (impl running + merges pending)
+    concurrency = {"impl": 0, "merge": 0, "max_total": 0}
+    conc_lock = threading.Lock()
+
+    def fake_process_task(*args, **kwargs):
+        with conc_lock:
+            concurrency["impl"] += 1
+            total = concurrency["impl"] + concurrency["merge"]
+            concurrency["max_total"] = max(concurrency["max_total"], total)
+        time.sleep(0.02)
+        with conc_lock:
+            concurrency["impl"] -= 1
+        return True
+
+    def slow_merge(*args, **kwargs):
+        with conc_lock:
+            concurrency["merge"] += 1
+            total = concurrency["impl"] + concurrency["merge"]
+            concurrency["max_total"] = max(concurrency["max_total"], total)
+        time.sleep(0.05)
+        with conc_lock:
+            concurrency["merge"] -= 1
+        return True
+
+    with patch('workflow_lib.executor.subprocess.run') as mock_run, \
+         patch('workflow_lib.executor.process_task', side_effect=fake_process_task), \
+         patch('workflow_lib.executor.merge_task', side_effect=slow_merge), \
+         patch('workflow_lib.executor.rebuild_serena_cache'), \
+         patch('workflow_lib.executor.save_workflow_state'), \
+         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
+         patch('os.path.isdir', return_value=True):
+
+        mock_run.return_value = MagicMock(returncode=0)
+        execute_dag("/root", dag, state, 2, "cmd", "gemini")
+
+    assert len(state["completed_tasks"]) == 3
+    # Total concurrent slots should never exceed jobs=2
+    assert concurrency["max_total"] <= 2
+
+
+def test_execute_dag_merge_serialized():
+    """Merges must run one at a time (single-thread merge executor)."""
+    import threading, time
+    import workflow_lib.executor as executor_mod
+    executor_mod.shutdown_requested = False
+    dag = {"phase_1/01_a": [], "phase_1/01_b": []}
+    state = {"completed_tasks": [], "merged_tasks": []}
+
+    merge_concurrency = {"current": 0, "max": 0}
+    merge_lock = threading.Lock()
+
+    def tracked_merge(*args, **kwargs):
+        with merge_lock:
+            merge_concurrency["current"] += 1
+            merge_concurrency["max"] = max(merge_concurrency["max"], merge_concurrency["current"])
+        time.sleep(0.05)
+        with merge_lock:
+            merge_concurrency["current"] -= 1
+        return True
+
+    with patch('workflow_lib.executor.subprocess.run') as mock_run, \
+         patch('workflow_lib.executor.process_task', return_value=True), \
+         patch('workflow_lib.executor.merge_task', side_effect=tracked_merge), \
+         patch('workflow_lib.executor.rebuild_serena_cache'), \
+         patch('workflow_lib.executor.save_workflow_state'), \
+         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
+         patch('os.path.isdir', return_value=True):
+
+        mock_run.return_value = MagicMock(returncode=0)
+        execute_dag("/root", dag, state, 2, "cmd", "gemini")
+
+    assert len(state["completed_tasks"]) == 2
+    # Max concurrency of merges should be 1 (serialized)
+    assert merge_concurrency["max"] == 1
+
+
+def test_execute_dag_merge_retry_async():
+    """Merge retries should happen asynchronously without blocking the loop."""
+    import workflow_lib.executor as executor_mod
+    executor_mod.shutdown_requested = False
+    dag = {"phase_1/01_a": []}
+    state = {"completed_tasks": [], "merged_tasks": []}
+
+    merge_attempts = {"n": 0}
+    def failing_then_passing_merge(*args, **kwargs):
+        merge_attempts["n"] += 1
+        if merge_attempts["n"] == 1:
+            return False
+        return True
+
+    with patch('workflow_lib.executor.subprocess.run') as mock_run, \
+         patch('workflow_lib.executor.process_task', return_value=True), \
+         patch('workflow_lib.executor.merge_task', side_effect=failing_then_passing_merge), \
+         patch('workflow_lib.executor.rebuild_serena_cache'), \
+         patch('workflow_lib.executor.save_workflow_state'), \
+         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
+         patch('os.path.isdir', return_value=True):
+
+        mock_run.return_value = MagicMock(returncode=0)
+        execute_dag("/root", dag, state, 1, "cmd", "gemini")
+
+    # Should have retried and succeeded
+    assert merge_attempts["n"] == 2
+    assert "phase_1/01_a" in state["completed_tasks"]
+
+
 def test_execute_dag_process_task_exception():
     """When process_task raises an exception, execute_dag should exit without RuntimeError."""
     import workflow_lib.executor as executor_mod
