@@ -35,7 +35,21 @@ You are an expert AI Developer. Your task is to implement a specific sub-epic/fe
 
 ## Presubmit Information
 <presubmit>
-The verification script is `./do presubmit`. It runs formatting, linting, building, testing, and coverage checks.
+The verification script is `python3 /harness.py`. It is mounted read-only at `/harness.py` inside this container — you CANNOT modify it.
+
+It runs the following steps in order:
+1. **setup** — runs `.agent/harness_hooks.py setup` so any new dependencies you added get installed
+2. **fmt** — `cargo fmt --all -- --check`
+3. **lint** — explicit sub-checks: `cargo clippy`, `cargo deny`, Cargo.lock integrity, `scripts/check_allow_reason.py`, `scripts/validate_no_external_db.sh`, non-goal pattern scan, security file check, CI pipeline tests, workspace governance tests
+4. **python-tests** — full Python test suite via `pytest tests/`
+5. **build** — `cargo build --workspace --release`
+6. **coverage** — `cargo llvm-cov` for unit and E2E tests, enforcing hardcoded thresholds:
+   - Unit tests: **90% line coverage** (minimum)
+   - E2E tests:  **70% line coverage** (minimum)
+
+These thresholds are hardcoded in the harness and cannot be relaxed by editing any file in the workspace.
+
+Do NOT attempt to modify `/harness.py` or otherwise work around this script. To add setup dependencies, create or edit `.agent/harness_hooks.py`.
 </presubmit>
 
 # Instructions
@@ -46,15 +60,15 @@ You are operating inside of a clean, isolated `git clone` of the repository, che
 2.  **Test-Driven Development (TDD):** 
     - First, write tests for the feature you are about to implement. 
     - Ensure your tests capture edge cases and core requirements.
-    - Run `./do test` to verify your tests are running and appropriately failing.
+    - Run `python3 /harness.py` to verify your tests are running and appropriately failing.
 3.  **Implement Feature:**
     - Write the actual feature code.
     - Use best practices, clear naming, and robust error handling.
     - **Defensive programming:** Every function should `assert` its contract — validate preconditions on inputs and postconditions on outputs using debug assertions (e.g., `debug_assert!`, `Debug.Assert`, `console.assert` depending on language). When you are uncertain about the state or type of an object (e.g., after deserialization, external API calls, complex transformations), add an assertion to verify your assumption.
 4.  **Verify (Presubmit):**
-    - Run `./do presubmit`. 
+    - Run `python3 /harness.py`.
     - If it fails, fix the issues until it passes cleanly.
-    - **CRITICAL:** You must achieve ZERO errors from `./do presubmit`. This includes ALL test failures, lint errors, and build errors — even if they appear to be pre-existing or unrelated to your task. Do NOT skip, ignore, or rationalize away any failure. If a test fails, fix it. No exceptions.
+    - **CRITICAL:** You must achieve ZERO errors from `python3 /harness.py`. This includes ALL test failures, lint errors, and build errors — even if they appear to be pre-existing or unrelated to your task. Do NOT skip, ignore, or rationalize away any failure. If a test fails, fix it. No exceptions.
     - If you are uncertain about the intent behind any code or test, use `git log` and `git blame` to understand the history and requirements before making changes.
 5.  **Document:**
     - Save memories as **individual files** to avoid merge conflicts when agents work in parallel. Use the naming convention: `YYYY-MM-DDTHH-MM-SS_<agent>_<task>_<category>.md`. Each file should have YAML frontmatter with `agent`, `task`, `category`, and `timestamp` fields. See existing files in the directories below for examples.
@@ -64,7 +78,7 @@ You are operating inside of a clean, isolated `git clone` of the repository, che
 # CONSTRAINTS
 - **Your task is FULLY SPECIFIED in the Task Requirements section above. All necessary context is provided.**
 - Do NOT read high-level project spec files (e.g., `requirements.md`, `prd.md`, specs). Focus on the existing source code directly relevant to your task.
-- ALWAYS end your turn when your implementation is complete and `./do presubmit` passes with ZERO errors. Do NOT end your turn if any tests or checks are failing, regardless of whether you believe they were broken before your changes.
+- ALWAYS end your turn when your implementation is complete and `python3 /harness.py` passes with ZERO errors. Do NOT end your turn if any tests or checks are failing, regardless of whether you believe they were broken before your changes.
 - Do NOT commit your code. The orchestrator will handle the git commits.
 - You must write your output using your file editing tools directly. DO NOT output the code into this chat prompt.
 

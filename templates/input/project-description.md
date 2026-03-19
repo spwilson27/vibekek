@@ -37,27 +37,45 @@ first, and plan in checkpoints at the end of of the project for us to
 investigate, and design all of the features we want to build out later on.
 
 - All verification of the project should be completely automated through unit and E2E tests.
-- Visual verification should be done through golden image testing.
+- Any visual verification should be done through golden image testing.
 - Every requirement should be verified through automated tests.
 - All code should be auto-formated and linted.
 - All code should be documented with doc comments.
 - All code should receive 90% line coverage from tests.
-- A single python entrypoint script should be available after the first commit so we can verify every subsequent development cycle.
-- The entrypoint script should support the following commands:
-  - `./do setup` - Install all dev dependencies
-  - `./do build` - Build for release
-  - `./do test` - Run all tests
-  - `./do lint` - Run all linters
-  - `./do format` - Run all formatters
-  - `./do coverage` - Run all coverage tools
-  - `./do presubmit` - Run setup, formatters, linters, tests, coverage, and triggers `./do ci`.
-  - `./do ci` - Automatically run all presubmit checks on CI runners by copying the working directory to make a temporary commit.
-- Success of presubmit checks will gate commits and forward progress.  The `./do presubmit` command will enforce a timeout of 15 minutes.
+   - All code should receive 75% line coverage from e2e tests (tests through example binaries using public APIs)
+
+### Verification Harness
+
+Verification is handled by a read-only harness script (`/harness.py`) mounted
+into agent containers. Agents **cannot** modify it. The harness runs hardcoded
+checks (fmt, lint, build, test, coverage) and then calls optional hooks from
+`.agent/harness_hooks.py` so agents can **add** project-specific checks without
+relaxing the built-in ones.
+
+- `python /harness.py setup` — Install any missing dependencies locally (in virtualenv, local cargo, npm, etc)
+- `python /harness.py fmt`- Run auto code formatters
+- `python /harness.py lint` — Run linters (cargo clippy, etc.)
+- `python /harness.py build` — Build release binary(s)
+- `python /harness.py test` — run 
+- `python /harness.py coverage` — Full line coverage (both unit and integration) tests
+- `python /harness.py presubmit` — Run setup -> fmt -> lint -> build -> coverage
+
+**Phase 0 contract:** The very first implementation phase (`phase_0`) must
+establish the project scaffolding so that `python /harness.py presubmit` passes
+by the end of the phase. This includes:
+
+1. A working build system (the project compiles/runs).
+2. A `.agent/harness_hooks.py` that implements at least `setup`, `fmt`, `lint`,
+   `build`, `test`, and `coverage` hooks appropriate for the project's tech
+   stack (e.g. `cargo fmt`, `npm run lint`, `pytest`, etc.).
+3. A minimal passing test suite so the coverage gate is satisfied.
+4. Any CI/CD pipeline configuration.
+
+Phase 0 tasks are **not** gated by the harness (presubmit is skipped). Starting
+from phase 1, every task must pass `python /harness.py presubmit` before it can
+be merged.
 
 We will leverage gitlab to run all of the presubmit checks. I will supply a
 windows, mac and linux machine for us to validated on. We should be sure to
 edit a CI/CD pipeline script to run all of these checks.
 
-I also will want to leverage multiple AI agents at once in order to parallelize
-the development process. For this reason tasks should be broken down into small,
-independent chunks and each task description must clearly identify any requirements it is dependent on.

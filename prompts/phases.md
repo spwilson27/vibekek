@@ -24,6 +24,7 @@ Before generating the final document, silently plan your approach:
 # CONSTRAINTS
 - You MUST use your file editing tools to write the output to documents inside `docs/plan/phases/`.
 - You MUST NOT use a script to generate the phase documents. Manually write them and build them up sequentially.
+- **Phase 0 must be the first phase.** It establishes the project scaffolding so `python /harness.py presubmit` passes. See the project roadmap for Phase 0 requirements. Phase 0 is not gated by the harness, but all subsequent phases are — the Definition of Done for Phase 0 is that the harness passes.
 - End your turn immediately once all the files are written.
 
 

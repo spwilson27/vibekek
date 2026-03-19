@@ -51,7 +51,7 @@
   // name, e.g. "github" or "upstream".
   // "pivot_remote": "origin",
 
-  // Optional: GitHub repository (owner/repo) used by `./do ci` for remote checks.
+  // Optional: GitHub repository (owner/repo) used for remote checks.
   // "github_repo": "owner/repo",
 
   // Multi-agent pool for `workflow run`.  When defined, the scheduler

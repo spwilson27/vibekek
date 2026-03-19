@@ -15,7 +15,7 @@ idea to a fully-planned, parallel-executed codebase. It has two main phases:
 ```mermaid
 flowchart TD
     A([Start]) --> C["1. Setup<br/>workflow.py setup"]
-    C --> C1[".tools/.venv/<br/>do, ci.py, .agent/<br/>input/"]
+    C --> C1[".tools/.venv/<br/>.agent/, ci.py<br/>input/"]
 
     C1 --> B["2. Describe project<br/>Edit input/ files"]
 
@@ -35,7 +35,7 @@ flowchart TD
     E --> R1["Pick next ready task<br/>prerequisites met, not blocked"]
     R1 --> R2["Clone repo<br/>ai-phase-task branch"]
     R2 --> R3["Implementation agent<br/>Review agent"]
-    R3 --> R4["Run ./do presubmit<br/>up to 3 attempts"]
+    R3 --> R4["Run python /harness.py presubmit<br/>up to 3 attempts"]
     R4 -->|Pass| R5["Squash-merge into dev<br/>task marked complete"]
     R4 -->|Fail| R3
     R5 --> R6{More tasks?}
@@ -83,7 +83,7 @@ python .tools/workflow.py setup
 ```
 
 This creates `.tools/.venv/`, installs dependencies, and copies starter templates
-(`.agent/`, `do`, `ci.py`, `tests/`) into the project root.
+(`.agent/`, `ci.py`, `tests/`) into the project root.
 
 ### 3. Run the planning pipeline
 
@@ -182,7 +182,7 @@ For each ready task (prerequisites met, not blocked):
 
 1. Clones the repo into a temp directory on a dedicated branch (`ai-phase-<task>`).
 2. Runs the **Implementation** agent, then the **Review** agent.
-3. Runs `./do presubmit` (configurable via `--presubmit-cmd`) up to 3 times,
+3. Runs `python /harness.py presubmit` (configurable via `--presubmit-cmd`) up to 3 times,
    feeding failures back to the Review agent.
 4. Squash-merges the branch into `dev` via a temporary clone.
 5. Records the task as completed and pushes `dev`.
@@ -215,7 +215,7 @@ bootstrapped from `dev`; it is refreshed after each successful merge.
 ### Presubmit command
 
 The `run` command verifies each task with a shell command before merging.
-Default: `./do presubmit`. Override with:
+Default: `python /harness.py presubmit`. Override with:
 
 ```bash
 python .tools/workflow.py run --presubmit-cmd "pytest -x"
@@ -228,7 +228,7 @@ agent's context. Use it to record architectural decisions, naming conventions,
 and brittle areas so agents stay consistent across tasks.
 
 The memory file is enforced to stay at 100 lines or fewer via `tests/test_memory_size.py`
-(run by `./do presubmit`).
+(run by `python /harness.py presubmit`).
 
 ---
 
@@ -407,7 +407,7 @@ Rescans tasks, checks requirement coverage, rebuilds the DAG, and validates.
     project-description.md   # ← Edit this first
   templates/
     .agent/MEMORY.md   # Agent memory template
-    do                 # Presubmit / build script template
+    .agent/harness_hooks.py  # Agent-customisable setup hooks
     ci.py              # CI script template
     tests/             # Template test suite (memory size check)
     .mcp.json          # Serena MCP server config template

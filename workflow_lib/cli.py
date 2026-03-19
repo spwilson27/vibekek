@@ -100,7 +100,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     1. Creates ``.tools/.venv/`` (skipped when it already exists).
     2. Installs packages from ``.tools/requirements.txt`` using the venv pip.
-    3. Copies template files (``.agent``, ``do``, ``.workflow.jsonc``) from
+    3. Copies template files (``.agent``, ``.workflow.jsonc``) from
        ``.tools/templates/`` to the project root (skipped when already present).
 
     :param args: Parsed :mod:`argparse` namespace (no relevant attributes).
@@ -147,7 +147,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
             shutil.copy2(src, dst)
             print(f"Copied: {src} -> {dst}")
 
-    for name in [".agent", "do", ".workflow.jsonc", "tests"]:
+    for name in [".agent", ".workflow.jsonc", "tests"]:
         src = os.path.join(templates_dir, name)
         dst = os.path.join(ROOT_DIR, name)
         if not os.path.exists(src):
@@ -620,7 +620,7 @@ def main() -> None:
     # run
     p_run = sub.add_parser("run", parents=[shared], help="Parallel development workflow orchestrator")
     p_run.add_argument("--jobs", type=int, default=1, help="Number of parallel implementation agents")
-    p_run.add_argument("--presubmit-cmd", type=str, default="./do presubmit", help="Command to evaluate correctness")
+    p_run.add_argument("--presubmit-cmd", type=str, default="python /harness.py presubmit", help="Command to evaluate correctness")
     p_run.add_argument("--cleanup", action="store_true", help="Remove temporary clones even on failure")
 
     # docker

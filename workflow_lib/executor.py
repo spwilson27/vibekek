@@ -54,6 +54,8 @@ shutdown_requested = False
 _active_dashboard: Any = None
 _active_containers: set = set()  # container names currently running
 _active_containers_lock = threading.Lock()
+_harness_tmpfiles: dict = {}  # container_name -> tmpfile path, cleaned up on container stop
+_harness_tmpfiles_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Stage constants for restartable process_task pipeline
@@ -358,6 +360,38 @@ def _start_task_container(
         # Use docker cp for all copy_files to avoid permission issues with bind mounts
         copy_files_to_cp.append(cf)
 
+    # Mount harness.py as a kernel-enforced read-only bind mount.
+    # Using :ro here means the mount is marked MS_RDONLY at the kernel level.
+    # Even root (sudo) inside the container cannot write to or remount it
+    # without CAP_SYS_ADMIN, which Docker drops from non-privileged containers
+    # by default.  This prevents agents from tampering with the verification
+    # script or its hardcoded coverage thresholds.
+    #
+    # We copy harness.py to a per-container tmpfile before mounting so that
+    # the host checkout is not held open by the container mount.  This lets
+    # the developer edit or delete harness.py on the host without affecting
+    # running containers, and avoids any cross-container interference.
+    harness_src = os.path.join(ROOT_DIR, "harness.py")
+    if not os.path.exists(harness_src):
+        log(f"      [!] harness.py not found at {harness_src!r} — cannot bind-mount into container")
+        with _active_containers_lock:
+            _active_containers.discard(container_name)
+        raise FileNotFoundError(
+            f"harness.py not found at {harness_src!r}; "
+            "ensure harness.py exists at the project root before running the workflow"
+        )
+    import tempfile
+    harness_tmp = tempfile.NamedTemporaryFile(
+        prefix=f"harness_{container_name}_", suffix=".py", delete=False
+    )
+    harness_tmp.close()
+    shutil.copy2(harness_src, harness_tmp.name)
+    os.chmod(harness_tmp.name, 0o444)
+    volume_flags += ["-v", f"{harness_tmp.name}:/harness.py:ro"]
+    with _harness_tmpfiles_lock:
+        _harness_tmpfiles[container_name] = harness_tmp.name
+    log(f"      [docker] harness.py staged to {harness_tmp.name!r} and bind-mounted read-only at /harness.py")
+
     # Build docker run command
     docker_cmd = [
         "docker", "run", "-d",
@@ -523,6 +557,14 @@ def _stop_task_container(container_name: str, log: Callable) -> None:
         log(f"      [docker] Container {container_name} removal failed in {elapsed:.2f}s: {stop_result.stderr.strip()}")
     with _active_containers_lock:
         _active_containers.discard(container_name)
+    # Clean up the per-container harness tmpfile now that the container is gone
+    with _harness_tmpfiles_lock:
+        harness_tmp_path = _harness_tmpfiles.pop(container_name, None)
+    if harness_tmp_path and os.path.exists(harness_tmp_path):
+        try:
+            os.unlink(harness_tmp_path)
+        except OSError:
+            pass  # best-effort
 
 
 class Logger(object):
@@ -2608,6 +2650,24 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
     except Exception:
         pass  # Agents may not be configured
     
+    # Check for harness.py — informational; phase_0 tasks skip presubmit anyway
+    harness_path = os.path.join(ROOT_DIR, "harness.py")
+    if os.path.exists(harness_path):
+        dashboard.log(f"=> harness.py found at {harness_path!r}")
+    else:
+        dashboard.log(f"=> harness.py not found at {harness_path!r} (phase_0 tasks will skip presubmit)")
+
+    def _effective_presubmit(task_id: str) -> str:
+        """Return the presubmit command for *task_id*.
+
+        Phase 0 tasks skip presubmit (return ``"true"``) because the harness
+        and project scaffolding are being established during that phase.
+        """
+        phase_part = task_id.split("/", 1)[0]
+        if phase_part == "phase_0":
+            return "true"
+        return presubmit_cmd
+
     # Only validate if there are copy_files to check
     has_copy_files = any(cfg.copy_files for _, cfg in all_docker_configs)
     
@@ -2711,7 +2771,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                 dashboard.log(f"   -> [Merge Retry] Task {task_id} merge attempt {attempt}/{max_task_retries + 1}")
                 dashboard.set_agent(task_id, "Merge", "retrying", f"Attempt {attempt}/{max_task_retries + 1}")
             mf = merge_executor.submit(
-                merge_task, root_dir, task_id, presubmit_cmd, backend,
+                merge_task, root_dir, task_id, _effective_presubmit(task_id), backend,
                 cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard,
                 model=model, dev_branch=dev_branch, remote_url=remote_url,
                 workflow_state=pending_state, agent_pool=agent_pool, cleanup=cleanup,
@@ -2743,7 +2803,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                 if attempt_num > 1:
                     dashboard.log(f"   -> [Retry] Task {task_id} attempt {attempt_num}/{max_task_retries + 1} from stage {_starting!r}")
                 future = executor.submit(
-                    process_task, root_dir, task_id, presubmit_cmd, backend,
+                    process_task, root_dir, task_id, _effective_presubmit(task_id), backend,
                     serena=serena_enabled, dashboard=dashboard, model=model,
                     dev_branch=dev_branch, remote_url=remote_url,
                     agent_pool=agent_pool, cleanup=cleanup, docker_config=docker_config,

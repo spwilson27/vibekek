@@ -30,7 +30,7 @@ Violating these will fail review even if presubmit passes.
 
 ## Known Presubmit Tripwires
 
-Patterns that reliably fail `./do presubmit`. Knowing these upfront saves retry cycles.
+Patterns that reliably fail `python /harness.py presubmit`. Knowing these upfront saves retry cycles.
 
 - (none yet — add entries like: "`clippy` denies `unwrap()` outside `#[cfg(test)]`")
 

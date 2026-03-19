@@ -37,7 +37,21 @@ Your task is to review, refactor, and fix code submitted by an implementation ag
 
 ## Presubmit Information
 <presubmit>
-The verification script is `./do presubmit`. It runs formatting, linting, building, testing, and coverage checks.
+The verification script is `python3 /harness.py`. It is mounted read-only at `/harness.py` inside this container — you CANNOT modify it.
+
+It runs the following steps in order:
+1. **setup** — runs `.agent/harness_hooks.py setup` so any new dependencies get installed
+2. **fmt** — `cargo fmt --all -- --check`
+3. **lint** — explicit sub-checks: `cargo clippy`, `cargo deny`, Cargo.lock integrity, `scripts/check_allow_reason.py`, `scripts/validate_no_external_db.sh`, non-goal pattern scan, security file check, CI pipeline tests, workspace governance tests
+4. **python-tests** — full Python test suite via `pytest tests/`
+5. **build** — `cargo build --workspace --release`
+6. **coverage** — `cargo llvm-cov` for unit and E2E tests, enforcing hardcoded thresholds:
+   - Unit tests: **90% line coverage** (minimum)
+   - E2E tests:  **70% line coverage** (minimum)
+
+These thresholds are hardcoded in the harness and cannot be relaxed by editing any file in the workspace.
+
+Do NOT attempt to modify `/harness.py` or otherwise work around this script. To add setup dependencies, create or edit `.agent/harness_hooks.py`.
 </presubmit>
 
 # Instructions
@@ -51,9 +65,9 @@ You are operating inside of a clean, isolated `git clone` of the task branch. Th
     - Check `.gitignore` to ensure they didn't commit extraneous binaries or generated files by accident, and fix it if necessary.
     - **Verify defensive assertions:** Check that every function asserts its contract (preconditions/postconditions). Add missing assertions, especially at module boundaries, after deserialization, and where object state is uncertain. Remove any assertions that duplicate static type checks the compiler already enforces.
 3.  **Ensure Presubmit Passes:**
-    - Run `./do presubmit`.
+    - Run `python3 /harness.py`.
     - If it fails, fix the code or the tests until it passes perfectly.
-    - **CRITICAL:** You are responsible for making `./do presubmit` pass with ZERO errors. This includes ALL test failures, lint errors, and build errors — even if they appear to be pre-existing or unrelated to the current task's changes. Do NOT skip, ignore, or rationalize away any failure. If a test fails, fix it. No exceptions.
+    - **CRITICAL:** You are responsible for making `python3 /harness.py` pass with ZERO errors. This includes ALL test failures, lint errors, and build errors — even if they appear to be pre-existing or unrelated to the current task's changes. Do NOT skip, ignore, or rationalize away any failure. If a test fails, fix it. No exceptions.
     - If you are uncertain about the intent behind any code or test, use `git log` and `git blame` to understand the history and requirements before making changes.
 4.  **Update Memory:**
     - Save memories as **individual files** to avoid merge conflicts when agents work in parallel. Use the naming convention: `YYYY-MM-DDTHH-MM-SS_<agent>_<task>_<category>.md`. Each file should have YAML frontmatter with `agent`, `task`, `category`, and `timestamp` fields. See existing files in the directories below for examples.
@@ -63,7 +77,7 @@ You are operating inside of a clean, isolated `git clone` of the task branch. Th
 # CONSTRAINTS
 - **Your task is FULLY SPECIFIED in the Task Requirements section above. All necessary context is provided.**
 - Do NOT read high-level project spec files (e.g., `requirements.md`, `prd.md`, specs). Focus on the source code directly.
-- ALWAYS end your turn when your code review & refactoring is complete and `./do presubmit` passes with ZERO errors. Do NOT end your turn if any tests or checks are failing, regardless of whether you believe they were broken before your changes.
+- ALWAYS end your turn when your code review & refactoring is complete and `python3 /harness.py` passes with ZERO errors. Do NOT end your turn if any tests or checks are failing, regardless of whether you believe they were broken before your changes.
 - Do NOT commit your code. The orchestrator will handle the git commits.
 - You must write your output using your file editing tools directly. DO NOT output the code into this chat prompt.
 

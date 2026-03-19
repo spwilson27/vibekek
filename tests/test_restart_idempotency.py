@@ -217,7 +217,7 @@ class TestEarlyOutFunctional(unittest.TestCase):
                 result = process_task(
                     root_dir=root_dir,
                     full_task_id=unique_task_id,
-                    presubmit_cmd="./do presubmit",
+                    presubmit_cmd="python /harness.py presubmit",
                     dev_branch="dev-claude",
                 )
 
@@ -242,7 +242,7 @@ class TestEarlyOutFunctional(unittest.TestCase):
                 result = process_task(
                     root_dir=root_dir,
                     full_task_id=unique_task_id,
-                    presubmit_cmd="./do presubmit",
+                    presubmit_cmd="python /harness.py presubmit",
                     dev_branch="dev-claude",
                 )
 

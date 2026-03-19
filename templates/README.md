@@ -11,7 +11,7 @@ This directory contains template files for setting up new projects with the Weav
 | `.agent/MEMORY.md` | Agent memory template for persistent observations |
 | `input/` | Project context files directory template |
 | `tests/` | Test templates |
-| `do` | Unix shell script entry point |
+| `.agent/harness_hooks.py` | Agent-customisable setup hooks (called by harness) |
 
 ## Docker Setup
 
@@ -96,8 +96,7 @@ Agent-level `copy_files` merge with the global config (agent values win for conf
    ```bash
    cp .tools/templates/Dockerfile .
    cp .tools/templates/.workflow.jsonc .
-   cp .tools/templates/do .
-   chmod +x do
+   cp -r .tools/templates/.agent .
    ```
 
 2. Customize `.workflow.jsonc` with your project settings

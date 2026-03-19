@@ -382,7 +382,7 @@ class TestProcessTask:
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("os.chmod"), \
              patch("subprocess.run", side_effect=_fake_run):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit")
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         assert result is False
 
     def test_success(self):
@@ -397,7 +397,7 @@ class TestProcessTask:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit")
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         assert result is True
 
     def test_submodule_init_after_clone(self):
@@ -413,7 +413,7 @@ class TestProcessTask:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            process_task("/root", "phase_1/task.md", "./do presubmit")
+            process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         # Find the clone call and verify submodule init follows it
         calls = [c[0][0] for c in mock_run.call_args_list if isinstance(c[0][0], list)]
         clone_idx = next(i for i, c in enumerate(calls) if "clone" in c)
@@ -431,14 +431,14 @@ class TestProcessTask:
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit")
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         assert result is False
 
     def test_presubmit_fail_then_retry_success(self):
         presubmit_calls = [0]
         def mock_run_side_effect(*args, **kwargs):
             cmd = args[0] if args else []
-            if isinstance(cmd, list) and cmd[0] == "./do":
+            if isinstance(cmd, list) and "/harness.py" in cmd:
                 presubmit_calls[0] += 1
                 if presubmit_calls[0] == 1:
                     return MagicMock(returncode=1, stdout="fail", stderr="")
@@ -455,7 +455,7 @@ class TestProcessTask:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", max_retries=2)
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit", max_retries=2)
         assert result is True
 
     def test_serena_seeding(self):
@@ -473,7 +473,7 @@ class TestProcessTask:
              patch("workflow_lib.executor.shutil.copytree") as mock_copytree, \
              patch("workflow_lib.executor.shutil.copy2") as mock_copy2, \
              patch("workflow_lib.executor.shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", serena=True)
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit", serena=True)
         mock_copytree.assert_called_once()
         mock_copy2.assert_called_once()
 
@@ -492,7 +492,7 @@ class TestProcessTask:
 
         def mock_run_side_effect(*args, **kwargs):
             cmd = args[0] if args else []
-            if isinstance(cmd, list) and cmd and cmd[0] == "./do":
+            if isinstance(cmd, list) and cmd and "/harness.py" in cmd:
                 call_order.append("presubmit")
             return MagicMock(returncode=0, stdout="M file.py", stderr="")
 
@@ -507,7 +507,7 @@ class TestProcessTask:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit")
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
 
         assert result is True
         assert "reclaim" in call_order, "_reclaim_dir_ownership was never called"
@@ -527,7 +527,7 @@ class TestProcessTask:
         presubmit_calls = []
         def mock_run_side_effect(*args, **kwargs):
             cmd = args[0] if args else []
-            if isinstance(cmd, list) and cmd and cmd[0] == "./do":
+            if isinstance(cmd, list) and cmd and "/harness.py" in cmd:
                 presubmit_calls.append(kwargs)
                 return MagicMock(returncode=0, stdout="M file.py", stderr="")
             return MagicMock(returncode=0, stdout="M file.py", stderr="")
@@ -542,7 +542,7 @@ class TestProcessTask:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            process_task("/root", "phase_1/task.md", "./do presubmit")
+            process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
 
         assert presubmit_calls, "presubmit subprocess.run was never called"
         for call_kwargs in presubmit_calls:
@@ -624,7 +624,7 @@ class TestMergeTask:
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("shutil.rmtree"):
-            result = merge_task("/root", "phase_1/task.md", "./do presubmit")
+            result = merge_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         assert result is True
 
     def test_squash_fails_rebase_succeeds(self):
@@ -646,7 +646,7 @@ class TestMergeTask:
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("shutil.rmtree"):
-            result = merge_task("/root", "phase_1/task.md", "./do presubmit")
+            result = merge_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         assert result is True
 
     def test_all_attempts_fail(self):
@@ -656,7 +656,7 @@ class TestMergeTask:
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("shutil.rmtree"):
-            result = merge_task("/root", "phase_1/task.md", "./do presubmit", max_retries=2)
+            result = merge_task("/root", "phase_1/task.md", "python /harness.py presubmit", max_retries=2)
         assert result is False
 
     def test_submodule_init_after_clone(self):
@@ -668,7 +668,7 @@ class TestMergeTask:
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("shutil.rmtree"):
-            merge_task("/root", "phase_1/task.md", "./do presubmit")
+            merge_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         calls = [c[0][0] for c in mock_run.call_args_list if isinstance(c[0][0], list)]
         clone_idx = next(i for i, c in enumerate(calls) if "clone" in c)
         submod = calls[clone_idx + 1]
@@ -684,7 +684,7 @@ class TestMergeTask:
              patch("workflow_lib.executor.rebuild_serena_cache") as mock_rebuild, \
              patch("shutil.rmtree"):
             lock = threading.Lock()
-            result = merge_task("/root", "phase_1/task.md", "./do presubmit",
+            result = merge_task("/root", "phase_1/task.md", "python /harness.py presubmit",
                                 cache_lock=lock, serena=True)
         assert result is True
         mock_rebuild.assert_called_once()
@@ -701,7 +701,7 @@ class TestExecuteDag:
              patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", {}, state, 1, "./do presubmit")
+            execute_dag("/root", {}, state, 1, "python /harness.py presubmit")
 
     def test_all_tasks_completed(self):
         dag = {"phase_1/task.md": []}
@@ -710,7 +710,7 @@ class TestExecuteDag:
              patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
 
     def test_dev_branch_created(self):
         """When dev branch check fails, create it from main."""
@@ -724,7 +724,7 @@ class TestExecuteDag:
              patch("workflow_lib.executor.get_ready_tasks", return_value=[]), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", {}, state, 1, "./do presubmit")
+            execute_dag("/root", {}, state, 1, "python /harness.py presubmit")
 
     def test_serena_bootstrap_mcp_copy(self):
         """With serena=True and no .mcp.json, template is copied."""
@@ -745,7 +745,7 @@ class TestExecuteDag:
              patch("workflow_lib.executor.shutil.copy2") as mock_copy, \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", {}, state, 1, "./do presubmit")
+            execute_dag("/root", {}, state, 1, "python /harness.py presubmit")
         mock_copy.assert_called_once()
 
     def test_task_success_end_to_end(self):
@@ -757,7 +757,7 @@ class TestExecuteDag:
              patch("workflow_lib.executor.merge_task", return_value=True), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
         assert "phase_1/task.md" in state["completed_tasks"]
 
     def test_task_failure_exits(self):
@@ -778,7 +778,7 @@ class TestExecuteDag:
              patch("workflow_lib.executor.save_workflow_state"), \
              patch("workflow_lib.executor.os._exit", side_effect=SystemExit(1)), \
              pytest.raises(SystemExit):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
 
 
 # ---------------------------------------------------------------------------
@@ -894,7 +894,7 @@ class TestProcessTaskWithDashboard:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit", dashboard=dash)
         assert result is True
         dash.set_agent.assert_called()
         dash.remove_agent.assert_called_with("phase_1/task.md")
@@ -910,7 +910,7 @@ class TestProcessTaskWithDashboard:
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("os.chmod"), \
              patch("subprocess.run", side_effect=_fake_run):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit", dashboard=dash)
         assert result is False
         dash.set_agent.assert_any_call("phase_1/task.md", "Impl", "failed", "Clone/checkout failed: error")
 
@@ -925,7 +925,7 @@ class TestProcessTaskWithDashboard:
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit", dashboard=dash)
         assert result is False
         dash.set_agent.assert_any_call("phase_1/task.md", "Impl", "failed", "Implementation agent failed")
 
@@ -944,14 +944,14 @@ class TestProcessTaskWithDashboard:
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit", dashboard=dash)
         assert result is False
         dash.set_agent.assert_any_call("phase_1/task.md", "Review", "failed", "Review agent failed")
 
     def test_presubmit_fail_all_retries_with_dashboard(self):
         dash = MagicMock()
         def _only_fail_presubmit(cmd, **kwargs):
-            if isinstance(cmd, list) and "./do" in cmd:
+            if isinstance(cmd, list) and "/harness.py" in cmd:
                 return MagicMock(returncode=1, stdout="fail", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
@@ -964,7 +964,7 @@ class TestProcessTaskWithDashboard:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit",
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit",
                                   max_retries=1, dashboard=dash)
         assert result is False
         dash.set_agent.assert_any_call("phase_1/task.md", "Verify", "failed", "Failed after 1 attempts", agent_name=None)
@@ -975,7 +975,7 @@ class TestProcessTaskWithDashboard:
         presubmit_calls = [0]
         def run_side(*args, **kwargs):
             cmd = args[0] if args else []
-            if isinstance(cmd, list) and "./do" in cmd:
+            if isinstance(cmd, list) and "/harness.py" in cmd:
                 presubmit_calls[0] += 1
                 rc = 1 if presubmit_calls[0] == 1 else 0
                 return MagicMock(returncode=rc, stdout="out", stderr="")
@@ -990,7 +990,7 @@ class TestProcessTaskWithDashboard:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit",
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit",
                                   max_retries=2, dashboard=dash)
         assert result is True
 
@@ -1006,7 +1006,7 @@ class TestExecuteDagWithLogFile:
              patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", dag, state, 1, "./do presubmit", log_file=log_stream)
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit", log_file=log_stream)
         # The dashboard.log call should have written to the log file
         assert log_stream.getvalue() != "" or True  # NullDashboard writes when not TTY
 
@@ -1029,7 +1029,7 @@ class TestExecuteDagWithLogFile:
              patch("workflow_lib.executor.notify_failure"), \
              patch("os._exit", side_effect=SystemExit), \
              pytest.raises(SystemExit):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
 
     def test_merge_fail_sets_failed(self):
         dag = {"phase_1/task.md": []}
@@ -1049,7 +1049,7 @@ class TestExecuteDagWithLogFile:
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
              pytest.raises(SystemExit):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
 
 
 # ---------------------------------------------------------------------------
@@ -3455,7 +3455,7 @@ class TestConfigCoverage:
              patch("workflow_lib.executor.merge_task", return_value=True), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
 
         assert any("upstream" in cmd for cmd in fetch_calls), (
             f"Expected fetch using 'upstream' remote, got: {fetch_calls}"
@@ -3490,7 +3490,7 @@ class TestConfigCoverage:
              patch("workflow_lib.executor.get_ready_tasks", return_value=[]), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", {}, state, 1, "./do presubmit")
+            execute_dag("/root", {}, state, 1, "python /harness.py presubmit")
         # Find the git calls (skip sccache calls)
         git_calls = [c for c in mock_run.call_args_list if isinstance(c[0][0], list) and c[0][0][0] == "git"]
         assert git_calls[0][0][0] == ["git", "rev-parse", "--verify", "integration"]

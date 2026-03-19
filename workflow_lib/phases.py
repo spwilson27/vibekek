@@ -46,6 +46,8 @@ Phase catalogue
 +-------------------+------------------------------------------------------+
 | Phase7ADAGGeneration      | Build per-phase dependency DAGs.              |
 +-------------------+------------------------------------------------------+
+| Phase8GenerateHarness     | Generate project-specific harness.py.         |
++-------------------+------------------------------------------------------+
 """
 
 import concurrent.futures
@@ -2051,4 +2053,63 @@ Then re-run Phase 6E.
         ctx.state["depends_on_validated"] = True
         ctx.save_state()
         print("Successfully validated depends_on metadata.")
+
+
+class Phase8GenerateHarness(BasePhase):
+    """Generate a project-specific ``harness.py`` verification script.
+
+    Uses the project description and requirements to produce a harness that
+    enforces all testable requirements.  The output is written to the project
+    root so it can be bind-mounted into agent containers starting from phase 1.
+
+    Idempotent via ``ctx.state["harness_generated"]``.
+    """
+
+    @property
+    def operation(self) -> str:
+        return "Harness"
+
+    def execute(self, ctx: ProjectContext) -> None:
+        """Generate the harness script.
+
+        :param ctx: Shared project context.
+        :type ctx: ProjectContext
+        """
+        if ctx.state.get("harness_generated", False):
+            print("harness.py already generated, skipping.")
+            return
+
+        print("\n=> [Phase 8: Generate Harness] Building project-specific harness.py...")
+
+        target_path = "harness.py"
+        expected_file = os.path.join(ctx.root_dir, target_path)
+
+        # Load requirements if available
+        req_path = os.path.join(ctx.root_dir, "requirements.md")
+        requirements_ctx = ""
+        if os.path.exists(req_path):
+            with open(req_path, "r", encoding="utf-8") as f:
+                requirements_ctx = f.read()
+
+        prompt_tmpl = ctx.load_prompt("generate_harness.md")
+        prompt = ctx.format_prompt(
+            prompt_tmpl,
+            description_ctx=ctx.description_ctx,
+            requirements_ctx=requirements_ctx,
+            target_path=target_path,
+        )
+
+        allowed_files = [expected_file]
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
+
+        if result.returncode != 0 or not os.path.exists(expected_file):
+            print("\n[!] Error generating harness.py.")
+            print(result.stdout)
+            print(result.stderr)
+            sys.exit(1)
+
+        ctx.stage_changes(allowed_files)
+        ctx.state["harness_generated"] = True
+        ctx.save_state()
+        print("Successfully generated harness.py.")
 

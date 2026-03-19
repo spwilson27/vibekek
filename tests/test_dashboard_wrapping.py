@@ -119,7 +119,7 @@ class TestAgentOutputLineWrapping:
     """
 
     LONG_OUTPUT = (
-        "I will read do.py to understand its current implementation "
+        "I will read harness.py to understand its current implementation "
         "and identify where to add the presubmit command "
         "so that we can run all the checks before submitting."
     )  # 159 chars — exceeds old 120-char ingestion limit, tests wrapping not truncation
@@ -146,7 +146,7 @@ class TestAgentOutputLineWrapping:
             d._agents["p1/01/task.md"] = (s, st, lines, now, an)
         texts = self._get_agent_text_objects(d)
         # Find the Text containing our agent output
-        agent_texts = [t for t in texts if "read do.py" in t.plain]
+        agent_texts = [t for t in texts if "read harness.py" in t.plain]
         assert agent_texts, f"Agent output Text not found among: {[t.plain[:40] for t in texts]}"
         for t in agent_texts:
             for line in t.plain.splitlines():
@@ -164,7 +164,7 @@ class TestAgentOutputLineWrapping:
             s, st, lines, _, an = d._agents["p1/01/task.md"]
             d._agents["p1/01/task.md"] = (s, st, lines, now, an)
         texts = self._get_agent_text_objects(d)
-        agent_texts = [t for t in texts if "read do.py" in t.plain]
+        agent_texts = [t for t in texts if "read harness.py" in t.plain]
         assert agent_texts
         joined = " ".join(agent_texts[0].plain.split())
         assert "before submitting" in joined, (
@@ -181,7 +181,7 @@ class TestAgentOutputLineWrapping:
             s, st, lines, _, an = d._agents["p1/01/task.md"]
             d._agents["p1/01/task.md"] = (s, st, lines, now, an)
         texts = self._get_agent_text_objects(d)
-        agent_texts = [t for t in texts if "read do.py" in t.plain]
+        agent_texts = [t for t in texts if "read harness.py" in t.plain]
         assert agent_texts
         assert "…" not in agent_texts[0].plain, (
             f"Agent output was truncated with '…' instead of wrapped"

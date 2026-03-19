@@ -17,7 +17,7 @@ from workflow_lib.cli import cmd_run
 
 
 def _make_args(**kwargs):
-    defaults = dict(jobs=1, presubmit_cmd="./do presubmit", backend="gemini", model=None, cleanup=False)
+    defaults = dict(jobs=1, presubmit_cmd="python /harness.py presubmit", backend="gemini", model=None, cleanup=False)
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
 

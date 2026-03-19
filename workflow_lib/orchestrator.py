@@ -328,5 +328,13 @@ class Orchestrator:
 
         # DAG Generation
         self.run_phase_with_retry(Phase7ADAGGeneration())
+
+        # Harness Generation
+        self.run_phase_with_retry(Phase8GenerateHarness())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.root_dir, "harness.py")],
+            "Phase8"
+        )
+
         self._log("Project generation orchestration complete.")
 
