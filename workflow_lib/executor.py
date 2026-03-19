@@ -386,7 +386,7 @@ def _start_task_container(
         ]
         log(f"      [sccache-dist] Configuring container for scheduler at {sccache_dist_config.scheduler_url}")
 
-    docker_cmd += ["--memory", "15g", "--memory-swap", "15g"]
+    docker_cmd += ["--memory", "20g", "--memory-swap", "20g"]
 
     docker_cmd += [dc.image, "sleep", "infinity"]
 
