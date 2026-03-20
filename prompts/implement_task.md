@@ -57,8 +57,9 @@ You are operating inside of a clean, isolated `git clone` of the repository, che
     - **CRITICAL:** You must achieve ZERO errors from `./do presubmit`. This includes ALL test failures, lint errors, and build errors — even if they appear to be pre-existing or unrelated to your task. Do NOT skip, ignore, or rationalize away any failure. If a test fails, fix it. No exceptions.
     - If you are uncertain about the intent behind any code or test, use `git log` and `git blame` to understand the history and requirements before making changes.
 5.  **Document:**
-    - If you made a durable architectural decision (a pattern, interface choice, or invariant future tasks must respect), add it to `./.agent/DECISIONS.md` 
-    - Update `./.agent/MEMORY.md` with any **Brittle Areas** you discovered and a one-line entry in the **Recent Changelog**.
+    - Save memories as **individual files** to avoid merge conflicts when agents work in parallel. Use the naming convention: `YYYY-MM-DDTHH-MM-SS_<agent>_<task>_<category>.md`. Each file should have YAML frontmatter with `agent`, `task`, `category`, and `timestamp` fields. See existing files in the directories below for examples.
+      - **Observations, brittle areas, changelog entries** → `./.agent/memories/` (categories: `brittle_area`, `changelog`, `observation`)
+      - **Durable architectural decisions** (patterns, interface choices, invariants future tasks must respect) → `./.agent/decisions/` (category: `decision`)
 
 # CONSTRAINTS
 - **Your task is FULLY SPECIFIED in the Task Requirements section above. All necessary context is provided.**

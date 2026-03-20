@@ -56,12 +56,9 @@ You are operating inside of a clean, isolated `git clone` of the task branch. Th
     - **CRITICAL:** You are responsible for making `./do presubmit` pass with ZERO errors. This includes ALL test failures, lint errors, and build errors — even if they appear to be pre-existing or unrelated to the current task's changes. Do NOT skip, ignore, or rationalize away any failure. If a test fails, fix it. No exceptions.
     - If you are uncertain about the intent behind any code or test, use `git log` and `git blame` to understand the history and requirements before making changes.
 4.  **Update Memory:**
-    - If you made or confirmed a durable architectural decision (a pattern, interface choice, or invariant), update `./.agent/DECISIONS.md`. 
-    - Update `./.agent/MEMORY.md` with:
-      - Any **Brittle Areas** you discovered.
-      - A one-line entry in **Recent Changelog** describing what was built/fixed.
-      - **Archive** The changelog should have at most 20 recent entries. Any older ones should be archived in `./.agent/memory_archive.md`.
-      - **Condense** Group related modules into higher-level summaries, focusing on core invariants and security constraints while removing transient low-level details.
+    - Save memories as **individual files** to avoid merge conflicts when agents work in parallel. Use the naming convention: `YYYY-MM-DDTHH-MM-SS_<agent>_<task>_<category>.md`. Each file should have YAML frontmatter with `agent`, `task`, `category`, and `timestamp` fields. See existing files in the directories below for examples.
+      - **Observations, brittle areas, changelog entries** → `./.agent/memories/` (categories: `brittle_area`, `changelog`, `observation`)
+      - **Durable architectural decisions** (patterns, interface choices, invariants future tasks must respect) → `./.agent/decisions/` (category: `decision`)
 
 # CONSTRAINTS
 - **Your task is FULLY SPECIFIED in the Task Requirements section above. All necessary context is provided.**

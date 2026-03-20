@@ -40,7 +40,7 @@ from zoneinfo import ZoneInfo
 
 _PST = ZoneInfo("America/Los_Angeles")
 
-from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR, REPLAN_STATE_FILE, STATE_DIR, WORKFLOW_STATE_FILE
+from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR, REPLAN_STATE_FILE, STATE_DIR, WORKFLOW_STATE_FILE, MEMORIES_DIR, DECISIONS_DIR
 from .context import ProjectContext, fit_lines_to_budget, _count_tokens
 from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state, load_dags, get_tasks_dir
@@ -759,25 +759,86 @@ def get_task_details(full_task_id: str) -> str:
     return content
 
 
-def get_memory_context(root_dir: str) -> str:
-    """Return combined contents of MEMORY.md and DECISIONS.md from the agent directory.
+def save_agent_memory(
+    agent_name: str,
+    task_id: str,
+    category: str,
+    content: str,
+    memories_dir: str = "",
+) -> str:
+    """Write a single memory entry as a timestamped file.
 
-    MEMORY.md holds ephemeral observations (changelog, brittle areas).
-    DECISIONS.md holds durable architectural decisions.  Both are injected
-    together so agents have the full picture without separate template slots.
+    Each call creates a new file — no shared files, no merge conflicts.
+
+    :param agent_name: Identifier for the agent writing the memory.
+    :param task_id: Task that produced this memory (e.g. ``"phase1_task3"``).
+    :param category: One of ``"brittle_area"``, ``"changelog"``, ``"decision"``,
+        ``"observation"``.
+    :param content: Free-form markdown body of the memory.
+    :param memories_dir: Override for the memories directory (default: from constants).
+    :returns: Absolute path to the newly created memory file.
+    """
+    from datetime import datetime, timezone
+
+    if not memories_dir:
+        memories_dir = DECISIONS_DIR if category == "decision" else MEMORIES_DIR
+    os.makedirs(memories_dir, exist_ok=True)
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+    safe_agent = agent_name.replace("/", "_").replace(" ", "_")
+    safe_task = task_id.replace("/", "_").replace(" ", "_")
+    filename = f"{ts}_{safe_agent}_{safe_task}_{category}.md"
+    filepath = os.path.join(memories_dir, filename)
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(f"---\nagent: {agent_name}\ntask: {task_id}\n"
+                f"category: {category}\ntimestamp: {ts}\n---\n\n{content}\n")
+    return filepath
+
+
+def get_memory_context(root_dir: str, limit: int = 30) -> str:
+    """Return recent agent memories plus durable DECISIONS.md.
+
+    Reads individual memory files from ``.workflow_state/memories/``,
+    sorted by filename (ISO timestamps sort lexically), and takes the
+    most recent *limit* entries.  Also appends ``DECISIONS.md`` if present.
 
     :param root_dir: Absolute path to the project root.
-    :type root_dir: str
-    :returns: Concatenated file contents, or ``""`` when neither file exists.
-    :rtype: str
+    :param limit: Maximum number of recent memory files to include.
+    :returns: Concatenated memory content, or ``""`` when empty.
     """
+    import glob as _glob
+
     agent_dir = os.path.join(root_dir, ".agent")
     parts = []
-    for filename in ("MEMORY.md", "DECISIONS.md"):
-        path = os.path.join(agent_dir, filename)
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
+
+    # Decisions — all included (durable, not capped)
+    decisions_dir = os.path.join(agent_dir, "decisions")
+    if os.path.isdir(decisions_dir):
+        decision_files = sorted(_glob.glob(os.path.join(decisions_dir, "*.md")))
+        if decision_files:
+            parts.append("# Architectural Decisions")
+            for path in decision_files:
+                with open(path, "r", encoding="utf-8") as f:
+                    parts.append(f.read())
+
+    # Memories — recent only
+    memories_dir = os.path.join(agent_dir, "memories")
+    if os.path.isdir(memories_dir):
+        memory_files = sorted(_glob.glob(os.path.join(memories_dir, "*.md")))
+        if memory_files:
+            parts.append("# Recent Agent Memories")
+            for path in memory_files[-limit:]:
+                with open(path, "r", encoding="utf-8") as f:
+                    parts.append(f.read())
+
+    # Legacy: still read DECISIONS.md and MEMORY.md if present (for migration)
+    for legacy_file in ("DECISIONS.md", "MEMORY.md"):
+        legacy_path = os.path.join(agent_dir, legacy_file)
+        if os.path.exists(legacy_path):
+            with open(legacy_path, "r", encoding="utf-8") as f:
                 parts.append(f.read())
+
     return "\n\n---\n\n".join(parts)
 
 
