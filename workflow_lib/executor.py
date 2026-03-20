@@ -1103,6 +1103,8 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
 
     attempt = 1
     while attempt <= max_capacity_retries:
+        if shutdown_requested:
+            return False
         # Resolve backend/user/model from pool (if active) or fixed backend.
         agent_cfg = None
         active_backend = backend
@@ -1121,6 +1123,8 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
                     dashboard.set_agent(task_id, agent_type, "waiting",
                                         f"Waiting for available agent (attempt {attempt})...", agent_name="")
                 while True:
+                    if shutdown_requested:
+                        return False
                     agent_cfg = agent_pool.acquire(timeout=300.0, step=step)
                     if agent_cfg is not None:
                         break
@@ -2853,6 +2857,11 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                         # Submit merge asynchronously on the dedicated merge executor
                         _submit_merge(task_id)
                     else:
+                        if shutdown_requested:
+                            # Task returned False because shutdown was requested
+                            # before it could start — not an actual failure.
+                            dashboard.log(f"   -> [Shutdown] Task {task_id} did not start. Will resume on next run.")
+                            continue
                         # Check if we can retry
                         with state_lock:
                             attempts = task_attempts.get(task_id, 1)
@@ -2865,6 +2874,9 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                             with state_lock:
                                 failed_tasks.add(f"Task {task_id} failed implementation after {attempts} attempt(s).")
                 except Exception as exc:
+                    if shutdown_requested:
+                        dashboard.log(f"   -> [Shutdown] Task {task_id} interrupted. Will resume on next run.")
+                        continue
                     traceback.print_exc()
                     with state_lock:
                         attempts = task_attempts.get(task_id, 1)

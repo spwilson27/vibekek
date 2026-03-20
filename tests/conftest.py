@@ -48,6 +48,15 @@ def _guarded_open(file, mode="r", *args, **kwargs):
 
 
 @pytest.fixture(autouse=True)
+def _reset_shutdown_flag():
+    """Ensure shutdown_requested is reset after every test to prevent bleed."""
+    import workflow_lib.executor as _executor_mod
+    _executor_mod.shutdown_requested = False
+    yield
+    _executor_mod.shutdown_requested = False
+
+
+@pytest.fixture(autouse=True)
 def _host_protection():
     """Prevent tests from writing to the host filesystem or invoking agent CLIs."""
     with patch("subprocess.run", side_effect=_make_subprocess_guard(subprocess.run)), \

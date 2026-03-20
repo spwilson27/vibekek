@@ -2145,9 +2145,9 @@ class TestMergeDuringShutdownE2E:
         assert "phase_1/sub/01_d.md" not in processed
         assert "phase_1/sub/01_d.md" not in merged
 
-    def test_run_agent_proceeds_for_all_types_during_shutdown(self, tmp_path):
-        """run_agent proceeds for all agent types during shutdown so that
-        in-flight tasks complete their full workflow."""
+    def test_run_agent_skips_all_types_during_shutdown(self, tmp_path):
+        """run_agent returns False for all agent types during shutdown,
+        preventing new work from starting."""
         import workflow_lib.executor as executor_mod
         from workflow_lib.executor import run_agent
 
@@ -2163,16 +2163,17 @@ class TestMergeDuringShutdownE2E:
         try:
             with patch("workflow_lib.executor.TOOLS_DIR", root + "/.tools"), \
                  patch("workflow_lib.executor.run_ai_command",
-                       return_value=(0, "")), \
+                       return_value=(0, "")) as mock_ai, \
                  patch("workflow_lib.executor.get_project_images",
                        return_value=[]):
-                # All agent types should proceed during shutdown
+                # All agent types should be skipped during shutdown
                 for agent_type in ("Implementation", "Review", "Merge"):
                     result = run_agent(agent_type, "implement_task.md",
                                        {"task_name": "test"}, root, "gemini")
-                    assert result is True, (
-                        f"{agent_type} agent should proceed during shutdown"
+                    assert result is False, (
+                        f"{agent_type} agent should be skipped during shutdown"
                     )
+                mock_ai.assert_not_called()
         finally:
             executor_mod.shutdown_requested = False
 

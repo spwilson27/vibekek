@@ -21,12 +21,15 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Skip all tests in this module if Docker is not available or env var is set
-pytestmark = pytest.mark.skipif(
-    os.environ.get("SKIP_DOCKER_INTEGRATION") or
-    not shutil.which("docker") or
-    subprocess.run(["docker", "info"], capture_output=True).returncode != 0,
-    reason="Docker not available or SKIP_DOCKER_INTEGRATION set"
-)
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(
+        os.environ.get("SKIP_DOCKER_INTEGRATION") or
+        not shutil.which("docker") or
+        subprocess.run(["docker", "info"], capture_output=True).returncode != 0,
+        reason="Docker not available or SKIP_DOCKER_INTEGRATION set"
+    ),
+]
 
 
 # ---------------------------------------------------------------------------

@@ -4734,8 +4734,8 @@ class TestSoftInterrupt:
     # 1. run_agent() — proceeds even during shutdown (no guard)
     # ----------------------------------------------------------------
 
-    def test_run_agent_proceeds_when_shutdown_requested(self):
-        """run_agent must proceed during shutdown so in-flight tasks complete."""
+    def test_run_agent_skips_when_shutdown_requested(self):
+        """run_agent must return False during shutdown to prevent new work."""
         self._mod.shutdown_requested = True
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
@@ -4744,41 +4744,41 @@ class TestSoftInterrupt:
             result = self._mod.run_agent(
                 "Implementation", "implement_task.md", {}, "/tmp",
             )
-        assert result is True
-        mock_ai.assert_called_once()
+        assert result is False
+        mock_ai.assert_not_called()
 
-    def test_run_agent_review_proceeds_when_shutdown_requested(self):
-        """Review agent must not be skipped during shutdown."""
+    def test_run_agent_review_skips_when_shutdown_requested(self):
+        """Review agent must be skipped during shutdown."""
         self._mod.shutdown_requested = True
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
              patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt")):
             result = self._mod.run_agent("Review", "review_task.md", {}, "/tmp")
-        assert result is True
-        mock_ai.assert_called_once()
+        assert result is False
+        mock_ai.assert_not_called()
 
-    def test_run_agent_review_retry_proceeds_when_shutdown_requested(self):
-        """Review (Retry) must not be skipped during shutdown."""
+    def test_run_agent_review_retry_skips_when_shutdown_requested(self):
+        """Review (Retry) must be skipped during shutdown."""
         self._mod.shutdown_requested = True
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
              patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt")):
             result = self._mod.run_agent("Review (Retry)", "review_task.md", {}, "/tmp")
-        assert result is True
-        mock_ai.assert_called_once()
+        assert result is False
+        mock_ai.assert_not_called()
 
-    def test_run_agent_merge_proceeds_when_shutdown_requested(self):
-        """Merge agent must not be skipped during shutdown."""
+    def test_run_agent_merge_skips_when_shutdown_requested(self):
+        """Merge agent must be skipped during shutdown."""
         self._mod.shutdown_requested = True
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
              patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt")):
             result = self._mod.run_agent("Merge", "merge_task.md", {}, "/tmp")
-        assert result is True
-        mock_ai.assert_called_once()
+        assert result is False
+        mock_ai.assert_not_called()
 
     def test_run_agent_proceeds_when_not_shutdown(self):
         self._mod.shutdown_requested = False
@@ -4904,9 +4904,9 @@ class TestSoftInterrupt:
         # Implementation + Review + Review (Retry) — retry proceeds and fixes it
         assert agent_calls == ["Implementation", "Review", "Review (Retry)"]
 
-    def test_process_task_review_retry_spawns_ai_during_shutdown(self):
-        """Using the real run_agent (not mocked), shutdown does NOT prevent
-        the Review (Retry) from spawning an AI process."""
+    def test_process_task_review_retry_blocked_by_shutdown(self):
+        """When shutdown is requested mid-task (e.g. during presubmit),
+        subsequent run_agent calls return False and process_task fails."""
         self._mod.shutdown_requested = False
 
         presubmit_attempts = [0]
@@ -4936,9 +4936,10 @@ class TestSoftInterrupt:
                 "/root", "phase_1/task", "./presubmit",
                 max_retries=3, dashboard=MagicMock(),
             )
-        assert result is True
-        # run_ai_command called for Implementation, Review, AND Review (Retry)
-        assert mock_ai.call_count == 3
+        assert result is False
+        # Implementation + Review run, then presubmit fails and sets shutdown,
+        # blocking the Review (Retry) stage.
+        assert mock_ai.call_count == 2
 
     # ----------------------------------------------------------------
     # 6. merge_task() — merge loop skipped on shutdown
@@ -5043,13 +5044,13 @@ class TestSoftInterrupt:
              patch('workflow_lib.executor.subprocess.run', return_value=MagicMock(returncode=0, stdout="", stderr="")), \
              patch('workflow_lib.config.get_config_defaults', return_value={"retries": 0}), \
              patch('workflow_lib.executor.notify_failure'):
-            # Task failure causes sys.exit(1) via the failed_tasks path
-            with pytest.raises(SystemExit):
-                self._mod._execute_dag_inner(
-                    "/root", dag, state, jobs=1, presubmit_cmd="./presubmit",
-                    backend="gemini", serena_enabled=False,
-                    cache_lock=threading.Lock(), dashboard=dash,
-                )
+            # Shutdown-skipped tasks are not treated as failures, so the
+            # function returns normally instead of calling sys.exit(1).
+            self._mod._execute_dag_inner(
+                "/root", dag, state, jobs=1, presubmit_cmd="./presubmit",
+                backend="gemini", serena_enabled=False,
+                cache_lock=threading.Lock(), dashboard=dash,
+            )
         # Only one task was submitted — shutdown prevented the second
         assert len(tasks_submitted) == 1
 
