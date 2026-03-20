@@ -15,6 +15,8 @@ import unittest
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
+import pytest
+
 # Allow importing workflow_lib from .tools/
 TOOLS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".tools")
 sys.path.insert(0, TOOLS_DIR)
@@ -26,6 +28,7 @@ def _get_webhook_url():
     return load_config().get("discord_webhook") or os.environ.get("DISCORD_WEBHOOK_URL")
 
 
+@pytest.mark.discord
 class TestDiscordWebhook(unittest.TestCase):
 
     @unittest.skip("Disabled: causes Discord rate limiting during test runs")

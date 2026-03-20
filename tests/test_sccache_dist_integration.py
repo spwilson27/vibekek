@@ -13,6 +13,10 @@ import os
 import subprocess
 import tempfile
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 # Add tools directory to path
 tools_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 sys.path.insert(0, tools_dir)
