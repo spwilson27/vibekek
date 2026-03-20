@@ -296,6 +296,7 @@ def _start_task_container(
     sccache_config: Optional[Any] = None,
     sccache_dist_config: Optional[Any] = None,
     configure_containers: bool = True,
+    is_merge: bool = False,
 ) -> None:
     """Start a detached Docker container for the duration of one workflow task.
 
@@ -387,6 +388,27 @@ def _start_task_container(
         log(f"      [sccache-dist] Configuring container for scheduler at {sccache_dist_config.scheduler_url}")
 
     docker_cmd += ["--memory", "20g", "--memory-swap", "20g"]
+
+    # CPU nice: map nice value (0-19) to docker --cpu-shares (lower = less CPU priority)
+    # Default shares is 1024; nice 19 → 52 shares (very low priority)
+    # Merge tasks get a slight boost (halve the nice value) to unblock other work faster
+    if dc.cpu_nice is not None:
+        effective_nice = max(0, dc.cpu_nice // 2) if is_merge else dc.cpu_nice
+        shares = max(2, int(1024 / (1 + effective_nice)))
+        docker_cmd += ["--cpu-shares", str(shares)]
+        label = f" (merge boost: {dc.cpu_nice}→{effective_nice})" if is_merge else ""
+        log(f"      [docker] CPU nice {effective_nice} → --cpu-shares {shares}{label}")
+
+    # I/O nice: map ionice class to docker --blkio-weight
+    # class 1 (realtime) → 1000, class 2 (best-effort) → 500, class 3 (idle) → 10
+    # Merge tasks bump up one class (e.g. idle→best-effort) to avoid blocking the pipeline
+    if dc.ionice_class is not None:
+        effective_class = max(1, dc.ionice_class - 1) if is_merge else dc.ionice_class
+        blkio_map = {1: 1000, 2: 500, 3: 10}
+        weight = blkio_map.get(effective_class, 500)
+        docker_cmd += ["--blkio-weight", str(weight)]
+        label = f" (merge boost: class {dc.ionice_class}→{effective_class})" if is_merge else ""
+        log(f"      [docker] ionice class {effective_class} → --blkio-weight {weight}{label}")
 
     docker_cmd += [dc.image, "sleep", "infinity"]
 
@@ -2130,7 +2152,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
             env_file = _write_container_env_file(tmpdir)
             import uuid as _uuid
             _container_name = f"merge_{safe_name_part}_{_uuid.uuid4().hex[:8]}"
-            _start_task_container(_container_name, docker_config, env_file, _log)
+            _start_task_container(_container_name, docker_config, env_file, _log, is_merge=True)
             _log(f"      Cloning repository into container...")
             _docker_exec(_container_name, ["git", "clone", clone_src, "/workspace"], env_file=env_file, check=True, log=_log)
             _docker_exec(_container_name, ["git", "-C", "/workspace", "submodule", "update", "--init", "--recursive"], env_file=env_file, log=_log)

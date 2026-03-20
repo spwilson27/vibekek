@@ -58,6 +58,7 @@ class TestDagRetryLogic:
             patch('workflow_lib.executor.notify_failure'),
             patch('os._exit', side_effect=SystemExit(1)),
             patch('subprocess.run', return_value=MagicMock(returncode=0, stdout="", stderr="")),
+            patch('workflow_lib.executor.save_workflow_state'),
         ]
 
         for p in patches:
@@ -173,6 +174,7 @@ class TestMergeRetryDuringShutdown:
             patch('workflow_lib.executor.notify_failure'),
             patch('os._exit', side_effect=SystemExit(1)),
             patch('subprocess.run', return_value=MagicMock(returncode=0, stdout="", stderr="")),
+            patch('workflow_lib.executor.save_workflow_state'),
         ]
 
         executor_mod.shutdown_requested = False

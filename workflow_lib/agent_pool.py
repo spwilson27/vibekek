@@ -127,6 +127,8 @@ class DockerConfig:
     pivot_remote: str = "origin"
     volumes: List[str] = field(default_factory=list)
     copy_files: List[DockerCopyFile] = field(default_factory=list)
+    cpu_nice: Optional[int] = None  # CPU nice value (0-19, maps to --cpu-shares)
+    ionice_class: Optional[int] = None  # ionice class (1=realtime, 2=best-effort, 3=idle)
 
 
 @dataclass

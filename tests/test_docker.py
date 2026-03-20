@@ -26,12 +26,15 @@ from workflow_lib.executor import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _docker_cfg(image="test-image:latest", volumes=None, copy_files=None, pivot_remote="origin"):
+def _docker_cfg(image="test-image:latest", volumes=None, copy_files=None, pivot_remote="origin",
+                cpu_nice=None, ionice_class=None):
     return DockerConfig(
         image=image,
         pivot_remote=pivot_remote,
         volumes=volumes or [],
         copy_files=copy_files or [],
+        cpu_nice=cpu_nice,
+        ionice_class=ionice_class,
     )
 
 
@@ -627,6 +630,112 @@ class TestStartTaskContainer:
         assert "--env-file" in start_cmd
         idx = start_cmd.index("--env-file")
         assert start_cmd[idx + 1] == env_file
+
+
+    def test_cpu_nice_sets_cpu_shares(self, tmp_path):
+        """cpu_nice value is mapped to --cpu-shares in docker run."""
+        dc = _docker_cfg(cpu_nice=14)
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _start_task_container("ctr", dc, env_file, print)
+
+        start_cmd = calls[0]
+        assert "--cpu-shares" in start_cmd
+        idx = start_cmd.index("--cpu-shares")
+        # nice 14 → shares = max(2, int(1024 / (1 + 14))) = 68
+        assert start_cmd[idx + 1] == "68"
+
+    def test_ionice_class_sets_blkio_weight(self, tmp_path):
+        """ionice_class is mapped to --blkio-weight in docker run."""
+        dc = _docker_cfg(ionice_class=3)
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _start_task_container("ctr", dc, env_file, print)
+
+        start_cmd = calls[0]
+        assert "--blkio-weight" in start_cmd
+        idx = start_cmd.index("--blkio-weight")
+        assert start_cmd[idx + 1] == "10"  # class 3 (idle) → weight 10
+
+    def test_merge_boost_cpu_nice(self, tmp_path):
+        """Merge containers get halved cpu_nice for higher priority."""
+        dc = _docker_cfg(cpu_nice=14)
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _start_task_container("ctr", dc, env_file, print, is_merge=True)
+
+        start_cmd = calls[0]
+        idx = start_cmd.index("--cpu-shares")
+        # merge: effective_nice = 14 // 2 = 7 → shares = int(1024 / 8) = 128
+        assert start_cmd[idx + 1] == "128"
+
+    def test_merge_boost_ionice(self, tmp_path):
+        """Merge containers bump ionice up one class."""
+        dc = _docker_cfg(ionice_class=3)
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _start_task_container("ctr", dc, env_file, print, is_merge=True)
+
+        start_cmd = calls[0]
+        idx = start_cmd.index("--blkio-weight")
+        # merge: class 3 → class 2 (best-effort) → weight 500
+        assert start_cmd[idx + 1] == "500"
+
+    def test_no_nice_flags_when_unset(self, tmp_path):
+        """No --cpu-shares or --blkio-weight when nice values are None."""
+        dc = _docker_cfg()
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if isinstance(cmd, list) and ("inspect" in cmd or "ps" in cmd):
+                return MagicMock(returncode=0, stdout="true\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _start_task_container("ctr", dc, env_file, print)
+
+        start_cmd = calls[0]
+        assert "--cpu-shares" not in start_cmd
+        assert "--blkio-weight" not in start_cmd
 
 
 # ---------------------------------------------------------------------------

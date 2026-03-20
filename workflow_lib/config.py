@@ -170,6 +170,8 @@ def _parse_docker_dict(d: dict, label: str) -> Any:
         pivot_remote=d.get("pivot_remote", "origin"),
         volumes=list(d.get("volumes", [])),
         copy_files=copy_files,
+        cpu_nice=d.get("cpu_nice"),
+        ionice_class=d.get("ionice_class"),
     )
 
 
@@ -195,6 +197,8 @@ def merge_docker_configs(base: Any, override: Any) -> Any:
         pivot_remote=override.pivot_remote if override.pivot_remote != "origin" else base.pivot_remote,
         volumes=override.volumes if override.volumes else base.volumes,
         copy_files=override.copy_files if override.copy_files else base.copy_files,
+        cpu_nice=override.cpu_nice if override.cpu_nice is not None else base.cpu_nice,
+        ionice_class=override.ionice_class if override.ionice_class is not None else base.ionice_class,
     )
 
 
