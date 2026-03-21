@@ -742,7 +742,7 @@ def verify_all(root_dir: str) -> int:
     print(f"{BOLD}{'='*60}{RESET}\n")
 
     results: Dict[str, bool] = {}
-    req_file = os.path.join(root_dir, "requirements.md")
+    req_file = os.path.join(root_dir, "docs/plan/requirements.md")
     phases_dir = os.path.join(root_dir, "docs", "plan", "phases")
     tasks_dir = os.path.join(root_dir, "docs", "plan", "tasks")
     requirements_dir = os.path.join(root_dir, "docs", "plan", "requirements")

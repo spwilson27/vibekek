@@ -288,7 +288,7 @@ class Orchestrator:
 
         self.run_phase_with_retry(Phase4BMergeRequirements())
         self._validate_artifacts(
-            [os.path.join(self.ctx.root_dir, "requirements.md")],
+            [os.path.join(self.ctx.root_dir, "docs/plan/requirements.md")],
             "Phase4B"
         )
         self.run_phase_with_retry(Phase4BScopeGate())

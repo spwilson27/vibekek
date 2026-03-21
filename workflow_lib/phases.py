@@ -613,9 +613,9 @@ class Phase4BMergeRequirements(BasePhase):
         prompt = ctx.format_prompt(prompt_tmpl, description_ctx=ctx.description_ctx)
         
         # This phase can modify requirements.md AND any source doc in docs/plan/specs/
-        
+
         # Allowed files include the final requirements.md and specs for potential conflict resolution
-        allowed_files = [os.path.join(ctx.root_dir, "requirements.md")]
+        allowed_files = [os.path.join(ctx.root_dir, "docs/plan/requirements.md")]
         allowed_files.extend([ctx.get_document_path(d) for d in DOCS if d["type"] != "research"])
         
         result = ctx.run_gemini(prompt, allowed_files=allowed_files)
@@ -637,7 +637,7 @@ class Phase4BMergeRequirements(BasePhase):
         # Verify description length (minimum 10 words)
         print("\n   -> Verifying description length in requirements.md...")
         desc_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "req-desc-length", "requirements.md"],
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "req-desc-length", "docs/plan/requirements.md"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if desc_res.returncode != 0:
@@ -668,9 +668,9 @@ class Phase4BScopeGate(BasePhase):
             print("Scope gate already passed.")
             return
 
-        req_path = os.path.join(ctx.root_dir, "requirements.md")
+        req_path = os.path.join(ctx.root_dir, "docs/plan/requirements.md")
         if not os.path.exists(req_path):
-            print("\n[!] requirements.md not found. Cannot perform scope gate.")
+            print("\n[!] docs/plan/requirements.md not found. Cannot perform scope gate.")
             sys.exit(1)
 
         with open(req_path, "r", encoding="utf-8") as f:
@@ -686,7 +686,7 @@ class Phase4BScopeGate(BasePhase):
             f"  Total unique requirements: {len(unique_reqs)}\n"
             f"  Requirements document: {line_count} lines\n"
             f"  Original description: {len(ctx.description_ctx.splitlines())} lines\n"
-            f"  Review 'requirements.md' to check for scope inflation.\n"
+            f"  Review 'docs/plan/requirements.md' to check for scope inflation.\n"
             f"  You may edit the file to remove or defer requirements.\n"
             f"  [c]ontinue / [e]dit (opens $EDITOR) / [q]uit"
         )
@@ -747,9 +747,9 @@ class Phase4COrderRequirements(BasePhase):
             print("\n[!] Error ordering requirements.")
             sys.exit(1)
             
-        print("\n   -> Verifying ordered_requirements.md against active requirements in requirements.md...")
+        print("\n   -> Verifying ordered_requirements.md against active requirements in docs/plan/requirements.md...")
         verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "ordered", "requirements.md", "ordered_requirements.md"],
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "ordered", "docs/plan/requirements.md", "ordered_requirements.md"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
@@ -759,7 +759,7 @@ class Phase4COrderRequirements(BasePhase):
 
         print("\n   -> Verifying requirement description lengths...")
         verify_desc_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "req-desc-length", "requirements.md"],
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "req-desc-length", "docs/plan/requirements.md"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_desc_res.returncode != 0:
@@ -768,7 +768,7 @@ class Phase4COrderRequirements(BasePhase):
             sys.exit(1)
 
         # Overwrite master with ordered version and cleanup
-        master_req_path = os.path.join(ctx.root_dir, "requirements.md")
+        master_req_path = os.path.join(ctx.root_dir, "docs/plan/requirements.md")
         ordered_req_path = os.path.join(ctx.root_dir, "ordered_requirements.md")
         if os.path.exists(ordered_req_path):
             if os.path.exists(master_req_path):
@@ -816,7 +816,7 @@ class Phase5GenerateEpics(BasePhase):
             
         print("\n   -> Verifying phases/ covers all requirements...")
         verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "phases", "requirements.md", "docs/plan/phases/"],
+            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "phases", "docs/plan/requirements.md", "docs/plan/phases/"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
@@ -2085,7 +2085,7 @@ class Phase8GenerateHarness(BasePhase):
         expected_file = os.path.join(ctx.root_dir, target_path)
 
         # Load requirements if available
-        req_path = os.path.join(ctx.root_dir, "requirements.md")
+        req_path = os.path.join(ctx.root_dir, "docs/plan/requirements.md")
         requirements_ctx = ""
         if os.path.exists(req_path):
             with open(req_path, "r", encoding="utf-8") as f:

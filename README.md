@@ -113,7 +113,7 @@ docs/plan/
   conflict_resolution.md
   adversarial_review.md
   integration_test_plan.md
-requirements.md      # Master requirements list
+docs/plan/requirements.md  # Master requirements list
 ```
 
 #### Planning phases
@@ -126,8 +126,8 @@ requirements.md      # Master requirements list
 | 3A | Conflict resolution between documents | `docs/plan/conflict_resolution.md` |
 | 3B | Adversarial scope-creep review | `docs/plan/adversarial_review.md` |
 | 4A | Extract requirements per document | `docs/plan/requirements/` |
-| 4B | Merge into master requirements + scope gate | `requirements.md` |
-| 4C | Order requirements by dependency | `requirements.md` (reordered) |
+| 4B | Merge into master requirements + scope gate | `docs/plan/requirements.md` |
+| 4C | Order requirements by dependency | `docs/plan/requirements.md` (reordered) |
 | 5 | Generate implementation epics | `docs/plan/phases/` |
 | 5B | Identify shared components | `docs/plan/shared_components.md` |
 | 5C | Define interface contracts | `docs/plan/interface_contracts.md` |
@@ -241,7 +241,7 @@ All requirement IDs follow the format `[{DOC_PREFIX}-REQ-{NUM}]`, e.g.:
 
 The prefix matches the source document's ID. This is validated by:
 ```bash
-python .tools/verify_requirements.py --verify-req-format requirements.md
+python .tools/verify_requirements.py --verify-req-format docs/plan/requirements.md
 ```
 
 ### Verification modes
@@ -337,7 +337,7 @@ AI-generates a new task file in the specified phase/sub-epic and rebuilds the DA
 ### Modify requirements
 
 ```bash
-# Open requirements.md in $EDITOR
+# Open docs/plan/requirements.md in $EDITOR
 python .tools/workflow.py modify-req --edit
 
 # Remove a requirement (moves it to a 'Removed' section)
