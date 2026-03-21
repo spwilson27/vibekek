@@ -8,7 +8,7 @@ You are a Lead Technical Program Manager. Your job is to assign requirements tha
 {phases_content}
 
 # UNMAPPED REQUIREMENTS
-The following requirements exist in `requirements.md` but are not listed in any phase file:
+The following requirements exist in `docs/plan/requirements.md` but are not listed in any phase file:
 {unmapped_reqs_list}
 
 # REQUIREMENT DETAILS

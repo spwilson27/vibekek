@@ -1,130 +1,94 @@
 #!/usr/bin/env python3
-"""
-Generate DAG JSON from task markdown files.
-Extracts task IDs and dependencies from markdown headers and depends_on fields.
-"""
+"""Generate DAG JSON files for a phase by parsing task markdown files."""
 
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
-def extract_task_id(filepath: str, base_dir: str) -> str:
-    """Extract relative task ID from filepath (relative to base_dir)."""
-    rel_path = os.path.relpath(filepath, base_dir)
-    return rel_path
 
-def parse_depends_on(content: str) -> list:
-    """Parse depends_on field from task markdown."""
-    # Look for depends_on: [...] pattern
+def parse_depends_on(content: str, current_group: str) -> list[str]:
+    """Extract depends_on list from markdown content and resolve to full paths."""
+    # Look for depends_on in the content (usually in a Dependencies section)
     match = re.search(r'depends_on:\s*\[(.*?)\]', content, re.DOTALL)
     if not match:
         return []
     
     deps_str = match.group(1).strip()
-    if not deps_str:
+    if deps_str.lower() == 'none' or not deps_str:
         return []
     
-    # Parse dependencies - they can be on same line or multiple lines
+    # Parse the list items
     deps = []
-    # Split by comma or newline
-    for dep in re.split(r'[,\n]', deps_str):
-        dep = dep.strip()
-        if dep and dep != 'none':
-            # Remove quotes if present
-            dep = dep.strip('"\'')
-            if dep:
-                deps.append(dep)
+    for item in re.findall(r'["\']?([^"\',\]]+)["\']?', deps_str):
+        item = item.strip()
+        if not item or item.lower() == 'none':
+            continue
+        # If the dependency doesn't contain a '/', it's just a filename in the same group
+        if '/' not in item:
+            item = f"{current_group}/{item}"
+        deps.append(item)
     
     return deps
 
-def normalize_dependency(dep: str, task_sub_epic_dir: str, phase_dir: str) -> str:
-    """
-    Normalize a dependency path.
-    
-    The DAG format expects:
-    - For same-phase dependencies: relative path within the phase (e.g., `05_risk_001_verification/01_risk_matrix_extraction.md`)
-    - For cross-phase dependencies: relative path from tasks directory (e.g., `phase_1/03_template_resolution_context/01_template_resolver_skeleton.md`)
-    
-    Args:
-        dep: The dependency path from the task file (may be full path or relative)
-        task_sub_epic_dir: The sub-epic directory of the task (e.g., `05_risk_001_verification`)
-        phase_dir: The phase directory name (e.g., `phase_5`)
-    
-    Returns:
-        Normalized dependency path suitable for the DAG JSON
-    """
-    # If it's a full path from project root (docs/plan/tasks/phase_X/...), make it relative
-    if dep.startswith('docs/plan/tasks/'):
-        # Remove the docs/plan/tasks/ prefix
-        rel_to_tasks = dep.replace('docs/plan/tasks/', '')
-        
-        # Check if it's a same-phase dependency
-        if rel_to_tasks.startswith(phase_dir + '/'):
-            # Remove the phase_X/ prefix for same-phase dependencies
-            return rel_to_tasks.replace(phase_dir + '/', '')
-        else:
-            # Cross-phase dependency - keep the phase_X/ prefix
-            return rel_to_tasks
-    
-    # If dep doesn't have a path separator, it's in the same sub-epic directory
-    if '/' not in dep:
-        # Add .md extension if missing
-        if not dep.endswith('.md'):
-            dep = dep + '.md'
-        return f"{task_sub_epic_dir}/{dep}"
-    
-    # Already has a path - might be sub_epic/file.md format (same-phase)
-    # or phase_X/sub_epic/file.md format (cross-phase)
-    if not dep.endswith('.md'):
-        dep = dep + '.md'
-    
-    # Check if it starts with a phase directory (cross-phase)
-    if re.match(r'^phase_\d+/', dep):
-        return dep
-    
-    # Otherwise it's a same-phase dependency
-    return dep
 
-def main():
-    base_dir = '/home/mrwilson/software/devs/docs/plan/tasks/phase_5'
-    phase_dir = 'phase_5'
-    
-    # Find all .md files (excluding README.md and other non-task files)
+def find_task_files(phase_dir: Path) -> list[tuple[str, Path]]:
+    """Find all .md task files in the phase directory, grouped by directory."""
     task_files = []
-    for root, dirs, files in os.walk(base_dir):
-        for f in files:
-            if f.endswith('.md') and f not in ['README.md', 'SUB_EPIC_SUMMARY.md']:
-                filepath = os.path.join(root, f)
-                task_files.append(filepath)
-    
-    # Build DAG
+    for root, dirs, files in os.walk(phase_dir):
+        # Skip the phase directory itself
+        if Path(root) == phase_dir:
+            continue
+        for file in files:
+            if file.endswith('.md'):
+                task_file = Path(root) / file
+                # Get the group directory name
+                group = Path(root).relative_to(phase_dir).as_posix()
+                task_files.append((group, task_file))
+    return sorted(task_files, key=lambda x: (x[0], x[1].name))
+
+
+def generate_dag(phase_dir: Path) -> dict:
+    """Generate DAG dictionary for a phase."""
     dag = {}
     
-    for filepath in task_files:
-        task_id = extract_task_id(filepath, base_dir)
-        task_sub_epic_dir = os.path.dirname(task_id)
-        
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        deps = parse_depends_on(content)
-        
-        # Convert dependency names to full task IDs
-        full_deps = []
-        for dep in deps:
-            full_dep = normalize_dependency(dep, task_sub_epic_dir, phase_dir)
-            full_deps.append(full_dep)
-        
-        dag[task_id] = full_deps
+    task_files = find_task_files(phase_dir)
     
-    # Write DAG JSON
-    output_path = os.path.join(base_dir, 'dag.json')
-    with open(output_path, 'w', encoding='utf-8') as f:
+    for group, task_file in task_files:
+        # Get relative path from phase_dir
+        rel_path = task_file.relative_to(phase_dir).as_posix()
+        
+        # Read and parse the file
+        content = task_file.read_text(encoding='utf-8')
+        depends_on = parse_depends_on(content, group)
+        
+        # Store in DAG
+        dag[rel_path] = depends_on
+    
+    return dag
+
+
+def main():
+    if len(sys.argv) != 2:
+        print(f"Usage: {sys.argv[0]} <phase_dir>")
+        sys.exit(1)
+    
+    phase_dir = Path(sys.argv[1])
+    
+    if not phase_dir.exists():
+        print(f"Error: Phase directory does not exist: {phase_dir}")
+        sys.exit(1)
+    
+    dag = generate_dag(phase_dir)
+    
+    # Output JSON
+    output_file = phase_dir / 'dag.json'
+    with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(dag, f, indent=2, sort_keys=True)
     
-    print(f"Generated DAG with {len(dag)} tasks")
-    print(f"Output: {output_path}")
+    print(f"Generated {output_file} with {len(dag)} tasks")
+
 
 if __name__ == '__main__':
     main()

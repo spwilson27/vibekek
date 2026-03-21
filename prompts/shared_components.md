@@ -5,7 +5,7 @@ You are a Principal Software Architect. Your job is to analyze the project phase
 {description_ctx}
 
 # TASK
-1. Read `requirements.md` and all phase documents in `docs/plan/phases/`.
+1. Read `docs/plan/requirements.md` and all phase documents in `docs/plan/phases/`.
 2. Identify shared components — modules, services, libraries, schemas, or infrastructure that will be needed by multiple sub-epics or phases.
 3. For each shared component, determine:
    - Which phase and sub-epic should OWN its creation (i.e., build it first)
