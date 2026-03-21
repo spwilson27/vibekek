@@ -1003,12 +1003,13 @@ class QwenRunner(SessionResumableRunner):
 class CodexRunner(AIRunner):
     """Runner for the ``codex`` CLI (OpenAI Codex).
 
-    Uses ``codex exec --full-auto --json`` for non-interactive execution
-    with structured JSONL output to avoid verbose stderr spam.
+    Uses ``codex exec --json`` with the explicit no-sandbox flag for
+    non-interactive execution. We intentionally avoid ``--full-auto`` here
+    because that convenience alias forces ``--sandbox workspace-write``.
     """
 
     def get_cmd(self, image_paths: Optional[List[str]] = None) -> List[str]:
-        cmd = ["codex", "exec", "--full-auto", "--json", '--sandbox=danger-full-access']
+        cmd = ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox"]
         if self.model:
             cmd += ["-m", self.model]
         for path in (image_paths or []):
@@ -1024,7 +1025,7 @@ class CodexRunner(AIRunner):
         timeout: Optional[int] = None,
         abort_event: Optional[threading.Event] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
-        """Run ``codex exec --full-auto --json`` with *full_prompt* as the prompt argument.
+        """Run ``codex exec --json`` with *full_prompt* as the prompt argument.
 
         Uses :meth:`_run_streaming_json` with :func:`parse_codex_json_line` to
         parse structured JSONL output, avoiding verbose stderr output from codex.
