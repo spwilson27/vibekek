@@ -98,7 +98,7 @@ class TestCodexRunner:
         assert "--json" in cmd
         assert "codex" in cmd
         assert "exec" in cmd
-        assert "--full-auto" in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
 
     def test_get_cmd_includes_model(self):
         """get_cmd should include model if specified."""
@@ -115,8 +115,8 @@ class TestCodexRunner:
         assert "/path/to/img1.png" in cmd
         assert "/path/to/img2.png" in cmd
 
-    def test_get_cmd_sandbox_flag(self):
-        """get_cmd should include sandbox flag."""
+    def test_get_cmd_avoids_full_auto_workspace_write_alias(self):
+        """get_cmd should not use the full-auto alias that re-enables sandboxing."""
         runner = CodexRunner()
         cmd = runner.get_cmd()
-        assert "--sandbox=danger-full-access" in cmd
+        assert "--full-auto" not in cmd
