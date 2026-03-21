@@ -37,6 +37,7 @@ QUOTA_PATTERNS: List[str] = [
     "ModelNotFoundError: Requested entity was not found",
     "You've hit your limit · resets", # Claude
     "Possible quota limitations in place or slow response times detected. Please wait and try again later.", # Ollama
+    'Failed to authenticate. API Error: 401', # Claude 2am key rotation
 ]
 
 # Substrings (case-insensitive) that indicate the CLI is already handling
