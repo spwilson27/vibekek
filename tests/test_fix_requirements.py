@@ -377,50 +377,6 @@ class TestFixPhaseMappings(unittest.TestCase):
             self.assertFalse(result)
 
 
-# ── Phase6AFixupValidation tests ─────────────────────────────────────────
-
-
-class TestPhase6AFixupValidation(unittest.TestCase):
-
-    def test_skips_when_already_completed(self):
-        from workflow_lib.phases import Phase6AFixupValidation
-        ctx = MagicMock()
-        ctx.state = {"fixup_validation_completed": True}
-        phase = Phase6AFixupValidation()
-        # Should not raise
-        phase.execute(ctx)
-
-    def test_passes_when_all_checks_ok(self):
-        from workflow_lib.phases import Phase6AFixupValidation
-        ctx = MagicMock()
-        ctx.state = {}
-
-        with patch("workflow_lib.replan._run_all_checks", return_value={"all_pass": True, "checks": {}}):
-            phase = Phase6AFixupValidation()
-            phase.execute(ctx)
-
-        self.assertTrue(ctx.state["fixup_validation_completed"])
-
-    def test_exits_when_no_fixes_available(self):
-        from workflow_lib.phases import Phase6AFixupValidation
-        ctx = MagicMock()
-        ctx.state = {}
-
-        results = {
-            "all_pass": False,
-            "checks": {
-                "verify-dags": {"passed": False, "missing_reqs": []},
-            },
-        }
-
-        with patch("workflow_lib.replan._run_all_checks", return_value=results), \
-             patch("workflow_lib.replan._fix_phase_mappings", return_value=False), \
-             patch("workflow_lib.replan._fix_task_mappings", return_value=False):
-            phase = Phase6AFixupValidation()
-            with self.assertRaises(SystemExit):
-                phase.execute(ctx)
-
-
 # ── cmd_fixup tests ──────────────────────────────────────────────────────
 
 

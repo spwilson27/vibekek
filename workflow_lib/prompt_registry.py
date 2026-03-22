@@ -58,11 +58,6 @@ PROMPT_PLACEHOLDERS = {
     "dag_tasks.md": {"description_ctx", "phase_filename", "target_path", "tasks_content"},
     "dag_tasks_review.md": {"description_ctx", "phase_filename", "proposed_dag", "target_path", "tasks_content"},
 
-    # Legacy task phases (still referenced by Phase6BreakDownTasks and Phase6BReviewTasks)
-    "group_tasks.md": {"description_ctx", "phase_filename", "group_filename"},
-    "tasks.md": {"description_ctx", "phase_filename", "sub_epic_name", "sub_epic_reqs", "target_dir", "shared_components_ctx"},
-    "review_tasks_in_phase.md": {"description_ctx", "phase_filename", "phase_id", "tasks_content"},
-
     # Implementation (run phase)
     "implement_task.md": {"description_ctx", "memory_ctx", "phase_filename", "target_dir", "task_details", "task_name", "spec_ctx", "shared_components_ctx"},
     "review_task.md": {"description_ctx", "memory_ctx", "phase_filename", "target_dir", "task_details", "task_name", "spec_ctx", "shared_components_ctx"},

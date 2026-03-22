@@ -152,7 +152,7 @@ class TestPhase2BSummarizeDoc:
     def test_display_name_includes_doc_name(self):
         phase = Phase2BSummarizeDoc({"id": "x", "name": "My Document"})
         assert "My Document" in phase.display_name
-        assert "Phase2B" in phase.display_name
+        assert "Phase3" in phase.display_name
 
     def test_research_docs_are_also_summarized(self):
         """Summarization should work for research docs too, not just specs."""

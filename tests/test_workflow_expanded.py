@@ -15,8 +15,8 @@ from workflow import (
     ProjectContext, BasePhase, Phase1GenerateDoc, Phase2FleshOutDoc,
     Phase3FinalReview, Phase3BAdversarialReview, Phase7ExtractRequirements,
     Phase9MergeRequirements, Phase11ScopeGate, Phase12OrderRequirements,
-    Phase13GenerateEpics, Phase6BreakDownTasks,
-    Phase6BReviewTasks, Phase6CCrossPhaseReview, Phase6DReorderTasks,
+    Phase13GenerateEpics,
+    Phase6CCrossPhaseReview,
     Phase7ADAGGeneration, Orchestrator,
     Logger, run_ai_command, load_dags, get_ready_tasks, process_task, merge_task, execute_dag,
     load_replan_state, save_replan_state, load_workflow_state, save_workflow_state,
@@ -894,6 +894,7 @@ def test_run_ai_writes_last_failed_on_failure(tmp_path):
         ctx.dashboard = None
         ctx.current_phase = ""
         ctx.agent_timeout = None
+        ctx._tls = threading.local()
 
         result = ctx.run_ai("my prompt")
 
@@ -919,6 +920,7 @@ def test_run_ai_no_debug_files_on_success(tmp_path):
         ctx.dashboard = None
         ctx.current_phase = ""
         ctx.agent_timeout = None
+        ctx._tls = threading.local()
 
         result = ctx.run_ai("my prompt")
 

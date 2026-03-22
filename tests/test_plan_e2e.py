@@ -440,6 +440,119 @@ class TestPlanningIdempotency:
             )
 
 
+class TestStaleStateReExtraction:
+    """Verify phases re-run when state is stale (files missing on disk)."""
+
+    def test_phase7_re_extracts_when_json_missing(self, tmp_path):
+        """Phase 7 re-extracts when state says extracted but .json file is missing.
+
+        Regression test: old pipeline produced .md files, new pipeline needs
+        .json. Stale state with doc IDs in extracted_requirements but no .json
+        on disk must trigger re-extraction, not skip.
+        """
+        tools_dir = _create_tools_layout(tmp_path)
+
+        # Track whether run_gemini was called (extraction happened)
+        extraction_ran = []
+
+        def tracking_agent(self, full_prompt, allowed_files=None, **kwargs):
+            extraction_ran.append(True)
+            if allowed_files:
+                for f in allowed_files:
+                    if isinstance(f, str) and not f.endswith(os.sep):
+                        os.makedirs(os.path.dirname(os.path.abspath(f)), exist_ok=True)
+                        if f.endswith(".json") and not os.path.exists(f):
+                            with open(f, "w") as fp:
+                                fp.write(json.dumps(EXTRACTED_REQS, indent=2))
+                        elif not os.path.exists(f):
+                            with open(f, "w") as fp:
+                                fp.write("# stub\n")
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        with _standard_patches(tmp_path, tools_dir):
+            with patch("workflow_lib.context.ProjectContext.run_gemini", tracking_agent), \
+                 patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+                from workflow_lib.context import ProjectContext
+                from workflow_lib.phases import Phase7ExtractRequirements
+                from workflow_lib.constants import DOCS
+
+                ctx = ProjectContext(str(tmp_path))
+
+                # Create the spec file so Phase7 doesn't skip due to missing source
+                doc = DOCS[0]  # 1_prd
+                spec_path = ctx.get_document_path(doc)
+                os.makedirs(os.path.dirname(spec_path), exist_ok=True)
+                with open(spec_path, "w") as f:
+                    f.write("# PRD\nSome content.\n")
+
+                # Simulate stale state: doc ID in extracted list, but NO .json file
+                ctx.state["extracted_requirements"] = [doc["id"]]
+                json_path = os.path.join(ctx.requirements_dir, f"{doc['id']}.json")
+                assert not os.path.exists(json_path), "JSON should not exist yet"
+
+                phase = Phase7ExtractRequirements(doc)
+                phase.execute(ctx)
+
+        # Extraction MUST have run despite stale state
+        assert len(extraction_ran) > 0, (
+            "Phase 7 skipped extraction due to stale state — "
+            "the .json file was missing but state said 'extracted'"
+        )
+        assert os.path.exists(json_path), "Phase 7 should have created the .json file"
+
+    def test_phase7_skips_when_json_exists(self, tmp_path):
+        """Phase 7 correctly skips when state says extracted AND .json exists."""
+        tools_dir = _create_tools_layout(tmp_path)
+
+        extraction_ran = []
+
+        def tracking_agent(self, full_prompt, allowed_files=None, **kwargs):
+            extraction_ran.append(True)
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        with _standard_patches(tmp_path, tools_dir):
+            with patch("workflow_lib.context.ProjectContext.run_gemini", tracking_agent), \
+                 patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+                from workflow_lib.context import ProjectContext
+                from workflow_lib.phases import Phase7ExtractRequirements
+                from workflow_lib.constants import DOCS
+
+                ctx = ProjectContext(str(tmp_path))
+
+                doc = DOCS[0]
+                # State says extracted AND .json exists → should skip
+                ctx.state["extracted_requirements"] = [doc["id"]]
+                json_path = os.path.join(ctx.requirements_dir, f"{doc['id']}.json")
+                with open(json_path, "w") as f:
+                    f.write(json.dumps(EXTRACTED_REQS, indent=2))
+
+                phase = Phase7ExtractRequirements(doc)
+                phase.execute(ctx)
+
+        assert len(extraction_ran) == 0, (
+            "Phase 7 should have skipped — state and .json file both present"
+        )
+
+    def test_phase8_fails_when_json_missing(self, tmp_path):
+        """Phase 8 exits with error when the extracted .json file doesn't exist."""
+        tools_dir = _create_tools_layout(tmp_path)
+
+        with _standard_patches(tmp_path, tools_dir):
+            with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+                from workflow_lib.context import ProjectContext
+                from workflow_lib.phases import Phase8FilterMetaRequirements
+                from workflow_lib.constants import DOCS
+
+                ctx = ProjectContext(str(tmp_path))
+                doc = DOCS[0]
+
+                # No .json file exists — Phase 8 should fail, not silently skip
+                phase = Phase8FilterMetaRequirements(doc)
+                with pytest.raises(SystemExit) as exc_info:
+                    phase.execute(ctx)
+                assert exc_info.value.code == 1
+
+
 class TestParallelAgentPool:
     """Verify parallel phases use the agent pool and dashboard correctly."""
 

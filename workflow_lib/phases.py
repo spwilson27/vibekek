@@ -228,7 +228,7 @@ class Phase2FleshOutDoc(BasePhase):
 
     @property
     def display_name(self) -> str:
-        return f"Phase2: {self.doc.get('name', self.doc.get('id', '?'))}"
+        return f"Phase2: Flesh Out {self.doc.get('name', self.doc.get('id', '?'))}"
 
     def execute(self, ctx: ProjectContext) -> None:
         """Iterate over document sections and expand each with an AI pass.
@@ -305,7 +305,7 @@ class Phase2BSummarizeDoc(BasePhase):
 
     @property
     def display_name(self) -> str:
-        return f"Phase2B: Summarize {self.doc.get('name', self.doc.get('id', '?'))}"
+        return f"Phase3: Summarize {self.doc.get('name', self.doc.get('id', '?'))}"
 
     def execute(self, ctx: ProjectContext) -> None:
         """Generate a summary of the document for accumulated context use.
@@ -370,7 +370,7 @@ class Phase3FinalReview(BasePhase):
             print("Final alignment review already completed.")
             return
             
-        print("\n=> [Phase 3: Final Alignment Review] Reviewing all documents for consistency...")
+        print("\n=> [Phase 4: Final Alignment Review] Reviewing all documents for consistency...")
         final_prompt_tmpl = ctx.load_prompt("final_review.md")
         final_prompt = ctx.format_prompt(final_prompt_tmpl, description_ctx=ctx.description_ctx)
         
@@ -411,7 +411,7 @@ class Phase3BAdversarialReview(BasePhase):
             print("Adversarial review already completed.")
             return
 
-        print("\n=> [Phase 3B: Adversarial Review] Comparing specs against original description for scope creep...")
+        print("\n=> [Phase 6: Adversarial Review] Comparing specs against original description for scope creep...")
         target_path = "docs/plan/adversarial_review.md"
         expected_file = os.path.join(ctx.plan_dir, "adversarial_review.md")
 
@@ -485,18 +485,23 @@ class Phase7ExtractRequirements(BasePhase):
 
     @property
     def display_name(self) -> str:
-        return f"Phase7: {self.doc.get('name', self.doc.get('id', '?'))}"
+        return f"Phase7: Extract {self.doc.get('name', self.doc.get('id', '?'))}"
 
     def execute(self, ctx: ProjectContext) -> None:
+        expected_file = os.path.join(ctx.requirements_dir, f"{self.doc['id']}.json")
+
+        # Skip only if the state says extracted AND the .json file exists on disk.
+        # Stale state from old .md-based runs must not prevent re-extraction.
         if self.doc["id"] in ctx.state.get("extracted_requirements", []):
-            return
+            if os.path.exists(expected_file):
+                return
+            print(f"   -> State says {self.doc['id']} extracted but {expected_file} missing, re-extracting.")
 
         doc_path = ctx.get_document_path(self.doc)
         if not os.path.exists(doc_path):
             return
 
         target_path = f"docs/plan/requirements/{self.doc['id']}.json"
-        expected_file = os.path.join(ctx.requirements_dir, f"{self.doc['id']}.json")
         doc_rel_path = f"docs/plan/specs/{self.doc['id']}.md"
 
         print(f"\n=> [Phase 7: Extract Requirements] Extracting from {self.doc['name']}...")
@@ -556,8 +561,9 @@ class Phase8FilterMetaRequirements(BasePhase):
     def execute(self, ctx: ProjectContext) -> None:
         req_file = os.path.join(ctx.requirements_dir, f"{self.doc['id']}.json")
         if not os.path.exists(req_file):
-            print(f"   -> Skipping filter for {self.doc['id']} (no extracted JSON).")
-            return
+            print(f"\n[!] Cannot filter {self.doc['id']}: {req_file} does not exist.")
+            print(f"    Phase 7 (Extract Requirements) must produce this file first.")
+            sys.exit(1)
 
         print(f"\n=> [Phase 8: Filter Meta Requirements] Filtering {self.doc['name']}...")
 
@@ -1130,354 +1136,6 @@ class Phase19PreInitTask(BasePhase):
         print("Successfully generated pre-init task.")
 
 
-class Phase6BreakDownTasks(BasePhase):
-    """Decompose each phase epic into atomic task markdown files.
-
-    Uses two AI passes per phase: a grouping pass (Project Manager) that
-    clusters requirements into sub-epics, and a task-generation pass (Lead
-    Developer) that produces the individual ``<NN>_<name>.md`` task files.
-    The task-generation pass runs in parallel across sub-epics up to
-    ``ctx.jobs`` workers.
-
-    Runs ``verify.py --verify-tasks`` at the end.  Idempotent
-    via ``ctx.state["tasks_completed"]``.
-    """
-
-    def execute(self, ctx: ProjectContext) -> None:
-        """Generate sub-epic groupings and atomic task files for all phases.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: On AI runner or verification failure, or when
-            required directories do not exist.
-        """
-        if ctx.state.get("tasks_completed", False):
-            print("Task generation already completed.")
-            return
-            
-        print("\n=> [Phase 6: Break Down Tasks] Generating detailed tasks using Sub-Epic Grouping/")
-        
-        phases_dir = os.path.join(ctx.plan_dir, "phases")
-        tasks_dir = os.path.join(ctx.plan_dir, "tasks")
-        os.makedirs(tasks_dir, exist_ok=True)
-        
-        if not os.path.exists(phases_dir):
-            print("\n[!] Error: phases directory does not exist.")
-            sys.exit(1)
-            
-        phase_files = [f for f in os.listdir(phases_dir) if f.endswith(".md")]
-        if not phase_files:
-            print("\n[!] Error: No phase documents found in phases/.")
-            sys.exit(1)
-            
-        grouping_prompt_tmpl = ctx.load_prompt("group_tasks.md")
-        tasks_prompt_tmpl = ctx.load_prompt("tasks.md")
-        ctx.state.setdefault("tasks_generated", [])
-        ctx.state.setdefault("ordered_phases_generated", [])
-        
-        for phase_filename in sorted(phase_files):
-            phase_id = phase_filename.replace(".md", "")
-            
-            group_filename = f"{phase_id}_grouping.json"
-            
-            # 1. Project Manager Pass: Group Requirements
-            print(f"   -> Grouping requirements for {phase_filename} into Sub-Epics...")
-            grouping_prompt = ctx.format_prompt(grouping_prompt_tmpl,
-                                             description_ctx=ctx.description_ctx,
-                                             phase_filename=phase_filename,
-                                             group_filename=group_filename)
-            group_filepath = os.path.join(tasks_dir, group_filename)
-            allowed_files = [group_filepath]
-            
-            if not os.path.exists(group_filepath):
-                group_result = ctx.run_gemini(grouping_prompt, allowed_files=allowed_files)
-            
-                if group_result.returncode != 0:
-                    print(f"\n[!] Error grouping tasks for {phase_filename}.")
-                    print(group_result.stdout)
-                    print(group_result.stderr)
-                    sys.exit(1)
-                    
-                if not os.path.exists(group_filepath):
-                    print(f"\n[!] Error: Agent failed to generate grouping JSON file {group_filepath}.")
-                    sys.exit(1)
-                    
-            else:
-                print(f"   -> Skipping {phase_filename}: Already grouped.")
-
-            with open(group_filepath, "r", encoding="utf-8") as f:
-                try:
-                    sub_epics = json.load(f)
-                except json.JSONDecodeError as e:
-                    print(f"\n[!] Error parsing grouping JSON file {group_filepath}: {e}")
-                    sys.exit(1)
-                
-            print(f"   -> Found {len(sub_epics)} Sub-Epic groupings for {phase_filename}.")
-            
-            # 2. Lead Developer Pass: Iterative Detail Generation
-            state_lock = threading.Lock()
-
-            def process_sub_epic(sub_epic_name, reqs):
-                if not isinstance(reqs, list):
-                    return True
-                    
-                # Create a filesystem safe name for the sub-epic
-                safe_name = re.sub(r'[^a-zA-Z0-9_\-]+', '_', sub_epic_name.lower())
-                # E.g. tasks/phase_1/01_project_planning/
-                target_dir = os.path.join(phase_id, f"{safe_name}")
-                
-                with state_lock:
-                    if target_dir in ctx.state["tasks_generated"]:
-                        print(f"      -> Skipping task generation for {target_dir} (already generated).")
-                        return True
-                        
-                print(f"      -> Breaking down '{sub_epic_name}' ({len(reqs)} reqs) into {target_dir}/...")
-                
-                # Ensure the subdirectory exists
-                phase_task_dir = os.path.join(tasks_dir, target_dir)
-                os.makedirs(phase_task_dir, exist_ok=True)
-                
-                reqs_str = json.dumps(reqs)
-                shared_components_ctx = ctx.load_shared_components()
-                tasks_prompt = ctx.format_prompt(tasks_prompt_tmpl,
-                                                 description_ctx=ctx.description_ctx,
-                                                 phase_filename=phase_filename,
-                                                 sub_epic_name=sub_epic_name,
-                                                 sub_epic_reqs=reqs_str,
-                                                 target_dir=target_dir,
-                                                 shared_components_ctx=shared_components_ctx)
-                
-                        
-                allowed_files = [phase_task_dir + os.sep]
-                result = ctx.run_gemini(tasks_prompt, allowed_files=allowed_files)
-                
-                if result.returncode != 0:
-                    print(f"\n[!] Error generating tasks for {target_dir}.")
-                    print(result.stdout)
-                    print(result.stderr)
-                    return False
-                    
-                with state_lock:
-                    ctx.state["tasks_generated"].append(target_dir)
-                    ctx.save_state()
-                return True
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=ctx.jobs) as executor:
-                futures = [
-                    executor.submit(process_sub_epic, name, reqs)
-                    for name, reqs in sorted(sub_epics.items())
-                ]
-                
-                for future in concurrent.futures.as_completed(futures):
-                    if not future.result():
-                        print("\n[!] Error encountered in parallel task generation. Exiting.")
-                        os._exit(1)
-            
-        print("\n   -> Verifying tasks/ covers all requirements from phases/...")
-        verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "tasks", "docs/plan/phases/", "docs/plan/tasks/"],
-            capture_output=True, text=True, cwd=ctx.root_dir
-        )
-        if verify_res.returncode != 0:
-            # Verification failures are expected and will be fixed by Phase6A Fixup.
-            # Just warn and continue - Phase6AFixupValidation will handle the gaps.
-            print("\n[!] Warning: Verification found gaps (Phase6A Fixup will address these):")
-            print(verify_res.stdout)
-            # Don't exit here - let Phase6AFixupValidation handle the gaps
-
-        ctx.stage_changes([tasks_dir])
-        ctx.state["tasks_completed"] = True
-        ctx.save_state()
-        print("Successfully generated atomic tasks.")
-
-class Phase6AFixupValidation(BasePhase):
-    """Run validation checks and automatically fix phase/task mapping gaps.
-
-    After task breakdown (Phase 6), runs ``_run_all_checks()`` to detect
-    requirements that are not assigned to any phase or not covered by any
-    task.  Fixes each category using AI, then re-validates.  Idempotent via
-    ``ctx.state["fixup_validation_completed"]``.
-    """
-
-    def execute(self, ctx: ProjectContext) -> None:
-        """Run fixup validation and fix any failures.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: When fixes fail or validation still fails after fixing.
-        """
-        if ctx.state.get("fixup_validation_completed", False):
-            print("Fixup validation already completed.")
-            return
-
-        print("\n=> [Phase 6A-Fixup: Validation Fixup] Running validation and fixing gaps...")
-
-        from .replan import _run_all_checks, _fix_phase_mappings, _fix_task_mappings
-
-        # Run only checks applicable before DAG generation (exclude verify-dags)
-        pre_dag_checks = [
-            "verify-depends-on",
-            "verify-master",
-            "verify-phases",
-            "verify-desc-length",
-            "verify-req-format",
-            "verify-tasks",
-        ]
-        results = _run_all_checks(checks_filter=pre_dag_checks)
-
-        if results["all_pass"]:
-            print("All validation checks passed. No fixup needed.")
-            ctx.state["fixup_validation_completed"] = True
-            ctx.save_state()
-            return
-
-        fixed_anything = False
-
-        # Fix verify-phases failures first
-        phases_check = results["checks"].get("verify-phases", {})
-        if not phases_check.get("passed", True) and phases_check.get("missing_reqs"):
-            if _fix_phase_mappings(phases_check["missing_reqs"], ctx):
-                fixed_anything = True
-
-        # Fix verify-tasks failures
-        tasks_check = results["checks"].get("verify-tasks", {})
-        if not tasks_check.get("passed", True) and tasks_check.get("missing_reqs"):
-            if _fix_task_mappings(tasks_check["missing_reqs"], ctx):
-                fixed_anything = True
-
-        if not fixed_anything:
-            print("[!] Validation failures detected but no automatic fixes available.")
-            sys.exit(1)
-
-        # Re-verify
-        print("\n=> Re-running validation after fixup...")
-        final = _run_all_checks()
-
-        if not final["all_pass"]:
-            print("[!] Some checks still failing after fixup.")
-            sys.exit(1)
-
-        tasks_dir = os.path.join(ctx.plan_dir, "tasks")
-        ctx.stage_changes([tasks_dir, os.path.join(ctx.plan_dir, "phases")])
-        ctx.state["fixup_validation_completed"] = True
-        ctx.save_state()
-        print("Fixup validation complete — all checks passing.")
-
-
-class Phase6BReviewTasks(BasePhase):
-    """Review tasks within each phase for duplicates and coverage gaps.
-
-    For each phase directory, produces a ``review_summary.md`` file.  The
-    review is expected to be *subtractive* — a warning is emitted if the task
-    count increases.  Runs phases in parallel up to ``ctx.jobs`` workers.
-    Idempotent via ``ctx.state["tasks_reviewed"]``.
-    """
-
-    def execute(self, ctx: ProjectContext) -> None:
-        """Run per-phase task review in parallel.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: On AI runner failure after 3 attempts for any
-            phase.
-        """
-        if ctx.state.get("tasks_reviewed", False):
-            print("Task review already completed.")
-            return
-
-        print("\n=> [Phase 6B: Review Tasks] Reviewing tasks within each phase for duplicates and coverage...")
-        
-        tasks_dir = os.path.join(ctx.plan_dir, "tasks")
-        if not os.path.exists(tasks_dir):
-            print("\n[!] Error: tasks directory does not exist. Run Phase 6 first.")
-            sys.exit(1)
-
-        phase_dirs = [d for d in os.listdir(tasks_dir) if os.path.isdir(os.path.join(tasks_dir, d)) and d.startswith("phase_")]
-        if not phase_dirs:
-            print("\n[!] Error: No phase directories found in tasks/.")
-            sys.exit(1)
-
-        review_prompt_tmpl = ctx.load_prompt("review_tasks_in_phase.md")
-
-        def process_phase_review(phase_id):
-            phase_dir_path = os.path.join(tasks_dir, phase_id)
-            review_summary_path = os.path.join(phase_dir_path, "review_summary.md")
-            
-            if os.path.exists(review_summary_path):
-                 print(f"   -> Skipping Task Review for {phase_id} (already reviewed).")
-                 return True
-                 
-            # Gather tasks
-            sub_epics = [d for d in os.listdir(phase_dir_path) if os.path.isdir(os.path.join(phase_dir_path, d))]
-            if not sub_epics:
-                return True
-
-            tasks_content = ""
-            for sub_epic in sorted(sub_epics):
-                sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-                if not os.path.isdir(sub_epic_dir):
-                    continue
-                md_files = [f for f in os.listdir(sub_epic_dir)
-                           if f.endswith(".md") and f not in _NON_TASK_FILES]
-
-                for md_file in sorted(md_files):
-                     task_id = f"{sub_epic}/{md_file}"
-                     tasks_content += f"### Task ID: {task_id}\n"
-                     with open(os.path.join(sub_epic_dir, md_file), "r", encoding="utf-8") as f:
-                          content = f.read()
-                          # Indent content slightly so it's readable
-                          tasks_content += "\n".join([f"    {line}" for line in content.split("\n")]) + "\n\n"
-            
-            if not tasks_content:
-                return True
-
-            print(f"   -> Reviewing tasks for {phase_id}...")
-
-            before_count = ctx.count_task_files(phase_dir_path)
-
-            prompt = ctx.format_prompt(
-                review_prompt_tmpl,
-                phase_id=phase_id,
-                phase_filename=f"{phase_id}.md",
-                description_ctx=ctx.description_ctx,
-                tasks_content=tasks_content
-            )
-            allowed_files = [phase_dir_path + os.sep]
-
-            for attempt in range(1, 4):
-                result = ctx.run_gemini(prompt, allowed_files=allowed_files)
-
-                if result.returncode == 0 and os.path.exists(review_summary_path):
-                    after_count = ctx.count_task_files(phase_dir_path)
-                    if after_count > before_count:
-                        print(f"\n[!] WARNING: Review of {phase_id} increased task count from {before_count} to {after_count}. Review should be subtractive.")
-                    return True
-                    
-                print(f"\n[!] Error reviewing tasks for {phase_id} (Attempt {attempt}/3).")
-                if result.returncode != 0:
-                    print(result.stdout)
-                    print(result.stderr)
-                elif not os.path.exists(review_summary_path):
-                    print(f"\n[!] Error: Agent failed to generate review summary {review_summary_path}.")
-                    
-            return False
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=ctx.jobs) as executor:
-            futures = [
-                executor.submit(process_phase_review, phase_id)
-                for phase_id in sorted(phase_dirs)
-            ]
-            
-            for future in concurrent.futures.as_completed(futures):
-                if not future.result():
-                    print("\n[!] Error encountered in parallel task review. Exiting.")
-                    os._exit(1)
-
-        ctx.stage_changes([tasks_dir])
-        ctx.state["tasks_reviewed"] = True
-        ctx.save_state()
-        print("Successfully reviewed tasks.")
-
 class Phase6CCrossPhaseReview(BasePhase):
     """Global cross-phase duplicate and coverage review (configurable pass number).
 
@@ -1511,7 +1169,7 @@ class Phase6CCrossPhaseReview(BasePhase):
             print(f"Cross-phase task review (Pass {self.pass_num}) already completed.")
             return
 
-        print(f"\n=> [Phase 6C: Cross-Phase Review (Pass {self.pass_num})] Reviewing tasks across all phases for global duplication and coverage...")
+        print(f"\n=> [Phase 18: Cross-Phase Review (Pass {self.pass_num})] Reviewing tasks across all phases for global duplication and coverage...")
         
         tasks_dir = os.path.join(ctx.plan_dir, "tasks")
         if not os.path.exists(tasks_dir):
@@ -1568,89 +1226,6 @@ class Phase6CCrossPhaseReview(BasePhase):
                 
         sys.exit(1)
 
-
-class Phase6DReorderTasks(BasePhase):
-    """Validate and fix task ordering across all phases by moving misplaced files.
-
-    Gathers all tasks and prompts the AI to validate logical ordering,
-    then move misplaced tasks to their correct phase directories.
-    Produces ``reorder_tasks_summary_pass_<N>.md``.
-    Idempotent via ``ctx.state["tasks_reordered_pass_<N>"]``.
-
-    :param pass_num: Pass number (1 or 2).  Defaults to ``1``.
-    :type pass_num: int
-    """
-
-    def __init__(self, pass_num: int = 1) -> None:
-        """Initialise for a specific pass number.
-
-        :param pass_num: Pass number (1-based).
-        :type pass_num: int
-        """
-        self.pass_num = pass_num
-
-    def execute(self, ctx: ProjectContext) -> None:
-        """Execute the task reordering pass.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: On AI runner failure after 3 attempts.
-        """
-        state_key = f"tasks_reordered_pass_{self.pass_num}"
-        if ctx.state.get(state_key, False):
-            print(f"Task reordering across phases (Pass {self.pass_num}) already completed.")
-            return
-
-        print(f"\n=> [Phase 6D: Task Reordering (Pass {self.pass_num})] Reordering tasks across all phases for logical implementation progression...")
-        
-        tasks_dir = os.path.join(ctx.plan_dir, "tasks")
-        if not os.path.exists(tasks_dir):
-            print("\n[!] Error: tasks directory does not exist. Run Phase 6 first.")
-            sys.exit(1)
-
-        phase_dirs = [d for d in os.listdir(tasks_dir) if os.path.isdir(os.path.join(tasks_dir, d)) and d.startswith("phase_")]
-        if not phase_dirs:
-            print("\n[!] Error: No phase directories found in tasks/.")
-            sys.exit(1)
-
-        reorder_summary_path = os.path.join(tasks_dir, f"reorder_tasks_summary_pass_{self.pass_num}.md")
-
-        if os.path.exists(reorder_summary_path):
-             print(f"   -> Skipping Task Reordering (already reordered).")
-             ctx.state[state_key] = True
-             ctx.save_state()
-             return
-
-        print(f"   -> Performing global task reordering...")
-
-        allowed_files = [tasks_dir + os.sep]
-
-        for attempt in range(1, 4):
-            result = ctx.run_gemini(
-                "reorder_tasks.md",
-                allowed_files=allowed_files,
-                context_files={
-                    "description_ctx": ctx.input_dir,
-                    "tasks_content": [os.path.join(tasks_dir, p) for p in phase_dirs],
-                },
-                params={"pass_num": self.pass_num},
-            )
-            
-            if result.returncode == 0 and os.path.exists(reorder_summary_path):
-                ctx.stage_changes([tasks_dir])
-                ctx.state[state_key] = True
-                ctx.save_state()
-                print("Successfully completed task reordering.")
-                return
-                
-            print(f"\n[!] Error reordering tasks (Attempt {attempt}/3).")
-            if result.returncode != 0:
-                print(result.stdout)
-                print(result.stderr)
-            elif not os.path.exists(reorder_summary_path):
-                print(f"\n[!] Error: Agent failed to generate reorder summary {reorder_summary_path}.")
-                
-        sys.exit(1)
 
 class Phase7ADAGGeneration(BasePhase):
     """Hybrid DAG generation: programmatic from task metadata with AI fallback.
@@ -1845,7 +1420,7 @@ class Phase7ADAGGeneration(BasePhase):
             print("DAG Generation already completed.")
             return
 
-        print("\n=> [Phase 7A: DAG Generation] Creating dependency graphs for tasks...")
+        print("\n=> [Phase 20: DAG Generation] Creating dependency graphs for tasks...")
 
         tasks_dir = os.path.join(ctx.plan_dir, "tasks")
         if not os.path.exists(tasks_dir):
@@ -1961,7 +1536,7 @@ class Phase7ADAGGeneration(BasePhase):
         # Only run if we actually generated/validated DAGs (not in test scenarios with fake paths)
         if os.path.exists(tasks_dir):
             print("\n" + "="*60)
-            print("=> [Phase 7A: Post-Validation] Validating depends_on metadata...")
+            print("=> [Phase 20: Post-Validation] Validating depends_on metadata...")
             print("="*60 + "\n")
 
             validation_script = os.path.join(
@@ -2016,7 +1591,7 @@ class Phase3AConflictResolution(BasePhase):
             print("Conflict resolution review already completed.")
             return
 
-        print("\n=> [Phase 3A: Conflict Resolution] Resolving contradictions between documents...")
+        print("\n=> [Phase 5: Conflict Resolution] Resolving contradictions between documents...")
         target_path = "docs/plan/conflict_resolution.md"
         expected_file = os.path.join(ctx.plan_dir, "conflict_resolution.md")
 
@@ -2042,307 +1617,4 @@ class Phase3AConflictResolution(BasePhase):
         ctx.save_state()
         print("Successfully completed conflict resolution review.")
 
-
-class Phase5CInterfaceContracts(BasePhase):
-    """Generate interface contracts for shared components and cross-phase boundaries.
-
-    Produces ``docs/plan/interface_contracts.md``.  Idempotent via
-    ``ctx.state["interface_contracts_completed"]``.
-    """
-
-    def execute(self, ctx: ProjectContext) -> None:
-        if ctx.state.get("interface_contracts_completed", False):
-            print("Interface contracts already generated.")
-            return
-
-        print("\n=> [Phase 5C: Interface Contracts] Defining API contracts for shared components...")
-        target_path = "docs/plan/interface_contracts.md"
-        expected_file = os.path.join(ctx.plan_dir, "interface_contracts.md")
-
-        prompt_tmpl = ctx.load_prompt("interface_contracts.md")
-        prompt = ctx.format_prompt(prompt_tmpl,
-            description_ctx=ctx.description_ctx,
-            target_path=target_path
-        )
-
-        allowed_files = [expected_file]
-        result = ctx.run_ai(prompt, allowed_files=allowed_files)
-
-        if result.returncode != 0 or not os.path.exists(expected_file):
-            print("\n[!] Error generating interface contracts.")
-            if result.returncode != 0:
-                print(result.stdout)
-                print(result.stderr)
-            sys.exit(1)
-
-        ctx.stage_changes(allowed_files)
-        ctx.state["interface_contracts_completed"] = True
-        ctx.save_state()
-        print("Successfully generated interface contracts.")
-
-
-class Phase6EIntegrationTestPlan(BasePhase):
-    """Generate integration test plan for cross-task boundaries.
-
-    Produces ``docs/plan/integration_test_plan.md``.  Idempotent via
-    ``ctx.state["integration_test_plan_completed"]``.
-    """
-
-    def execute(self, ctx: ProjectContext) -> None:
-        if ctx.state.get("integration_test_plan_completed", False):
-            print("Integration test plan already generated.")
-            return
-
-        print("\n=> [Phase 6E: Integration Test Plan] Defining cross-task integration tests...")
-        target_path = "docs/plan/integration_test_plan.md"
-        expected_file = os.path.join(ctx.plan_dir, "integration_test_plan.md")
-
-        prompt_tmpl = ctx.load_prompt("integration_test_plan.md")
-        prompt = ctx.format_prompt(prompt_tmpl,
-            description_ctx=ctx.description_ctx,
-            target_path=target_path
-        )
-
-        allowed_files = [expected_file]
-        result = ctx.run_ai(prompt, allowed_files=allowed_files)
-
-        if result.returncode != 0 or not os.path.exists(expected_file):
-            print("\n[!] Error generating integration test plan.")
-            if result.returncode != 0:
-                print(result.stdout)
-                print(result.stderr)
-            sys.exit(1)
-
-        ctx.stage_changes(allowed_files)
-        ctx.state["integration_test_plan_completed"] = True
-        ctx.save_state()
-        print("Successfully generated integration test plan.")
-
-
-class Phase6EDependsOnValidation(BasePhase):
-    """Validate depends_on metadata in all task files before DAG generation.
-
-    This phase runs a comprehensive validation of all ``depends_on`` fields
-    across all task files to ensure:
-
-    1. Every task file has a ``depends_on`` metadata field
-    2. All referenced dependencies exist as actual task files
-    3. No circular dependencies exist within phases
-    4. Dependency paths use the correct format (relative to tasks/ directory)
-
-    Produces ``depends_on_validation.md`` in the tasks directory documenting
-    validation results. Idempotent via ``ctx.state["depends_on_validated"]``.
-    """
-
-    def execute(self, ctx: ProjectContext) -> None:
-        """Validate depends_on metadata across all task files.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: On validation failure with unresolved errors.
-        """
-        if ctx.state.get("depends_on_validated", False):
-            print("Depends-on validation already completed.")
-            return
-
-        print("\n=> [Phase 6E: Depends-On Validation] Validating task dependencies before DAG generation...")
-
-        tasks_dir = os.path.join(ctx.plan_dir, "tasks")
-        if not os.path.exists(tasks_dir):
-            print("\n[!] Error: tasks directory does not exist. Run Phase 6 first.")
-            sys.exit(1)
-
-        validation_report_path = os.path.join(tasks_dir, "depends_on_validation.md")
-
-        # Run the depends_on verification from verify.py
-        validation_script = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "verify.py"
-        )
-
-        import subprocess
-        result = subprocess.run(
-            [sys.executable, validation_script, "depends-on", tasks_dir],
-            capture_output=True,
-            text=True,
-            cwd=ctx.root_dir
-        )
-
-        validation_passed = result.returncode == 0
-
-        # Collect all task files and their depends_on metadata for the report
-        phase_dirs = [d for d in os.listdir(tasks_dir)
-                      if os.path.isdir(os.path.join(tasks_dir, d)) and d.startswith("phase_")]
-
-        total_tasks = 0
-        tasks_with_deps = 0
-        all_dependencies = []
-
-        for phase_id in sorted(phase_dirs):
-            phase_dir_path = os.path.join(tasks_dir, phase_id)
-            for sub_epic in sorted(os.listdir(phase_dir_path)):
-                sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-                if not os.path.isdir(sub_epic_dir):
-                    continue
-                for md_file in sorted(os.listdir(sub_epic_dir)):
-                    if md_file.endswith(".md") and md_file not in _NON_TASK_FILES:
-                        total_tasks += 1
-                        task_id = f"{phase_id}/{sub_epic}/{md_file}"
-                        filepath = os.path.join(sub_epic_dir, md_file)
-                        with open(filepath, "r", encoding="utf-8") as f:
-                            content = f.read()
-
-                        deps = Phase7ADAGGeneration._parse_depends_on(content)
-                        if deps is not None:
-                            tasks_with_deps += 1
-                            if deps:
-                                all_dependencies.append((task_id, deps))
-
-        # Generate validation report
-        print(f"   -> Generating validation report...")
-        report_content = f"""# Depends-On Validation Report
-
-## Summary
-
-- **Total task files validated:** {total_tasks}
-- **Tasks with depends_on metadata:** {tasks_with_deps}
-- **Validation status:** {'PASSED' if validation_passed else 'FAILED'}
-
-## Validation Checks
-
-1. **Metadata Presence:** All task files must have a `depends_on` field
-2. **Dependency Existence:** All referenced dependencies must exist as task files
-3. **Path Format:** Dependencies use paths relative to the tasks/ directory
-4. **No Circular Dependencies:** Dependencies within each phase must not form cycles
-
-## Results
-
-"""
-        if validation_passed:
-            report_content += f"""### Status: ✓ PASSED
-
-All {total_tasks} task files have valid depends_on metadata.
-
-- {tasks_with_deps} tasks explicitly declare dependencies
-- {len(all_dependencies)} tasks have non-trivial dependencies
-- No circular dependencies detected
-- All dependency paths are correctly formatted
-
-## Next Steps
-
-Proceed to Phase 7A (DAG Generation) to generate the final dependency graphs.
-"""
-        else:
-            report_content += f"""### Status: ✗ FAILED
-
-Validation found issues that must be resolved before DAG generation.
-
-### Error Output
-
-```
-{result.stdout}
-{result.stderr}
-```
-
-## Required Actions
-
-1. Review the errors above
-2. Fix the depends_on metadata in the affected task files
-3. Re-run Phase 6E to re-validate
-
-### Automatic Fix Option
-
-Run the following command to attempt automatic fixes:
-
-```bash
-python .tools/verify.py depends-on --fix docs/plan/tasks/
-```
-
-Then re-run Phase 6E.
-"""
-
-        os.makedirs(os.path.dirname(validation_report_path), exist_ok=True)
-        with open(validation_report_path, "w", encoding="utf-8") as f:
-            f.write(report_content)
-
-        if not validation_passed:
-            print("\n" + "="*60)
-            print(f"{RED}[!] VALIDATION FAILED{RESET}")
-            print("="*60)
-            print(result.stdout)
-            print(result.stderr)
-            print("\nValidation report saved to: docs/plan/tasks/depends_on_validation.md")
-            print("\nTo fix these issues:")
-            print("1. Manual fix: Edit the task files to correct depends_on fields")
-            print("2. Automatic fix: python .tools/verify.py depends-on --fix docs/plan/tasks/")
-            print("\nThen re-run Phase 6E.\n")
-            sys.exit(1)
-
-        print(result.stdout)
-        print(f"\n{GREEN}✓ Depends-on validation passed for {total_tasks} tasks{RESET}")
-        print(f"   Validation report: docs/plan/tasks/depends_on_validation.md")
-
-        ctx.stage_changes([validation_report_path])
-        ctx.state["depends_on_validated"] = True
-        ctx.save_state()
-        print("Successfully validated depends_on metadata.")
-
-
-class Phase8GenerateHarness(BasePhase):
-    """Generate a project-specific ``harness.py`` verification script.
-
-    Uses the project description and requirements to produce a harness that
-    enforces all testable requirements.  The output is written to the project
-    root so it can be bind-mounted into agent containers starting from phase 1.
-
-    Idempotent via ``ctx.state["harness_generated"]``.
-    """
-
-    @property
-    def operation(self) -> str:
-        return "Harness"
-
-    def execute(self, ctx: ProjectContext) -> None:
-        """Generate the harness script.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        """
-        if ctx.state.get("harness_generated", False):
-            print("harness.py already generated, skipping.")
-            return
-
-        print("\n=> [Phase 8: Generate Harness] Building project-specific harness.py...")
-
-        target_path = "harness.py"
-        expected_file = os.path.join(ctx.root_dir, target_path)
-
-        # Load requirements if available
-        req_path = os.path.join(ctx.root_dir, "docs/plan/requirements.md")
-        requirements_ctx = ""
-        if os.path.exists(req_path):
-            with open(req_path, "r", encoding="utf-8") as f:
-                requirements_ctx = f.read()
-
-        prompt_tmpl = ctx.load_prompt("generate_harness.md")
-        prompt = ctx.format_prompt(
-            prompt_tmpl,
-            description_ctx=ctx.description_ctx,
-            requirements_ctx=requirements_ctx,
-            target_path=target_path,
-        )
-
-        allowed_files = [expected_file]
-        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
-
-        if result.returncode != 0 or not os.path.exists(expected_file):
-            print("\n[!] Error generating harness.py.")
-            print(result.stdout)
-            print(result.stderr)
-            sys.exit(1)
-
-        ctx.stage_changes(allowed_files)
-        ctx.state["harness_generated"] = True
-        ctx.save_state()
-        print("Successfully generated harness.py.")
 

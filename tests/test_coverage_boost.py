@@ -18,7 +18,6 @@ from workflow import (
     Phase7ExtractRequirements, Phase9MergeRequirements,
     Phase11ScopeGate, Phase12OrderRequirements,
     Phase13GenerateEpics,
-    Phase6BreakDownTasks, Phase6BReviewTasks,
     Phase6CCrossPhaseReview,
     Phase7ADAGGeneration,
     Logger, run_ai_command,
@@ -1446,35 +1445,6 @@ class TestPhase5:
         assert ctx.state.get("epics_completed")
 
 
-class TestPhase6BreakDownTasks:
-    def test_already_done_skip(self):
-        ctx = _mock_ctx(state={"tasks_completed": True})
-        Phase6BreakDownTasks().execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
-    def test_phases_dir_missing(self):
-        ctx = _mock_ctx()
-        with patch("os.makedirs"), \
-             patch("os.path.exists", return_value=False), \
-             pytest.raises(SystemExit):
-            Phase6BreakDownTasks().execute(ctx)
-
-    def test_no_phase_files_exits(self):
-        ctx = _mock_ctx()
-        with patch("os.makedirs"), \
-             patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=[]), \
-             pytest.raises(SystemExit):
-            Phase6BreakDownTasks().execute(ctx)
-
-
-class TestPhase6BReviewTasks:
-    def test_already_done_skip(self):
-        ctx = _mock_ctx(state={"tasks_reviewed": True})
-        Phase6BReviewTasks().execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
-
 class TestPhase6CCrossPhaseReview:
     def test_already_done_skip_pass1(self):
         ctx = _mock_ctx(state={"cross_phase_reviewed_pass_1": True})
@@ -1743,58 +1713,6 @@ def _mock_ctx_for_phases():
     return ctx
 
 
-class TestPhase6BReviewTasks:
-    def test_already_reviewed(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.state["tasks_reviewed"] = True
-        Phase6BReviewTasks().execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
-    def test_tasks_dir_not_exists(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=False), pytest.raises(SystemExit):
-            Phase6BReviewTasks().execute(ctx)
-
-    def test_no_phase_dirs(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=[]), \
-             patch("os.path.isdir", return_value=False), \
-             pytest.raises(SystemExit):
-            Phase6BReviewTasks().execute(ctx)
-
-    def _make_mock_executor(self, result=True):
-        mock_future = MagicMock()
-        mock_future.result.return_value = result
-        mock_executor = MagicMock()
-        mock_executor.__enter__ = MagicMock(return_value=mock_executor)
-        mock_executor.__exit__ = MagicMock(return_value=False)
-        mock_executor.submit.return_value = mock_future
-        return mock_executor, mock_future
-
-    def test_review_already_done_skip(self):
-        ctx = _mock_ctx_for_phases()
-        mock_executor, mock_future = self._make_mock_executor()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=["phase_1"]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
-             patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
-             patch("concurrent.futures.as_completed", return_value=[mock_future]):
-            Phase6BReviewTasks().execute(ctx)
-        assert ctx.state.get("tasks_reviewed") is True
-
-    def test_process_phase_review_success(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.run_gemini.return_value = MagicMock(returncode=0)
-        mock_executor, mock_future = self._make_mock_executor()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=["phase_1"]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
-             patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
-             patch("concurrent.futures.as_completed", return_value=[mock_future]):
-            Phase6BReviewTasks().execute(ctx)
-
-
 class TestPhase6CCrossPhaseReview:
     def test_already_completed(self):
         ctx = _mock_ctx_for_phases()
@@ -1925,44 +1843,6 @@ class TestPhase7AExecute:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             Phase7ADAGGeneration().execute(ctx)
 
-
-
-class TestPhase6BreakDownTasksCoverage:
-    def test_already_completed(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.state["tasks_completed"] = True
-        Phase6BreakDownTasks().execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
-    def test_phases_dir_not_exists(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=False), \
-             patch("os.makedirs"), \
-             pytest.raises(SystemExit):
-            Phase6BreakDownTasks().execute(ctx)
-
-    def test_no_phase_files(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.makedirs"), \
-             patch("os.listdir", return_value=[]), \
-             pytest.raises(SystemExit):
-            Phase6BreakDownTasks().execute(ctx)
-
-    def test_grouping_already_exists(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.side_effect = ["grouping tmpl", "tasks tmpl"]
-        ctx.run_gemini.return_value = MagicMock(returncode=0)
-        sub_epics = {"Epic A": ["REQ-001"]}
-
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=["phase_1.md"]), \
-             patch("os.makedirs"), \
-             patch("os.path.isdir", return_value=True), \
-             patch("builtins.open", mock_open(read_data=json.dumps(sub_epics))), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0)):
-            Phase6BreakDownTasks().execute(ctx)
-        assert ctx.state.get("tasks_completed") is True
 
 
 # ---------------------------------------------------------------------------
@@ -2700,54 +2580,6 @@ class TestExecutorFunctions:
         assert _step_for_agent_type("claude") == "all"
         assert _step_for_agent_type("gemini") == "all"
         assert _step_for_agent_type("copilot") == "all"
-
-
-class TestPhase6BInner:
-    """Tests that actually exercise process_phase_review closure."""
-
-    def test_review_summary_exists_inner(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", side_effect=lambda p: ["phase_1"] if "tasks" in p and "phase_1" not in p else ["sub"]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or "sub" in p):
-            Phase6BReviewTasks().execute(ctx)
-        assert ctx.state.get("tasks_reviewed") is True
-
-    def test_no_sub_epics_inner(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", side_effect=lambda p: False if "review_summary" in p else True), \
-             patch("os.listdir", side_effect=lambda p: ["phase_1"] if "tasks" in p and "phase_1" not in p else []), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p):
-            Phase6BReviewTasks().execute(ctx)
-        assert ctx.state.get("tasks_reviewed") is True
-
-    def test_review_success_inner(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "review tmpl"
-        ctx.format_prompt.return_value = "formatted"
-        summary_exists = [False]
-
-        def run_gemini_side(*a, **kw):
-            summary_exists[0] = True
-            return MagicMock(returncode=0)
-
-        ctx.run_gemini.side_effect = run_gemini_side
-
-        def exists_side(p):
-            if "review_summary" in p:
-                return summary_exists[0]
-            return True
-
-        with patch("os.path.exists", side_effect=exists_side), \
-             patch("os.listdir", side_effect=lambda p: (
-                 ["phase_1"] if ("tasks" in p and "phase_1" not in p) else
-                 ["sub"] if "phase_1" in p and "sub" not in p else
-                 ["t.md"]
-             )), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or ("sub" in p and ".md" not in p)), \
-             patch("builtins.open", mock_open(read_data="task content")):
-            Phase6BReviewTasks().execute(ctx)
-        assert ctx.state.get("tasks_reviewed") is True
 
 
 class TestPhase6CCoverage:

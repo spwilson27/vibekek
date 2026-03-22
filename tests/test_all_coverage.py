@@ -136,7 +136,6 @@ def test_all_phases(
                 instance = phase_cls(workflow.DOCS[0])
             elif phase_cls in (
                 workflow.Phase6CCrossPhaseReview,
-                workflow.Phase6DReorderTasks,
             ):
                 instance = phase_cls(pass_num=1)
             else:
@@ -293,7 +292,6 @@ def test_all_phases_failure(
                 instance = phase_cls(workflow.DOCS[0])
             elif phase_cls in (
                 workflow.Phase6CCrossPhaseReview,
-                workflow.Phase6DReorderTasks,
             ):
                 instance = phase_cls(pass_num=1)
             else:
