@@ -4,13 +4,6 @@ This module reads the project-level ``.workflow.jsonc`` file and exposes
 typed accessors for individual feature flags.  The file uses JSONC format
 (JSON with ``//`` line comments), which is stripped before parsing so that
 standard :mod:`json` can be used.
-
-Example ``.workflow.jsonc``::
-
-    {
-      // Enable Serena MCP server integration for code intelligence.
-      "serena": true
-    }
 """
 
 import os
@@ -57,18 +50,6 @@ def load_config() -> Dict[str, Any]:
     stripped = re.sub(r"(?m)^\s*//[^\n]*", "", raw)  # Only strip // at start of lines
     stripped = re.sub(r",\s*([}\]])", r"\1", stripped)
     return json.loads(stripped)
-
-
-def get_serena_enabled() -> bool:
-    """Return whether the Serena MCP server integration is enabled.
-
-    Reads the ``"serena"`` key from ``.workflow.jsonc``.  Defaults to
-    ``False`` when the key is absent or the config file cannot be loaded.
-
-    :returns: ``True`` if Serena is opted in, ``False`` otherwise.
-    :rtype: bool
-    """
-    return bool(load_config().get("serena", False))
 
 
 def get_rag_enabled() -> bool:
@@ -119,7 +100,6 @@ def get_config_defaults() -> Dict[str, Any]:
     * ``backend`` (str) — AI CLI backend (``"gemini"``, ``"claude"``,
       ``"opencode"``, ``"copilot"``, ``"cline"``, ``"aider"``, ``"codex"``, ``"qwen"``).
     * ``model`` (str) — Model name passed through to the AI CLI.
-    * ``ignore_sandbox`` (bool) — Disable sandbox violation checks.
     * ``timeout`` (int) — Timeout in seconds per AI agent invocation.
     * ``retries`` (int) — Max auto-retry attempts per task on failure.
       When a task fails, it is re-queued from its last completed stage
@@ -139,7 +119,7 @@ def get_config_defaults() -> Dict[str, Any]:
     """
     cfg = load_config()
     defaults: Dict[str, Any] = {}
-    for key in ("backend", "model", "ignore_sandbox", "timeout", "retries", "soft_timeout", "context_limit", "idle_timeout"):
+    for key in ("backend", "model", "timeout", "retries", "soft_timeout", "context_limit", "idle_timeout"):
         if key in cfg:
             defaults[key] = cfg[key]
     return defaults

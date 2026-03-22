@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Epic/Requirement Mappings",
+  "description": "Epic definitions mapping features to requirements (Phase 13)",
+  "type": "object",
+  "properties": {
+    "epics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "epic_id": {
+            "type": "string",
+            "description": "Unique identifier for the epic"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "phase_number": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "requirement_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "All requirement IDs covered by this epic"
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "requirement_ids": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["name", "requirement_ids"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["epic_id", "name", "phase_number", "requirement_ids", "features"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["epics"],
+  "additionalProperties": false
+}

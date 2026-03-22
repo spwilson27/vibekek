@@ -233,7 +233,7 @@ class TestFixTaskMappingsGeneration(unittest.TestCase):
 
             ctx = _mock_ctx()
 
-            def fake_run_ai(prompt, allowed_files=None, sandbox=False):
+            def fake_run_ai(prompt, allowed_files=None):
                 with open(os.path.join(se_dir, "02_fix.md"), "w") as f:
                     f.write("# Task\n## Covered Requirements\n- [Z-REQ-002]\n")
                 return types.SimpleNamespace(returncode=0, stdout="", stderr="")

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Ordered Requirements",
+  "description": "Requirements ordered for implementation, prioritizing E2E testability (Phase 12)",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ordering_strategy": {
+      "type": "string",
+      "description": "Description of the ordering strategy used (e.g. 'E2E-first topological')"
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Z0-9_]+-REQ-[0-9]+$"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["functional", "non-functional", "constraint", "interface"]
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["must", "should", "could"]
+          },
+          "source_documents": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "order": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "depends_on_requirements": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "IDs of requirements that must be implemented before this one"
+          },
+          "e2e_testable": {
+            "type": "boolean",
+            "description": "Whether this requirement can be validated by an E2E test"
+          }
+        },
+        "required": ["id", "title", "description", "order", "e2e_testable"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["version", "ordering_strategy", "requirements"],
+  "additionalProperties": false
+}

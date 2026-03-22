@@ -48,7 +48,6 @@ class TestDagRetryLogic:
             patch('workflow_lib.executor.process_task', side_effect=fake_process_task),
             patch('workflow_lib.executor.merge_task', side_effect=fake_merge_task),
             patch('workflow_lib.config.get_config_defaults', return_value={"retries": retries}),
-            patch('workflow_lib.executor.get_serena_enabled', return_value=False),
             patch('workflow_lib.executor.get_dev_branch', return_value="dev"),
             patch('workflow_lib.executor.get_pivot_remote', return_value="origin"),
             patch('workflow_lib.executor.get_gitlab_remote_url', return_value=None),
@@ -73,7 +72,6 @@ class TestDagRetryLogic:
                     jobs=1,
                     presubmit_cmd="python /harness.py presubmit",
                     backend="claude",
-                    serena_enabled=False,
                     cache_lock=threading.Lock(),
                     dashboard=dashboard,
                 )
@@ -164,7 +162,6 @@ class TestMergeRetryDuringShutdown:
             patch('workflow_lib.executor.process_task', return_value=True),
             patch('workflow_lib.executor.merge_task', side_effect=fake_merge_task),
             patch('workflow_lib.config.get_config_defaults', return_value={"retries": 3}),
-            patch('workflow_lib.executor.get_serena_enabled', return_value=False),
             patch('workflow_lib.executor.get_dev_branch', return_value="dev"),
             patch('workflow_lib.executor.get_pivot_remote', return_value="origin"),
             patch('workflow_lib.executor.get_gitlab_remote_url', return_value=None),
@@ -189,7 +186,6 @@ class TestMergeRetryDuringShutdown:
                     jobs=1,
                     presubmit_cmd="python /harness.py presubmit",
                     backend="claude",
-                    serena_enabled=False,
                     cache_lock=threading.Lock(),
                     dashboard=dashboard,
                 )

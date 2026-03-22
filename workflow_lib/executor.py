@@ -44,7 +44,7 @@ from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR, REPLAN_STATE_FILE, STATE_
 from .context import ProjectContext, fit_lines_to_budget, _count_tokens
 from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state, load_dags, get_tasks_dir
-from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config, get_rag_enabled, get_sccache_config, get_sccache_dist_config, get_context_limit, set_agent_context_limit
+from .config import get_dev_branch, get_pivot_remote, get_docker_config, get_rag_enabled, get_sccache_config, get_sccache_dist_config, get_context_limit, set_agent_context_limit
 from .discord import notify_failure
 from .dashboard import make_dashboard
 from .agent_pool import AgentPoolManager, QUOTA_RETURN_CODE, QUOTA_PATTERNS, QUOTA_TRANSIENT_PATTERNS, parse_quota_reset_seconds
@@ -1315,56 +1315,6 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
     return False
 
 
-def rebuild_serena_cache(source_dir: str, root_dir: str, cache_lock: threading.Lock, dashboard: Any = None) -> None:
-    """Rebuild the Serena code-intelligence cache and copy it to the main repo.
-
-    Starts ``serena-mcp-server`` in *source_dir* (which has ``dev`` checked
-    out) to trigger index generation, waits up to 120 seconds for it to
-    finish, then atomically replaces ``.serena/cache/`` in *root_dir* with the
-    newly generated cache.
-
-    :param source_dir: Path to the directory where Serena should build its
-        index.  Usually a temporary merge clone.
-    :type source_dir: str
-    :param root_dir: Absolute path to the project root that will receive the
-        updated cache.
-    :type root_dir: str
-    :param cache_lock: Lock used to serialise concurrent cache updates across
-        worker threads.
-    :type cache_lock: threading.Lock
-    """
-    cache_src = os.path.join(source_dir, ".serena", "cache")
-    cache_dst = os.path.join(root_dir, ".serena", "cache")
-
-    _log = dashboard.log if dashboard else print
-    _log(f"      [Serena] Re-indexing from {source_dir}...")
-    # Serena indexes on MCP server startup. Start it to trigger indexing, then terminate.
-    serena_proc = subprocess.Popen(
-        ["uvx", "--from", "serena", "serena-mcp-server",
-         "--project-from-cwd", "--mode", "no-onboarding"],
-        cwd=source_dir,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    try:
-        serena_proc.wait(timeout=120)
-    except subprocess.TimeoutExpired:
-        serena_proc.terminate()
-        serena_proc.wait()
-
-    if not os.path.isdir(cache_src):
-        _log(f"      [Serena] Warning: cache not found at {cache_src} after indexing. Skipping.")
-        return
-
-    with cache_lock:
-        tmp_dst = cache_dst + ".tmp"
-        if os.path.isdir(tmp_dst):
-            shutil.rmtree(tmp_dst)
-        shutil.copytree(cache_src, tmp_dst)
-        if os.path.isdir(cache_dst):
-            shutil.rmtree(cache_dst)
-        os.rename(tmp_dst, cache_dst)
-    _log(f"      [Serena] Cache updated at {cache_dst}.")
-
 
 
 def _push_branch_to_origin(
@@ -1584,7 +1534,6 @@ def run_impl_stage(
     full_task_id: str,
     branch_name: str,
     backend: str = "gemini",
-    serena: bool = False,
     dashboard: Any = None,
     model: Optional[str] = None,
     dev_branch: str = "dev",
@@ -1628,16 +1577,6 @@ def run_impl_stage(
             "Impl", full_task_id, branch_name, clone_remote, checkout_ref,
             docker_config, dashboard, _log, sccache_config, sccache_dist_config,
         )
-
-        if serena:
-            serena_cache_src = os.path.join(root_dir, ".serena", "cache")
-            serena_cache_dst = os.path.join(tmpdir, ".serena", "cache")
-            if os.path.isdir(serena_cache_src) and not os.path.isdir(serena_cache_dst):
-                shutil.copytree(serena_cache_src, serena_cache_dst)
-            mcp_src = os.path.join(root_dir, ".mcp.json")
-            mcp_dst = os.path.join(tmpdir, ".mcp.json")
-            if os.path.exists(mcp_src) and not os.path.exists(mcp_dst):
-                shutil.copy2(mcp_src, mcp_dst)
 
         context = {
             "phase_filename": phase_id,
@@ -1693,7 +1632,6 @@ def run_review_stage(
     full_task_id: str,
     branch_name: str,
     backend: str = "gemini",
-    serena: bool = False,
     dashboard: Any = None,
     model: Optional[str] = None,
     dev_branch: str = "dev",
@@ -1780,7 +1718,6 @@ def run_validate_stage(
     branch_name: str,
     presubmit_cmd: str,
     backend: str = "gemini",
-    serena: bool = False,
     dashboard: Any = None,
     model: Optional[str] = None,
     dev_branch: str = "dev",
@@ -1914,7 +1851,6 @@ def process_task(
     presubmit_cmd: str,
     backend: str = "gemini",
     max_retries: int = 3,
-    serena: bool = False,
     dashboard: Any = None,
     model: Optional[str] = None,
     dev_branch: str = "dev",
@@ -2003,7 +1939,6 @@ def process_task(
         full_task_id=full_task_id,
         branch_name=branch_name,
         backend=backend,
-        serena=serena,
         dashboard=dashboard,
         model=model,
         dev_branch=dev_branch,
@@ -2184,7 +2119,7 @@ def _commit_state_in_clone(tmpdir: str, workflow_state: Optional[Dict], _log: An
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, serena: bool = False, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, workflow_state: Optional[Dict] = None, agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False, docker_config: Optional[Any] = None) -> bool:
+def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "gemini", max_retries: int = 3, cache_lock: Optional[threading.Lock] = None, dashboard: Any = None, model: Optional[str] = None, dev_branch: str = "dev", remote_url: Optional[str] = None, workflow_state: Optional[Dict] = None, agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False, docker_config: Optional[Any] = None) -> bool:
     """Squash-merge a task branch into ``dev`` via a temporary clone and verify.
 
     Steps performed:
@@ -2197,8 +2132,7 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
     6. If conflicts remain, spawn a **Merge** AI agent up to *max_retries*
        times to resolve them manually.
     7. Push ``dev`` to the local origin on success.
-    8. Optionally rebuild the Serena cache (when *serena* is ``True``).
-    9. Remove the temporary clone.
+    8. Remove the temporary clone.
 
     :param root_dir: Absolute path to the project root git repository.
     :type root_dir: str
@@ -2213,13 +2147,6 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
     :param max_retries: Maximum number of merge/verify attempts before giving
         up.  Defaults to ``3``.
     :type max_retries: int
-    :param cache_lock: Lock for serialising Serena cache rebuilds across worker
-        threads.  Required when *serena* is ``True``.
-    :type cache_lock: Optional[threading.Lock]
-    :param serena: When ``True`` and the merge push succeeded, trigger a Serena
-        cache rebuild so subsequent tasks have an up-to-date code index.
-        Defaults to ``False``.
-    :type serena: bool
     :param cleanup: When ``True``, remove the temporary clone even on failure.
         Defaults to ``False``.
     :type cleanup: bool
@@ -2404,9 +2331,6 @@ def merge_task(root_dir: str, task_id: str, presubmit_cmd: str, backend: str = "
         if _container_name:
             _stop_task_container(_container_name, _log)
 
-        if push_succeeded and serena and cache_lock is not None:
-            rebuild_serena_cache(tmpdir, root_dir, cache_lock, dashboard=dashboard)
-
         # Reclaim ownership before cleanup (host path only)
         if tmpdir and not _container_name:
             _reclaim_dir_ownership(tmpdir, _log)
@@ -2567,12 +2491,6 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
     Workflow state (completed/merged tasks) is persisted after every successful
     merge so the run can be resumed after an interruption.
 
-    Serena integration:
-
-    * If ``.workflow.jsonc`` has ``"serena": true``, a ``.mcp.json`` is copied
-      from the template if missing, and the Serena cache is bootstrapped before
-      the first task runs.
-
     Termination conditions:
 
     * All tasks completed and merged → clean exit.
@@ -2607,7 +2525,6 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
     if not sccache_dist_ok:
         print("[!] Warning: sccache-dist scheduler failed to auto-start")
 
-    serena_enabled = get_serena_enabled()
     dev_branch = get_dev_branch()
 
     # Ensure dev branch exists
@@ -2622,12 +2539,12 @@ def execute_dag(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str
     with make_dashboard(log_file=log_file) as dashboard:
         _active_dashboard = dashboard
         try:
-            _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, serena_enabled, cache_lock, dashboard, model=model, dev_branch=dev_branch, agent_pool=agent_pool, cleanup=cleanup)
+            _execute_dag_inner(root_dir, master_dag, state, jobs, presubmit_cmd, backend, cache_lock, dashboard, model=model, dev_branch=dev_branch, agent_pool=agent_pool, cleanup=cleanup)
         finally:
             _active_dashboard = None
 
 
-def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str, serena_enabled: bool, cache_lock: threading.Lock, dashboard: Any, model: Optional[str] = None, dev_branch: str = "dev", agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False) -> None:
+def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: Dict[str, Any], jobs: int, presubmit_cmd: str, backend: str, cache_lock: threading.Lock, dashboard: Any, model: Optional[str] = None, dev_branch: str = "dev", agent_pool: Optional[AgentPoolManager] = None, cleanup: bool = False) -> None:
     """Inner DAG execution loop run inside the dashboard context manager."""
     pivot_remote = get_pivot_remote()
     try:
@@ -2706,31 +2623,6 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
         total_files = len(checked_files)
         dashboard.log(f"   All {total_files} copy_files sources validated across {len(all_docker_configs)} config(s).")
 
-    if serena_enabled:
-        # Ensure .mcp.json exists at project root (copy from template if missing)
-        mcp_dst = os.path.join(root_dir, ".mcp.json")
-        if not os.path.exists(mcp_dst):
-            mcp_template = os.path.join(TOOLS_DIR, "templates", ".mcp.json")
-            if os.path.exists(mcp_template):
-                shutil.copy2(mcp_template, mcp_dst)
-                dashboard.log(f"=> [Serena] Copied .mcp.json template to {mcp_dst}")
-
-        # Bootstrap Serena cache from dev if not present
-        serena_cache = os.path.join(root_dir, ".serena", "cache")
-        if not os.path.isdir(serena_cache):
-            dashboard.log(f"=> [Serena] No cache found. Bootstrapping index from {dev_branch} branch...")
-            init_clone = tempfile.mkdtemp(prefix="serena_init_")
-            try:
-                subprocess.run(["git", "clone", root_dir, init_clone],
-                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                subprocess.run(["git", "submodule", "update", "--init", "--recursive"],
-                               cwd=init_clone, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                subprocess.run(["git", "checkout", dev_branch],
-                               cwd=init_clone, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                rebuild_serena_cache(init_clone, root_dir, cache_lock, dashboard=dashboard)
-            finally:
-                shutil.rmtree(init_clone, ignore_errors=True)
-
     active_tasks: set = set()
     failed_tasks: set = set()
     task_attempts: Dict[str, int] = {}  # task_id -> number of attempts so far
@@ -2776,7 +2668,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                 dashboard.set_agent(task_id, "Merge", "retrying", f"Attempt {attempt}/{max_task_retries + 1}")
             mf = merge_executor.submit(
                 merge_task, root_dir, task_id, _effective_presubmit(task_id), backend,
-                cache_lock=cache_lock, serena=serena_enabled, dashboard=dashboard,
+                cache_lock=cache_lock, dashboard=dashboard,
                 model=model, dev_branch=dev_branch, remote_url=remote_url,
                 workflow_state=pending_state, agent_pool=agent_pool, cleanup=cleanup,
                 docker_config=docker_config,
@@ -2808,7 +2700,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                     dashboard.log(f"   -> [Retry] Task {task_id} attempt {attempt_num}/{max_task_retries + 1} from stage {_starting!r}")
                 future = executor.submit(
                     process_task, root_dir, task_id, _effective_presubmit(task_id), backend,
-                    serena=serena_enabled, dashboard=dashboard, model=model,
+                    dashboard=dashboard, model=model,
                     dev_branch=dev_branch, remote_url=remote_url,
                     agent_pool=agent_pool, cleanup=cleanup, docker_config=docker_config,
                     starting_stage=_starting,

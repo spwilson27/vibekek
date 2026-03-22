@@ -29,10 +29,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # ---------------------------------------------------------------------------
 
 PROMPT_NAMES = [
-    "research_market.md",
-    "research_competitive_analysis.md",
-    "research_technical_analysis.md",
-    "research_user_research.md",
     "spec_prd.md",
     "spec_tas.md",
     "spec_mcp_design.md",
@@ -49,17 +45,20 @@ PROMPT_NAMES = [
     "conflict_resolution_review.md",
     "final_review.md",
     "extract_requirements.md",
+    "filter_meta_requirements.md",
     "merge_requirements.md",
+    "deduplicate_requirements.md",
     "order_requirements.md",
     "phases.md",
-    "shared_components.md",
-    "interface_contracts.md",
-    "integration_test_plan.md",
+    "e2e_interfaces.md",
+    "feature_gates.md",
+    "red_green_tasks.md",
+    "review_red_green_tasks.md",
+    "cross_phase_review.md",
+    "pre_init_task.md",
     "group_tasks.md",
     "tasks.md",
     "review_tasks_in_phase.md",
-    "cross_phase_review.md",
-    "reorder_tasks.md",
     "dag_tasks.md",
     "dag_tasks_review.md",
     "implement_task.md",
@@ -94,35 +93,29 @@ def _create_tools_layout(root: Path) -> Path:
     for name in PROMPT_NAMES:
         (tools / "prompts" / name).write_text(STUB_PROMPT)
 
-    # verify.py is imported by constants.py; the real file must
-    # be reachable.  We just need it to exist at TOOLS_DIR level.
-    # constants.py does: sys.path.insert(0, TOOLS_DIR); from verify import …
-    # The real file lives next to this test suite, so we symlink it.
-    real_verify = Path(__file__).parent.parent / "verify.py"
-    if real_verify.exists():
-        link = tools / "verify.py"
-        if not link.exists():
-            link.symlink_to(real_verify)
-
     return tools
 
 
-def _make_agent(side_effects: dict):
+def _make_agent(side_effects: dict, json_content: str = "{}"):
     """Return a run_gemini replacement that creates stub files on demand.
 
     *side_effects* maps phase-name keywords to extra content to write.
     The default behaviour creates an empty file at every non-directory
-    allowed_file path.
+    allowed_file path.  Files ending in ``.json`` get *json_content*
+    instead of a markdown stub.
     """
 
-    def _run_gemini(self, full_prompt, allowed_files=None, sandbox=False):
+    def _run_gemini(self, full_prompt, allowed_files=None):
         if allowed_files:
             for f in allowed_files:
                 if isinstance(f, str) and not f.endswith(os.sep):
                     os.makedirs(os.path.dirname(os.path.abspath(f)), exist_ok=True)
                     if not os.path.exists(f):
                         # write minimal but valid stub content
-                        content = "# Generated stub\n"
+                        if f.endswith(".json"):
+                            content = json_content
+                        else:
+                            content = "# Generated stub\n"
                         for kw, extra in side_effects.items():
                             if kw in full_prompt:
                                 content = extra
@@ -178,10 +171,11 @@ class TestPlanningE2E:
         # Review summary content (non-empty so phases proceed)
         review_stub = "# Review\nAll good.\n"
 
+        req_json_content = json.dumps({"requirements": [{"id": "PRD-001", "title": "Core feature", "status": "active"}]})
         agent = _make_agent({
             "grouping": sub_epics_json,   # group_tasks prompt → JSON
             "review": review_stub,
-        })
+        }, json_content=req_json_content)
 
         with patch("workflow_lib.constants.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.constants.ROOT_DIR", str(tmp_path)), \
@@ -194,9 +188,6 @@ class TestPlanningE2E:
              patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
              patch("workflow_lib.context.ProjectContext.run_gemini", agent), \
              patch("workflow_lib.context.ProjectContext.stage_changes"), \
-             patch("workflow_lib.context.ProjectContext.verify_changes"), \
-             patch("workflow_lib.context.ProjectContext.get_workspace_snapshot",
-                   return_value={}), \
              patch("subprocess.run", return_value=MagicMock(returncode=0,
                                                             stdout="", stderr="")), \
              patch("builtins.input", return_value="c"):
@@ -206,63 +197,52 @@ class TestPlanningE2E:
 
             ctx = ProjectContext(str(tmp_path))
 
-            # Pre-populate the requirements.md that Phase4BScopeGate reads
-            req_file = tmp_path / "requirements.md"
-            req_file.write_text("# Requirements\n## Active\n### **[PRD-001]** Core feature\n")
+            # Pre-populate the requirements.json that Phase11ScopeGate reads
+            plan_dir = tmp_path / "docs" / "plan"
+            plan_dir.mkdir(parents=True, exist_ok=True)
+            req_json = {"requirements": [{"id": "PRD-001", "title": "Core feature", "status": "active"}]}
+            (plan_dir / "requirements.json").write_text(json.dumps(req_json))
 
-            # Pre-populate ordered_requirements.md so Phase4COrderRequirements
-            # can shutil.move it over requirements.md
-            (tmp_path / "ordered_requirements.md").write_text(
-                "# Ordered Requirements\n### **[PRD-001]** Core feature\n"
-            )
+            # Pre-populate requirements_ordered.json for Phase12OrderRequirements
+            (plan_dir / "requirements_ordered.json").write_text(json.dumps(req_json))
 
-            # For Phase6BreakDownTasks: pre-create the phases dir with one phase file,
-            # and make run_gemini create the grouping JSON + task file correctly.
-            phases_dir = tmp_path / "docs" / "plan" / "phases"
-            phases_dir.mkdir(parents=True, exist_ok=True)
-            (phases_dir / "phase_1.md").write_text("# Phase 1\n")
+            # Pre-populate epic_mappings.json for Phase13GenerateEpics
+            (plan_dir / "epic_mappings.json").write_text(json.dumps({"Phase 1": {"Core": ["PRD-001"]}}))
 
+            # Pre-populate e2e_interfaces.md for Phase14E2EInterfaces
+            (plan_dir / "e2e_interfaces.md").write_text("# E2E Interfaces\n")
+
+            # Pre-populate feature_gates.md for Phase15FeatureGates
+            (plan_dir / "feature_gates.md").write_text("# Feature Gates\n")
+
+            # For Phase16RedGreenTasks: pre-create the tasks dir with one phase,
+            # and task files with JSON sidecars.
             tasks_dir = tmp_path / "docs" / "plan" / "tasks"
             tasks_dir.mkdir(parents=True, exist_ok=True)
 
-            # Pre-create grouping JSON so the "already grouped" path is taken
-            grouping_file = tasks_dir / "phase_1_grouping.json"
-            grouping_file.write_text(sub_epics_json)
-
-            # Pre-create the sub-epic task directory and a stub task file
+            # Pre-create phase task directory and stub task files
             se_dir = tasks_dir / "phase_1" / "core_features"
             se_dir.mkdir(parents=True, exist_ok=True)
             (se_dir / "01_implement_core.md").write_text(task_content)
+            (se_dir / "01_implement_core.json").write_text(json.dumps({"id": "01_implement_core", "depends_on": []}))
 
-            # Mark tasks_generated so process_sub_epic skips AI call
-            ctx.state["tasks_generated"] = ["phase_1/core_features"]
+            # Mark tasks as completed so Phase16 skips
+            ctx.state["tasks_completed"] = True
 
-            # Phase6B: pre-create review_summary so inner loop skips
+            # Phase17: pre-create review_summary so inner loop skips
             review_sum = tasks_dir / "phase_1" / "review_summary.md"
             review_sum.parent.mkdir(parents=True, exist_ok=True)
             review_sum.write_text(review_stub)
 
-            # Phase6C pass 1 & 2: pre-create summaries
+            # Phase18 (cross-phase review): pre-create summary
             (tasks_dir / "cross_phase_review_summary_pass_1.md").write_text(review_stub)
-            (tasks_dir / "cross_phase_review_summary_pass_2.md").write_text(review_stub)
-
-            # Phase6D pass 1 & 2: pre-create summaries
-            (tasks_dir / "reorder_tasks_summary_pass_1.md").write_text(review_stub)
-            (tasks_dir / "reorder_tasks_summary_pass_2.md").write_text(review_stub)
 
             # Phase3A conflict resolution: pre-create stub
-            plan_dir = tmp_path / "docs" / "plan"
             (plan_dir / "conflict_resolution.md").write_text("# Conflict Resolution\nNo conflicts.\n")
 
             # Phase3B adversarial review: stub file with no "scope creep" hits
             adversarial_file = (plan_dir / "adversarial_review.md")
             adversarial_file.write_text("# Adversarial Review\nLooks good.\n")
-
-            # Phase5C interface contracts: pre-create stub
-            (plan_dir / "interface_contracts.md").write_text("# Interface Contracts\n")
-
-            # Phase6E integration test plan: pre-create stub
-            (plan_dir / "integration_test_plan.md").write_text("# Integration Test Plan\n")
 
             orc = Orchestrator(ctx)
             orc.run()
@@ -270,12 +250,17 @@ class TestPlanningE2E:
         # All planning state flags should be set
         assert ctx.state.get("final_review_completed") is True
         assert ctx.state.get("requirements_merged") is True
+        assert ctx.state.get("meta_requirements_filtered") is True
+        assert ctx.state.get("requirements_deduplicated") is True
         assert ctx.state.get("scope_gate_passed") is True
         assert ctx.state.get("requirements_ordered") is True
-        assert ctx.state.get("phases_completed") is True
-        assert ctx.state.get("shared_components_completed") is True
+        assert ctx.state.get("epics_completed") is True
+        assert ctx.state.get("e2e_interfaces_completed") is True
+        assert ctx.state.get("feature_gates_completed") is True
         assert ctx.state.get("tasks_completed") is True
         assert ctx.state.get("tasks_reviewed") is True
+        assert ctx.state.get("cross_phase_reviewed") is True
+        assert ctx.state.get("pre_init_task_completed") is True
         assert ctx.state.get("dag_completed") is True
 
     def test_orchestrator_skips_already_completed_phases(self, tmp_path):
@@ -288,23 +273,21 @@ class TestPlanningE2E:
         # Pre-populate all expected artifact files so validation passes
         plan_dir = tmp_path / "docs" / "plan"
         (plan_dir / "specs").mkdir(parents=True, exist_ok=True)
-        (plan_dir / "research").mkdir(parents=True, exist_ok=True)
-        (plan_dir / "phases").mkdir(parents=True, exist_ok=True)
 
         # Create all doc artifacts
         from workflow_lib.constants import DOCS
         for doc in DOCS:
-            folder = "specs" if doc["type"] == "spec" else "research"
-            (plan_dir / folder / f"{doc['id']}.md").write_text(f"# {doc['name']}\nStub.\n")
+            (plan_dir / "specs" / f"{doc['id']}.md").write_text(f"# {doc['name']}\nStub.\n")
 
         # Create phase/task/review artifacts
         (plan_dir / "conflict_resolution.md").write_text("# Stub\n")
         (plan_dir / "adversarial_review.md").write_text("# Stub\n")
-        (plan_dir / "shared_components.md").write_text("# Stub\n")
-        (plan_dir / "interface_contracts.md").write_text("# Stub\n")
-        (plan_dir / "integration_test_plan.md").write_text("# Stub\n")
-        (plan_dir / "phases" / "phase_1.md").write_text("# Phase 1\n")
-        (tmp_path / "requirements.md").write_text("# Requirements\n")
+        req_json = {"requirements": [{"id": "PRD-001", "title": "Core feature", "status": "active"}]}
+        (plan_dir / "requirements.json").write_text(json.dumps(req_json))
+        (plan_dir / "requirements_ordered.json").write_text(json.dumps(req_json))
+        (plan_dir / "epic_mappings.json").write_text(json.dumps({"Phase 1": {"Core": ["PRD-001"]}}))
+        (plan_dir / "e2e_interfaces.md").write_text("# E2E Interfaces\n")
+        (plan_dir / "feature_gates.md").write_text("# Feature Gates\n")
 
         tasks_dir = plan_dir / "tasks" / "phase_1"
         tasks_dir.mkdir(parents=True)
@@ -318,7 +301,6 @@ class TestPlanningE2E:
                    str(tmp_path / ".gen_state.json")), \
              patch("workflow_lib.phases.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.context.ProjectContext.stage_changes"), \
-             patch("workflow_lib.context.ProjectContext.verify_changes"), \
              patch("subprocess.run", return_value=MagicMock(returncode=0,
                                                             stdout="", stderr="")), \
              patch("builtins.input", return_value="c"):
@@ -331,8 +313,7 @@ class TestPlanningE2E:
             # Mark every phase as already done
             for doc in __import__("workflow_lib.constants", fromlist=["DOCS"]).DOCS:
                 ctx.state.setdefault("generated", []).append(doc["id"])
-                if doc["type"] == "spec":
-                    ctx.state.setdefault("fleshed_out", []).append(doc["id"])
+                ctx.state.setdefault("fleshed_out", []).append(doc["id"])
                 ctx.state.setdefault("summarized", []).append(doc["id"])
                 ctx.state.setdefault("extracted_requirements", []).append(doc["id"])
 
@@ -341,19 +322,18 @@ class TestPlanningE2E:
                 "conflict_resolution_completed": True,
                 "adversarial_review_completed": True,
                 "requirements_extracted": True,
+                "meta_requirements_filtered": True,
                 "requirements_merged": True,
+                "requirements_deduplicated": True,
                 "scope_gate_passed": True,
                 "requirements_ordered": True,
-                "phases_completed": True,
-                "shared_components_completed": True,
-                "interface_contracts_completed": True,
+                "epics_completed": True,
+                "e2e_interfaces_completed": True,
+                "feature_gates_completed": True,
                 "tasks_completed": True,
                 "tasks_reviewed": True,
-                "cross_phase_reviewed_pass_1": True,
-                "cross_phase_reviewed_pass_2": True,
-                "tasks_reordered_pass_1": True,
-                "tasks_reordered_pass_2": True,
-                "integration_test_plan_completed": True,
+                "cross_phase_reviewed": True,
+                "pre_init_task_completed": True,
                 "dag_completed": True,
             })
 
@@ -387,7 +367,7 @@ class TestPlanningE2E:
         sub_epics_json = json.dumps({"Core": ["REQ-001"]})
 
         def _tracking_run_gemini(self, full_prompt,
-                                  allowed_files=None, sandbox=False):
+                                  allowed_files=None):
             # Record what type of output is being generated
             if allowed_files:
                 for f in allowed_files:
@@ -409,9 +389,6 @@ class TestPlanningE2E:
              patch("workflow_lib.context.ProjectContext.run_gemini",
                    _tracking_run_gemini), \
              patch("workflow_lib.context.ProjectContext.stage_changes"), \
-             patch("workflow_lib.context.ProjectContext.verify_changes"), \
-             patch("workflow_lib.context.ProjectContext.get_workspace_snapshot",
-                   return_value={}), \
              patch("subprocess.run", return_value=MagicMock(returncode=0,
                                                             stdout="", stderr="")), \
              patch("builtins.input", return_value="c"):
@@ -422,49 +399,40 @@ class TestPlanningE2E:
             ctx = ProjectContext(str(tmp_path))
 
             # Same pre-population as full test
-            req_file = tmp_path / "requirements.md"
-            req_file.write_text("# Requirements\n")
-            (tmp_path / "ordered_requirements.md").write_text("# Ordered\n")
-
-            phases_dir = tmp_path / "docs" / "plan" / "phases"
-            phases_dir.mkdir(parents=True, exist_ok=True)
-            (phases_dir / "phase_1.md").write_text("# Phase 1\n")
+            plan_dir = tmp_path / "docs" / "plan"
+            plan_dir.mkdir(parents=True, exist_ok=True)
+            req_json = {"requirements": [{"id": "PRD-001", "title": "Core feature", "status": "active"}]}
+            (plan_dir / "requirements.json").write_text(json.dumps(req_json))
+            (plan_dir / "requirements_ordered.json").write_text(json.dumps(req_json))
+            (plan_dir / "epic_mappings.json").write_text(json.dumps({"Phase 1": {"Core": ["PRD-001"]}}))
+            (plan_dir / "e2e_interfaces.md").write_text("# E2E Interfaces\n")
+            (plan_dir / "feature_gates.md").write_text("# Feature Gates\n")
 
             tasks_dir = tmp_path / "docs" / "plan" / "tasks"
             tasks_dir.mkdir(parents=True, exist_ok=True)
-            (tasks_dir / "phase_1_grouping.json").write_text(sub_epics_json)
 
             se_dir = tasks_dir / "phase_1" / "core"
             se_dir.mkdir(parents=True, exist_ok=True)
             (se_dir / "01_task.md").write_text(task_content)
-            ctx.state["tasks_generated"] = ["phase_1/core"]
+            (se_dir / "01_task.json").write_text(json.dumps({"id": "01_task", "depends_on": []}))
+            ctx.state["tasks_completed"] = True
 
             (tasks_dir / "phase_1" / "review_summary.md").write_text(review_stub)
-            for suffix in [
-                "cross_phase_review_summary_pass_1.md",
-                "cross_phase_review_summary_pass_2.md",
-                "reorder_tasks_summary_pass_1.md",
-                "reorder_tasks_summary_pass_2.md",
-            ]:
-                (tasks_dir / suffix).write_text(review_stub)
+            (tasks_dir / "cross_phase_review_summary_pass_1.md").write_text(review_stub)
 
-            plan_dir = tmp_path / "docs" / "plan"
             (plan_dir / "conflict_resolution.md").write_text("# Conflict Resolution\nNo conflicts.\n")
             adversarial_file = (plan_dir / "adversarial_review.md")
             adversarial_file.write_text("# Adversarial Review\nLooks good.\n")
-            (plan_dir / "interface_contracts.md").write_text("# Interface Contracts\n")
-            (plan_dir / "integration_test_plan.md").write_text("# Integration Test Plan\n")
 
             orc = Orchestrator(ctx)
             orc.run()
 
-        # Research docs are generated first (4 docs), then specs (9 docs)
-        # Each doc gets Phase1 + Phase2 (specs only) calls
+        # All docs are specs (10 docs), each gets Phase1 + Phase2 calls
         # We can at least verify run_gemini was called for all major phases
         assert ctx.state.get("final_review_completed") is True
         assert ctx.state.get("dag_completed") is True
-        # At minimum, all DOCS (13) had Phase1 calls
-        assert len(executed_phases) >= 13
+        # At minimum, all DOCS (10) had Phase1 calls
+        assert len(executed_phases) >= 10
 
 
 # ---------------------------------------------------------------------------
@@ -513,19 +481,17 @@ class TestImplementationE2E:
         state = {"completed_tasks": [], "merged_tasks": []}
 
         def _fake_process_task(root_dir, task_id, presubmit_cmd,
-                               backend, serena=False, **kwargs):
+                               backend, **kwargs):
             return True
 
         def _fake_merge_task(root_dir, task_id, presubmit_cmd,
-                             backend, cache_lock=None, serena=False, **kwargs):
+                             backend, cache_lock=None, **kwargs):
             return True
 
         with patch("workflow_lib.executor.process_task",
                    side_effect=_fake_process_task), \
              patch("workflow_lib.executor.merge_task",
                    side_effect=_fake_merge_task), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -557,20 +523,18 @@ class TestImplementationE2E:
         completion_order = []
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             completion_order.append(task_id)
             return True
 
         def _fake_merge(root_dir, task_id, presubmit_cmd, backend,
-                        cache_lock=None, serena=False, **kwargs):
+                        cache_lock=None, **kwargs):
             return True
 
         with patch("workflow_lib.executor.process_task",
                    side_effect=_fake_process), \
              patch("workflow_lib.executor.merge_task",
                    side_effect=_fake_merge), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -608,20 +572,18 @@ class TestImplementationE2E:
         processed = []
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             processed.append(task_id)
             return True
 
         def _fake_merge(root_dir, task_id, presubmit_cmd, backend,
-                        cache_lock=None, serena=False, **kwargs):
+                        cache_lock=None, **kwargs):
             return True
 
         with patch("workflow_lib.executor.process_task",
                    side_effect=_fake_process), \
              patch("workflow_lib.executor.merge_task",
                    side_effect=_fake_merge), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -666,8 +628,6 @@ class TestImplementationE2E:
 
         with patch("workflow_lib.executor.process_task", return_value=False), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.get_ready_tasks",
                    side_effect=_get_ready), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
@@ -704,8 +664,6 @@ class TestImplementationE2E:
 
         with patch("workflow_lib.executor.process_task", return_value=True), \
              patch("workflow_lib.executor.merge_task", return_value=False), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.get_ready_tasks",
                    side_effect=_get_ready), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -736,15 +694,13 @@ class TestImplementationE2E:
         processed = []
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             processed.append(task_id)
             return True
 
         with patch("workflow_lib.executor.process_task",
                    side_effect=_fake_process), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value={"phase_1/sub/01_b.md"}), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -771,9 +727,7 @@ class TestImplementationE2E:
 
         state = {"completed_tasks": [], "merged_tasks": []}
 
-        with patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
-             patch("workflow_lib.executor.load_blocked_tasks",
+        with patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
              patch("workflow_lib.executor.process_task") as mock_proc, \
@@ -808,7 +762,7 @@ class TestImplementationE2E:
         lock = threading.Lock()
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             with lock:
                 processed.append(task_id)
             return True
@@ -816,8 +770,6 @@ class TestImplementationE2E:
         with patch("workflow_lib.executor.process_task",
                    side_effect=_fake_process), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -875,7 +827,7 @@ class TestCustomDevBranchE2E:
         state = {"completed_tasks": [], "merged_tasks": []}
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             # Verify the custom dev_branch is passed through
             assert kwargs.get("dev_branch") == custom_branch, (
                 f"Expected dev_branch={custom_branch!r}, got {kwargs.get('dev_branch')!r}"
@@ -883,7 +835,7 @@ class TestCustomDevBranchE2E:
             return True
 
         def _fake_merge(root_dir, task_id, presubmit_cmd, backend,
-                        cache_lock=None, serena=False, **kwargs):
+                        cache_lock=None, **kwargs):
             assert kwargs.get("dev_branch") == custom_branch
             return True
 
@@ -891,8 +843,6 @@ class TestCustomDevBranchE2E:
                    side_effect=_fake_process), \
              patch("workflow_lib.executor.merge_task",
                    side_effect=_fake_merge), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.get_dev_branch",
                    return_value=custom_branch), \
              patch("workflow_lib.executor.load_blocked_tasks",
@@ -936,9 +886,7 @@ class TestCustomDevBranchE2E:
         dag = {}
         state = {"completed_tasks": [], "merged_tasks": []}
 
-        with patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
-             patch("workflow_lib.executor.get_dev_branch",
+        with patch("workflow_lib.executor.get_dev_branch",
                    return_value=custom_branch), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
@@ -971,19 +919,17 @@ class TestCustomDevBranchE2E:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             return True
 
         def _fake_merge(root_dir, task_id, presubmit_cmd, backend,
-                        cache_lock=None, serena=False, **kwargs):
+                        cache_lock=None, **kwargs):
             return True
 
         with patch("workflow_lib.executor.process_task",
                    side_effect=_fake_process), \
              patch("workflow_lib.executor.merge_task",
                    side_effect=_fake_merge), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.get_dev_branch",
                    return_value=custom_branch), \
              patch("workflow_lib.executor.load_blocked_tasks",
@@ -1035,7 +981,7 @@ class TestGracefulShutdownExecutorE2E:
         lock = threading.Lock()
 
         def _slow_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             """Simulate a slow agent. Sets shutdown after starting."""
             if task_id == "phase_1/sub/01_a.md":
                 # Signal shutdown while this task is running
@@ -1048,8 +994,6 @@ class TestGracefulShutdownExecutorE2E:
         with patch("workflow_lib.executor.process_task",
                    side_effect=_slow_process), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -1097,7 +1041,7 @@ class TestGracefulShutdownExecutorE2E:
         lock = threading.Lock()
 
         def _slow_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             if task_id == "phase_1/sub/01_a.md":
                 # Let all 3 tasks get scheduled, then trigger shutdown
                 time.sleep(0.1)
@@ -1110,8 +1054,6 @@ class TestGracefulShutdownExecutorE2E:
         with patch("workflow_lib.executor.process_task",
                    side_effect=_slow_process), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -1159,7 +1101,7 @@ class TestGracefulShutdownExecutorE2E:
         state = {"completed_tasks": [], "merged_tasks": []}
 
         def _process(root_dir, task_id, presubmit_cmd, backend,
-                     serena=False, **kwargs):
+                     **kwargs):
             executor_mod.shutdown_requested = True
             time.sleep(0.1)
             return True
@@ -1167,8 +1109,6 @@ class TestGracefulShutdownExecutorE2E:
         with patch("workflow_lib.executor.process_task",
                    side_effect=_process), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -1826,15 +1766,13 @@ class TestResumeFromPartialStateE2E:
         processed = []
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             processed.append(task_id)
             return True
 
         with patch("workflow_lib.executor.process_task",
                    side_effect=_fake_process), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -1867,8 +1805,6 @@ class TestResumeFromPartialStateE2E:
         }
 
         with patch("workflow_lib.executor.process_task") as mock_proc, \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -1905,7 +1841,7 @@ class TestResumeFromPartialStateE2E:
         lock = threading.Lock()
 
         def _fake_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             with lock:
                 completion_order.append(task_id)
             return True
@@ -1913,8 +1849,6 @@ class TestResumeFromPartialStateE2E:
         with patch("workflow_lib.executor.process_task",
                    side_effect=_fake_process), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -1952,7 +1886,7 @@ class TestResumeFromPartialStateE2E:
         processed_run1 = []
 
         def _process_run1(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             processed_run1.append(task_id)
             return True
 
@@ -1965,8 +1899,6 @@ class TestResumeFromPartialStateE2E:
                    side_effect=_process_run1), \
              patch("workflow_lib.executor.merge_task",
                    side_effect=_merge_run1), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -1985,15 +1917,13 @@ class TestResumeFromPartialStateE2E:
         processed_run2 = []
 
         def _process_run2(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             processed_run2.append(task_id)
             return True
 
         with patch("workflow_lib.executor.process_task",
                    side_effect=_process_run2), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -2039,7 +1969,7 @@ class TestMergeDuringShutdownE2E:
         lock = threading.Lock()
 
         def _slow_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             if task_id == "phase_1/sub/01_a.md":
                 executor_mod.shutdown_requested = True
                 time.sleep(0.2)
@@ -2048,7 +1978,7 @@ class TestMergeDuringShutdownE2E:
             return True
 
         def _track_merge(root_dir, task_id, presubmit_cmd, backend,
-                         max_retries=3, cache_lock=None, serena=False,
+                         max_retries=3, cache_lock=None,
                          dashboard=None, model=None, dev_branch="dev", **kwargs):
             with lock:
                 merged.append(task_id)
@@ -2058,8 +1988,6 @@ class TestMergeDuringShutdownE2E:
                    side_effect=_slow_process), \
              patch("workflow_lib.executor.merge_task",
                    side_effect=_track_merge), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -2103,7 +2031,7 @@ class TestMergeDuringShutdownE2E:
         lock = threading.Lock()
 
         def _slow_process(root_dir, task_id, presubmit_cmd, backend,
-                          serena=False, **kwargs):
+                          **kwargs):
             if task_id == "phase_1/sub/01_a.md":
                 time.sleep(0.1)
                 executor_mod.shutdown_requested = True
@@ -2113,7 +2041,7 @@ class TestMergeDuringShutdownE2E:
             return True
 
         def _track_merge(root_dir, task_id, presubmit_cmd, backend,
-                         max_retries=3, cache_lock=None, serena=False,
+                         max_retries=3, cache_lock=None,
                          dashboard=None, model=None, dev_branch="dev", **kwargs):
             with lock:
                 merged.append(task_id)
@@ -2123,8 +2051,6 @@ class TestMergeDuringShutdownE2E:
                    side_effect=_slow_process), \
              patch("workflow_lib.executor.merge_task",
                    side_effect=_track_merge), \
-             patch("workflow_lib.executor.get_serena_enabled",
-                   return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
@@ -2219,8 +2145,6 @@ class TestMergeDuringShutdownE2E:
                        os.path.join(root, ".tools")), \
                  patch("workflow_lib.executor.get_project_context",
                        return_value="test context"), \
-                 patch("workflow_lib.executor.get_serena_enabled",
-                       return_value=False), \
                  patch("workflow_lib.executor.get_gitlab_remote_url",
                        return_value="https://example.com/repo.git"), \
                  patch("subprocess.run") as mock_run:

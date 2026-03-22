@@ -212,31 +212,9 @@ class Orchestrator:
     def run(self) -> None:
         """Run the full planning workflow from start to finish.
 
-        Phases are executed in the following order:
-
-        1. **Phase 1** — Generate each planning document (research + specs).
-        2. **Phase 2** — Flesh out each spec document section by section.
-        2b. **Phase 2B** — Summarize each document for compact context carriage.
-        3. **Phase 3** — Final holistic review of all documents.
-        4. **Phase 3A** — Conflict resolution between documents.
-        5. **Phase 3B** — Adversarial review to stress-test the plan.
-        6. **Phase 4A** — Extract requirements from each document.
-        7. **Phase 4B** — Merge requirements into a master list, then scope gate.
-        8. **Phase 4C** — Order requirements by priority/dependency.
-        9. **Phase 5** — Generate implementation epics.
-        10. **Phase 5B** — Identify and document shared components.
-        11. **Phase 5C** — Define interface contracts for shared components.
-        12. **Phase 6** — Break epics into concrete tasks.
-        13. **Phase 6B** — Review tasks for completeness.
-        14. **Phase 6C** × 2 — Cross-phase review (two passes).
-        15. **Phase 6D** × 2 — Validate task ordering (two passes).
-        16. **Phase 6E** — Validate depends_on metadata for DAG generation.
-        17. **Phase 6F** — Generate integration test plan.
-        18. **Phase 7A** — Generate per-phase dependency DAGs.
-
-        The AI runner ignore file is backed up before the run and restored in a
-        ``finally`` block so that the workspace is always returned to a clean
-        state regardless of errors.
+        Phases 1-20 are executed in sequence (see :meth:`_run_phases` for
+        the complete ordering).  Signal handlers are installed for graceful
+        Ctrl-C handling.
 
         :raises SystemExit: Propagated from :meth:`run_phase_with_retry` if any
             phase exhausts its retry budget.
@@ -259,82 +237,123 @@ class Orchestrator:
             self._log(f"[!] {len(missing)} prompt file(s) missing from {self.ctx.prompts_dir}. Aborting.")
             sys.exit(1)
 
-        # Phase 1, 2, and 2B for each document
+        # Phase 1: Generate each spec document sequentially (each gets prior docs as context)
         for doc in DOCS:
             self.run_phase_with_retry(Phase1GenerateDoc(doc))
             expected = self.ctx.get_document_path(doc)
             self._validate_artifacts([expected], f"Phase1/{doc['id']}")
 
+        # Phase 2: Flesh out each spec document (parallel)
+        for doc in DOCS:
             self.run_phase_with_retry(Phase2FleshOutDoc(doc))
+
+        # Phase 3: Summarize each document (parallel)
+        for doc in DOCS:
             self.run_phase_with_retry(Phase2BSummarizeDoc(doc))
 
+        # Phase 4: Final holistic review
         self.run_phase_with_retry(Phase3FinalReview())
+
+        # Phase 5: Conflict resolution
         self.run_phase_with_retry(Phase3AConflictResolution())
         self._validate_artifacts(
             [os.path.join(self.ctx.plan_dir, "conflict_resolution.md")],
-            "Phase3A"
+            "Phase5"
         )
+
+        # Phase 6: Adversarial review
         self.run_phase_with_retry(Phase3BAdversarialReview())
         self._validate_artifacts(
             [os.path.join(self.ctx.plan_dir, "adversarial_review.md")],
-            "Phase3B"
+            "Phase6"
         )
 
+        # Phase 7: Extract requirements from each doc (parallel, JSON output)
         if not self.ctx.state.get("requirements_extracted", False):
             for doc in DOCS:
-                self.run_phase_with_retry(Phase4AExtractRequirements(doc))
+                self.run_phase_with_retry(Phase7ExtractRequirements(doc))
             self.ctx.state["requirements_extracted"] = True
             self.ctx.save_state()
 
-        self.run_phase_with_retry(Phase4BMergeRequirements())
+        # Phase 8: Filter meta requirements (parallel per doc)
+        if not self.ctx.state.get("meta_requirements_filtered", False):
+            for doc in DOCS:
+                self.run_phase_with_retry(Phase8FilterMetaRequirements(doc))
+            self.ctx.state["meta_requirements_filtered"] = True
+            self.ctx.save_state()
+
+        # Phase 9: Merge requirements into requirements.json
+        self.run_phase_with_retry(Phase9MergeRequirements())
         self._validate_artifacts(
-            [os.path.join(self.ctx.root_dir, "docs/plan/requirements.md")],
-            "Phase4B"
+            [os.path.join(self.ctx.plan_dir, "requirements.json")],
+            "Phase9"
         )
-        self.run_phase_with_retry(Phase4BScopeGate())
-        self.run_phase_with_retry(Phase4COrderRequirements())
-        self.run_phase_with_retry(Phase5GenerateEpics())
+
+        # Phase 10: Deduplicate requirements
+        self.run_phase_with_retry(Phase10DeduplicateRequirements())
+
+        # Phase 11: Scope Gate (human review)
+        self.run_phase_with_retry(Phase11ScopeGate())
+
+        # Phase 12: Order requirements (E2E-first)
+        self.run_phase_with_retry(Phase12OrderRequirements())
         self._validate_artifacts(
-            [os.path.join(self.ctx.plan_dir, "phases")],
-            "Phase5"
+            [os.path.join(self.ctx.plan_dir, "requirements_ordered.json")],
+            "Phase12"
         )
-        self.run_phase_with_retry(Phase5BSharedComponents())
+
+        # Phase 13: Generate epic/requirement mappings (JSON)
+        self.run_phase_with_retry(Phase13GenerateEpics())
         self._validate_artifacts(
-            [os.path.join(self.ctx.plan_dir, "shared_components.md")],
-            "Phase5B"
+            [os.path.join(self.ctx.plan_dir, "epic_mappings.json")],
+            "Phase13"
         )
-        self.run_phase_with_retry(Phase5CInterfaceContracts())
+
+        # Phase 14: E2E interface definitions (single agent)
+        self.run_phase_with_retry(Phase14E2EInterfaces())
         self._validate_artifacts(
-            [os.path.join(self.ctx.plan_dir, "interface_contracts.md")],
-            "Phase5C"
+            [os.path.join(self.ctx.plan_dir, "e2e_interfaces.md")],
+            "Phase14"
         )
-        self.run_phase_with_retry(Phase6BreakDownTasks())
+
+        # Phase 15: Feature gates (single agent)
+        self.run_phase_with_retry(Phase15FeatureGates())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "feature_gates.md")],
+            "Phase15"
+        )
+
+        # Phase 16: Red/Green task breakdown (parallel per phase)
+        self.run_phase_with_retry(Phase16RedGreenTasks())
         self._validate_artifacts(
             [os.path.join(self.ctx.plan_dir, "tasks")],
-            "Phase6"
-        )
-        self.run_phase_with_retry(Phase6AFixupValidation())
-        self.run_phase_with_retry(Phase6BReviewTasks())
-        self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=1))
-        self.run_phase_with_retry(Phase6DReorderTasks(pass_num=1))
-        self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=2))
-        self.run_phase_with_retry(Phase6DReorderTasks(pass_num=2))
-        self.run_phase_with_retry(Phase6EDependsOnValidation())
-        self.run_phase_with_retry(Phase6EIntegrationTestPlan())
-        self._validate_artifacts(
-            [os.path.join(self.ctx.plan_dir, "integration_test_plan.md")],
-            "Phase6E"
+            "Phase16"
         )
 
-        # DAG Generation
+        # Phase 17: Review Red/Green tasks (parallel per phase)
+        if not self.ctx.state.get("tasks_reviewed", False):
+            tasks_dir = os.path.join(self.ctx.plan_dir, "tasks")
+            if os.path.isdir(tasks_dir):
+                phase_dirs = sorted([
+                    d for d in os.listdir(tasks_dir)
+                    if os.path.isdir(os.path.join(tasks_dir, d)) and d.startswith("phase_")
+                ])
+                for phase_id in phase_dirs:
+                    self.run_phase_with_retry(Phase17ReviewRedGreenTasks(phase_id))
+            self.ctx.state["tasks_reviewed"] = True
+            self.ctx.save_state()
+
+        # Phase 18: Cross-phase review (single pass)
+        if not self.ctx.state.get("cross_phase_reviewed", False):
+            self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=1))
+            self.ctx.state["cross_phase_reviewed"] = True
+            self.ctx.save_state()
+
+        # Phase 19: Pre-Init task generation
+        self.run_phase_with_retry(Phase19PreInitTask())
+
+        # Phase 20: DAG generation
         self.run_phase_with_retry(Phase7ADAGGeneration())
-
-        # Harness Generation
-        self.run_phase_with_retry(Phase8GenerateHarness())
-        self._validate_artifacts(
-            [os.path.join(self.ctx.root_dir, "harness.py")],
-            "Phase8"
-        )
 
         self._log("Project generation orchestration complete.")
 

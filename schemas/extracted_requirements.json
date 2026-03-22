@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Extracted Requirements",
+  "description": "Per-document requirement extraction output (Phase 7)",
+  "type": "object",
+  "properties": {
+    "source_document": {
+      "type": "string",
+      "description": "ID of the source spec document"
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Z0-9_]+-REQ-[0-9]+$",
+            "description": "Requirement ID in format SOURCE-REQ-NNN"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 5
+          },
+          "description": {
+            "type": "string",
+            "minLength": 30
+          },
+          "category": {
+            "type": "string",
+            "enum": ["functional", "non-functional", "constraint", "interface"]
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["must", "should", "could"]
+          },
+          "source_section": {
+            "type": "string",
+            "description": "Section header in source document where this requirement originates"
+          }
+        },
+        "required": ["id", "title", "description", "category", "priority", "source_section"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["source_document", "requirements"],
+  "additionalProperties": false
+}

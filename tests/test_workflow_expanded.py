@@ -13,9 +13,9 @@ import workflow
 from workflow import (
     AIRunner, GeminiRunner, ClaudeRunner, CopilotRunner,
     ProjectContext, BasePhase, Phase1GenerateDoc, Phase2FleshOutDoc,
-    Phase3FinalReview, Phase3BAdversarialReview, Phase4AExtractRequirements,
-    Phase4BMergeRequirements, Phase4BScopeGate, Phase4COrderRequirements,
-    Phase5GenerateEpics, Phase5BSharedComponents, Phase6BreakDownTasks,
+    Phase3FinalReview, Phase3BAdversarialReview, Phase7ExtractRequirements,
+    Phase9MergeRequirements, Phase11ScopeGate, Phase12OrderRequirements,
+    Phase13GenerateEpics, Phase6BreakDownTasks,
     Phase6BReviewTasks, Phase6CCrossPhaseReview, Phase6DReorderTasks,
     Phase7ADAGGeneration, Orchestrator,
     Logger, run_ai_command, load_dags, get_ready_tasks, process_task, merge_task, execute_dag,
@@ -206,21 +206,13 @@ def test_project_context_stage_changes(mock_ctx):
         mock_ctx.stage_changes(["file1.txt"])
         mock_run.assert_called_once()
 
-def test_project_context_verify_changes_fail(mock_ctx):
-    with patch.object(mock_ctx, 'get_workspace_snapshot') as mock_snap:
-        mock_snap.return_value = {"/fake/root/unauthorized.txt": 2}
-        with pytest.raises(SystemExit):
-            mock_ctx.verify_changes({"/fake/root/unauthorized.txt": 1}, ["/fake/root/allowed.txt"])
-
 def test_project_context_run_ai(mock_ctx):
-    with patch.object(mock_ctx, 'get_workspace_snapshot', return_value={}), \
-         patch.object(mock_ctx.runner, 'run') as mock_run, \
-         patch.object(mock_ctx, 'verify_changes'), \
+    with patch.object(mock_ctx.runner, 'run') as mock_run, \
          patch.object(mock_ctx, 'strip_thinking_tags'), \
          patch.object(mock_ctx, '_write_last_failed_command'):
         mock_res = MagicMock(returncode=0)
         mock_run.return_value = mock_res
-        
+
         res = mock_ctx.run_ai("prompt", allowed_files=["file1"])
         assert res.returncode == 0
 
@@ -284,16 +276,6 @@ def test_save_headers_creates_sidecar(tmp_path):
     sidecar = specs_dir / "my_spec_headers.json"
     assert sidecar.exists()
     assert json.loads(sidecar.read_text()) == result
-
-def test_get_headers_path_research(tmp_path):
-    """get_headers_path uses 'research' folder for research docs."""
-    from workflow_lib.context import ProjectContext
-    ctx = ProjectContext.__new__(ProjectContext)
-    ctx.plan_dir = str(tmp_path)
-    doc = {"id": "market", "type": "research"}
-    path = ctx.get_headers_path(doc)
-    assert "research" in path
-    assert path.endswith("market_headers.json")
 
 def test_parse_markdown_headers_no_doc(tmp_path):
     """Without doc param, parse_markdown_headers always parses markdown."""
@@ -515,9 +497,7 @@ def test_execute_dag():
     with patch('workflow_lib.executor.subprocess.run') as mock_run, \
          patch('workflow_lib.executor.process_task', return_value=True), \
          patch('workflow_lib.executor.merge_task', return_value=True), \
-         patch('workflow_lib.executor.rebuild_serena_cache'), \
          patch('workflow_lib.executor.save_workflow_state'), \
-         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
          patch('os.path.isdir', return_value=True):
         
         mock_res = MagicMock(returncode=0)
@@ -542,9 +522,7 @@ def test_execute_dag_process_task_failure():
     with patch('workflow_lib.executor.subprocess.run') as mock_run, \
          patch('workflow_lib.executor.process_task', return_value=False), \
          patch('workflow_lib.executor.merge_task', return_value=True), \
-         patch('workflow_lib.executor.rebuild_serena_cache'), \
          patch('workflow_lib.executor.save_workflow_state'), \
-         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
          patch('os.path.isdir', return_value=True):
 
         mock_run.return_value = MagicMock(returncode=0)
@@ -564,9 +542,7 @@ def test_execute_dag_merge_task_failure():
     with patch('workflow_lib.executor.subprocess.run') as mock_run, \
          patch('workflow_lib.executor.process_task', return_value=True), \
          patch('workflow_lib.executor.merge_task', return_value=False), \
-         patch('workflow_lib.executor.rebuild_serena_cache'), \
          patch('workflow_lib.executor.save_workflow_state'), \
-         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
          patch('os.path.isdir', return_value=True):
 
         mock_run.return_value = MagicMock(returncode=0)
@@ -606,9 +582,7 @@ def test_execute_dag_merge_runs_async_not_blocking_scheduling():
     with patch('workflow_lib.executor.subprocess.run') as mock_run, \
          patch('workflow_lib.executor.process_task', side_effect=fake_process_task), \
          patch('workflow_lib.executor.merge_task', side_effect=slow_merge), \
-         patch('workflow_lib.executor.rebuild_serena_cache'), \
          patch('workflow_lib.executor.save_workflow_state'), \
-         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
          patch('os.path.isdir', return_value=True):
 
         mock_run.return_value = MagicMock(returncode=0)
@@ -659,9 +633,7 @@ def test_execute_dag_merge_counts_against_jobs():
     with patch('workflow_lib.executor.subprocess.run') as mock_run, \
          patch('workflow_lib.executor.process_task', side_effect=fake_process_task), \
          patch('workflow_lib.executor.merge_task', side_effect=slow_merge), \
-         patch('workflow_lib.executor.rebuild_serena_cache'), \
          patch('workflow_lib.executor.save_workflow_state'), \
-         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
          patch('os.path.isdir', return_value=True):
 
         mock_run.return_value = MagicMock(returncode=0)
@@ -695,9 +667,7 @@ def test_execute_dag_merge_serialized():
     with patch('workflow_lib.executor.subprocess.run') as mock_run, \
          patch('workflow_lib.executor.process_task', return_value=True), \
          patch('workflow_lib.executor.merge_task', side_effect=tracked_merge), \
-         patch('workflow_lib.executor.rebuild_serena_cache'), \
          patch('workflow_lib.executor.save_workflow_state'), \
-         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
          patch('os.path.isdir', return_value=True):
 
         mock_run.return_value = MagicMock(returncode=0)
@@ -725,9 +695,7 @@ def test_execute_dag_merge_retry_async():
     with patch('workflow_lib.executor.subprocess.run') as mock_run, \
          patch('workflow_lib.executor.process_task', return_value=True), \
          patch('workflow_lib.executor.merge_task', side_effect=failing_then_passing_merge), \
-         patch('workflow_lib.executor.rebuild_serena_cache'), \
          patch('workflow_lib.executor.save_workflow_state'), \
-         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
          patch('os.path.isdir', return_value=True):
 
         mock_run.return_value = MagicMock(returncode=0)
@@ -748,9 +716,7 @@ def test_execute_dag_process_task_exception():
     with patch('workflow_lib.executor.subprocess.run') as mock_run, \
          patch('workflow_lib.executor.process_task', side_effect=RuntimeError("agent crashed")), \
          patch('workflow_lib.executor.merge_task', return_value=True), \
-         patch('workflow_lib.executor.rebuild_serena_cache'), \
          patch('workflow_lib.executor.save_workflow_state'), \
-         patch('workflow_lib.executor.get_serena_enabled', return_value=False), \
          patch('os.path.isdir', return_value=True):
 
         mock_run.return_value = MagicMock(returncode=0)

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Deduplicated Requirements",
+  "description": "Record of requirements removed during deduplication (Phase 10). The union of remaining requirements in requirements.json and removed_requirements here must equal the original merged set.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "total_remaining": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "total_removed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "removed_requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "ID of the removed requirement"
+          },
+          "reason": {
+            "type": "string",
+            "enum": ["duplicate", "merged"]
+          },
+          "merged_into": {
+            "type": ["string", "null"],
+            "description": "ID of the requirement this was merged into, or null if simply removed as duplicate"
+          },
+          "original_title": {
+            "type": "string"
+          }
+        },
+        "required": ["id", "reason", "original_title"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["version", "total_remaining", "total_removed", "removed_requirements"],
+  "additionalProperties": false
+}

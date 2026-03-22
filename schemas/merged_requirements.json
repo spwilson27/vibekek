@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Merged Requirements",
+  "description": "Consolidated requirements from all spec documents (Phase 9)",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "total_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Z0-9_]+-REQ-[0-9]+$"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["functional", "non-functional", "constraint", "interface"]
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["must", "should", "could"]
+          },
+          "source_documents": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          },
+          "source_section": {
+            "type": "string"
+          }
+        },
+        "required": ["id", "title", "description", "category", "priority", "source_documents"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["version", "total_count", "requirements"],
+  "additionalProperties": false
+}

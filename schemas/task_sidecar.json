@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task Sidecar",
+  "description": "Structured metadata for a task definition, stored alongside the .md file",
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "description": "Fully qualified task ID (e.g. 'phase_1/epic_name/01_task_name')"
+    },
+    "phase": {
+      "type": "string",
+      "description": "Phase directory name (e.g. 'phase_1')"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["red", "green"],
+      "description": "Whether this is a Red (test-first) or Green (implementation) task"
+    },
+    "depends_on": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Task IDs that must complete before this task"
+    },
+    "feature_gates": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Feature gate file paths this task creates (green) or tests against (red)"
+    },
+    "requirement_mappings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z0-9_]+-REQ-[0-9]+$"
+      },
+      "description": "Requirement IDs this task helps fulfill"
+    },
+    "epic_id": {
+      "type": "string",
+      "description": "ID of the parent epic"
+    }
+  },
+  "required": ["task_id", "phase", "type", "depends_on", "feature_gates", "requirement_mappings"],
+  "additionalProperties": false
+}

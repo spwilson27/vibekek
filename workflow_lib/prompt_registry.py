@@ -20,43 +20,48 @@ PROMPT_PLACEHOLDERS = {
     "spec_risks_mitigation.md": {"document_name", "document_description", "target_path"},
     "spec_performance_spec.md": {"document_name", "document_description", "target_path"},
     "spec_project_roadmap.md": {"document_name", "document_description", "target_path"},
-    "research_market.md": {"document_name", "document_description", "target_path"},
-    "research_competitive_analysis.md": {"document_name", "document_description", "target_path"},
-    "research_technical_analysis.md": {"document_name", "document_description", "target_path"},
-    "research_user_research.md": {"document_name", "document_description", "target_path"},
 
     # Phase 2: Flesh out
     "flesh_out.md": {"description_ctx", "target_path", "header", "accumulated_context"},
 
-    # Phase 2B: Summarize
+    # Phase 3: Summarize
     "summarize_doc.md": {"document_name", "document_content", "summary_path"},
 
-    # Phase 3: Reviews
+    # Phase 4-6: Reviews
     "final_review.md": {"description_ctx", "source_doc"},
     "conflict_resolution_review.md": {"description_ctx", "target_path"},
     "adversarial_review.md": {"description_ctx", "target_path"},
 
-    # Phase 4: Requirements
+    # Phase 7-12: Requirements pipeline (JSON)
     "extract_requirements.md": {"description_ctx", "document_name", "document_path", "target_path"},
+    "filter_meta_requirements.md": {"description_ctx", "requirements_json", "target_path"},
     "merge_requirements.md": {"description_ctx"},
+    "deduplicate_requirements.md": {"description_ctx", "requirements_json_path", "deduped_target_path"},
     "order_requirements.md": {"description_ctx"},
 
-    # Phase 5: Epics & components
+    # Phase 13: Epic mappings
     "phases.md": {"description_ctx"},
-    "shared_components.md": {"description_ctx", "target_path"},
-    "interface_contracts.md": {"description_ctx", "target_path"},
 
-    # Phase 6: Tasks
+    # Phase 14-15: E2E interfaces and feature gates
+    "e2e_interfaces.md": {"description_ctx", "epic_mappings_json", "requirements_json"},
+    "feature_gates.md": {"description_ctx", "e2e_interfaces_content"},
+
+    # Phase 16-17: Red/Green tasks
+    "red_green_tasks.md": {"description_ctx", "phase_filename", "epic_json", "e2e_interfaces", "feature_gates", "target_dir"},
+    "review_red_green_tasks.md": {"description_ctx", "phase_id", "red_tasks_content", "green_tasks_content", "feature_gates"},
+    "cross_phase_review.md": {"description_ctx", "tasks_content", "summary_filename"},
+
+    # Phase 19: Pre-Init
+    "pre_init_task.md": {"description_ctx", "requirements_json", "target_path"},
+
+    # Phase 20: DAG
+    "dag_tasks.md": {"description_ctx", "phase_filename", "target_path", "tasks_content"},
+    "dag_tasks_review.md": {"description_ctx", "phase_filename", "proposed_dag", "target_path", "tasks_content"},
+
+    # Legacy task phases (still referenced by Phase6BreakDownTasks and Phase6BReviewTasks)
     "group_tasks.md": {"description_ctx", "phase_filename", "group_filename"},
     "tasks.md": {"description_ctx", "phase_filename", "sub_epic_name", "sub_epic_reqs", "target_dir", "shared_components_ctx"},
     "review_tasks_in_phase.md": {"description_ctx", "phase_filename", "phase_id", "tasks_content"},
-    "cross_phase_review.md": {"description_ctx", "tasks_content", "summary_filename"},
-    "reorder_tasks.md": {"description_ctx", "tasks_content"},
-    "integration_test_plan.md": {"description_ctx", "target_path"},
-
-    # Phase 7: DAG
-    "dag_tasks.md": {"description_ctx", "phase_filename", "target_path", "tasks_content"},
-    "dag_tasks_review.md": {"description_ctx", "phase_filename", "proposed_dag", "target_path", "tasks_content"},
 
     # Implementation (run phase)
     "implement_task.md": {"description_ctx", "memory_ctx", "phase_filename", "target_dir", "task_details", "task_name", "spec_ctx", "shared_components_ctx"},
@@ -65,7 +70,7 @@ PROMPT_PLACEHOLDERS = {
     "fix_requirements.md": {"description_ctx", "existing_tasks_content", "next_task_num", "phase_filename", "shared_components_ctx", "sub_epic_name", "target_dir", "unmapped_reqs_list"},
     "merge_task.md": {"description_ctx", "branches_list"},
     "requirements.md": {"description_ctx"},
-    
+
     # Feature addition
     "feature_discuss.md": {"description_ctx", "discussion_history", "feature_brief", "phases_ctx", "requirements_ctx", "shared_components_ctx"},
     "feature_spec.md": {"description_ctx", "discussion_history", "feature_brief", "requirements_ctx", "shared_components_ctx", "spec_output_path"},

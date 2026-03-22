@@ -40,6 +40,9 @@ Before generating the final document, plan your approach:
 - **Required Sections**:
   1. Architecture Overview (with Mermaid diagram)
   2. Technology Stack & Toolchain
-  3. Data Model & Database Schema (with Mermaid ERD)
-  4. Component Hierarchy & Core Modules
-  5. API Design & Protocols
+  3. Project Layout & Directory Structure (describe the repository layout, where source code, tests, configs, and generated artifacts live)
+  4. Dependencies & Build Configuration (list all external dependencies, build tools, and their versions)
+  5. Data Model & Database Schema (with Mermaid ERD)
+  6. Component Hierarchy & Core Modules
+  7. API Design & Protocols
+  8. Test Strategy & Directory Separation (describe the testing strategy with E2E tests in a separate directory from unit tests, explain how each test type is discovered and run)

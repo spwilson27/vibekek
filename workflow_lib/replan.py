@@ -51,12 +51,24 @@ import re
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 
-from .constants import TOOLS_DIR, ROOT_DIR, parse_requirements
+from .constants import TOOLS_DIR, ROOT_DIR
+
+# Regex to match requirements like [REQ-123], [TAS-001], [REQ-SEC-001], etc.
+_REQ_REGEX = re.compile(r"\[([A-Z0-9_]+-[A-Z0-9\._-]+)\]")
+
+
+def parse_requirements(file_path: str):
+    """Extract all requirement IDs from a file."""
+    if not os.path.exists(file_path):
+        return set()
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    return set(_REQ_REGEX.findall(content))
 from .state import *
 from .executor import phase_sort_key
 from .context import ProjectContext
 from .runners import make_runner as _make_runner_from_runners
-from .phases import Phase5BSharedComponents, Phase7ADAGGeneration
+from .phases import Phase7ADAGGeneration
 
 
 def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
@@ -489,7 +501,7 @@ def cmd_add(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 
     expected_file = os.path.join(se_dir, task_filename)
     allowed_files = [se_dir + os.sep]
-    result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+    result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
     if result.returncode != 0:
         print(f"\n[!] Error generating task.")
@@ -753,7 +765,7 @@ def cmd_regen_tasks(args: "argparse.Namespace") -> None:  # type: ignore[name-de
             shared_components_ctx=shared_components_ctx,
         )
         allowed_files = [se_dir + os.sep]
-        result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+        result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
         if result.returncode != 0:
             print(f"\n[!] Error regenerating tasks for {target_dir}.")
@@ -779,33 +791,15 @@ def cmd_regen_tasks(args: "argparse.Namespace") -> None:  # type: ignore[name-de
 
 
 def cmd_regen_components(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
-    """Regenerate the shared components manifest (``docs/plan/shared_components.md``).
+    """Deprecated: shared components phase has been replaced by E2E interfaces.
 
-    Resets the ``shared_components_completed`` state flag and re-runs
-    :class:`~workflow_lib.phases.Phase5BSharedComponents`.  Supports
-    ``--dry-run``.
-
-    :param args: Parsed :mod:`argparse` namespace with attributes:
-
-        - ``dry_run`` (bool) — preview mode.
-        - ``backend`` (str) — AI backend.
+    :param args: Parsed :mod:`argparse` namespace.
     :type args: argparse.Namespace
     """
-    runner = _make_runner(args.backend, model=getattr(args, 'model', None))
-    ctx = ProjectContext(ROOT_DIR, runner=runner)
-
-    if args.dry_run:
-        print("[dry-run] Would regenerate shared_components.md")
-        return
-
-    phase = Phase5BSharedComponents()
-    ctx.state["shared_components_completed"] = False
-    ctx.save_state()
-    phase.execute(ctx)
-
-    rp_state = load_replan_state()
-    log_action(rp_state, "regen-components", "shared_components.md")
-    save_replan_state(rp_state)
+    print("The regen-components command has been removed. "
+          "Shared components are now handled via E2E interfaces (Phase 14) "
+          "and feature gates (Phase 15).")
+    sys.exit(1)
 
 
 def cmd_cascade(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
@@ -948,7 +942,7 @@ def _fix_phase_mappings(unmapped_reqs: List[str], ctx: ProjectContext, dry_run: 
     )
 
     allowed_files = [phases_dir + os.sep]
-    result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+    result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
     if result.returncode != 0:
         print(f"\n[!] Error fixing phase mappings.")
@@ -1079,7 +1073,7 @@ def _fix_task_mappings(unmapped_reqs: List[str], ctx: ProjectContext, dry_run: b
 
         print(f"\nGenerating tasks for {len(req_ids)} unmapped requirement(s) in {target_dir}...")
         allowed_files = [se_dir + os.sep]
-        result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+        result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
         if result.returncode != 0:
             print(f"\n[!] Error generating fix tasks for {target_dir}.")
@@ -1565,7 +1559,7 @@ def _fix_description_length(ctx: ProjectContext, dry_run: bool = False) -> bool:
     )
 
     allowed_files = [req_file]
-    result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+    result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
     if result.returncode != 0:
         print(f"\n[!] Error fixing description length.")
@@ -1644,7 +1638,6 @@ def _rebuild_phase_dag(phase_dir: str, ctx: Optional[ProjectContext]) -> None:
         result = ctx.run_ai(
             "dag_tasks.md",
             allowed_files=[dag_file],
-            sandbox=False,
             context_files={
                 "description_ctx": ctx.input_dir,
                 "tasks_content": phase_dir,
@@ -1861,7 +1854,6 @@ def cmd_add_feature(args: "argparse.Namespace") -> None:  # type: ignore[name-de
                 print(line)
                 streamed_lines.append(line)
 
-            before = ctx.get_workspace_snapshot()
             effective_timeout = ctx.agent_timeout
             result = ctx.runner.run(ctx.root_dir, prompt, ctx.image_paths,
                                     on_line=_on_line, timeout=effective_timeout)
@@ -1916,7 +1908,7 @@ def cmd_add_feature(args: "argparse.Namespace") -> None:  # type: ignore[name-de
             print(f"[dry-run] Would generate spec at: {spec_output}")
             return
 
-        result = ctx.run_ai(prompt, allowed_files=[spec_output], sandbox=False)
+        result = ctx.run_ai(prompt, allowed_files=[spec_output])
 
         if result.returncode != 0 or not os.path.exists(spec_output):
             print(f"\n[!] Error generating spec.")
@@ -2015,7 +2007,7 @@ def cmd_add_feature(args: "argparse.Namespace") -> None:  # type: ignore[name-de
         shared_comp,
     ]
 
-    result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+    result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
     if result.returncode != 0:
         print(f"\n[!] Error integrating feature.")

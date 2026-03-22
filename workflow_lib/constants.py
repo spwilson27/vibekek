@@ -1,8 +1,7 @@
 """Package-wide constants and shared state for the workflow library.
 
-Defines file-system paths derived from the location of this package, the
-master document catalogue (``DOCS``), and imports the requirement-parsing
-utilities from the project-level ``verify`` script.
+Defines file-system paths derived from the location of this package and the
+master document catalogue (``DOCS``).
 
 Module-level constants
 -----------------------
@@ -27,8 +26,7 @@ Module-level constants
 
 .. data:: DOCS
     Ordered list of planning document descriptors.  Each entry is a dict
-    with keys: ``id``, ``type`` (``"research"`` or ``"spec"``), ``name``,
-    ``desc``, and ``prompt_file``.
+    with keys: ``id``, ``type``, ``name``, ``desc``, and ``prompt_file``.
 """
 
 import os
@@ -36,8 +34,6 @@ import sys
 
 TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT_DIR = os.path.dirname(TOOLS_DIR)
-sys.path.insert(0, TOOLS_DIR)
-from verify import parse_requirements, REQ_REGEX  # noqa: E402
 
 INPUT_DIR = os.path.join(ROOT_DIR, "input")
 STATE_DIR = os.path.join(ROOT_DIR, ".workflow_state")
@@ -51,15 +47,9 @@ os.makedirs(DECISIONS_DIR, exist_ok=True)
 GEN_STATE_FILE = os.path.join(ROOT_DIR, ".gen_state.json")
 WORKFLOW_STATE_FILE = os.path.join(STATE_DIR, "workflow_state.json")
 REPLAN_STATE_FILE = os.path.join(STATE_DIR, "replan_state.json")
+SCHEMAS_DIR = os.path.join(TOOLS_DIR, "schemas")
 
 DOCS = [
-    # Research
-    {"id": "market_research", "type": "research", "name": "Market Research Report", "desc": "Analyze the problem space and create a market research report.", "prompt_file": "research_market.md"},
-    {"id": "competitive_analysis", "type": "research", "name": "Competitive Analysis Report", "desc": "Analyze the competition and create a competitive analysis report.", "prompt_file": "research_competitive_analysis.md"},
-    {"id": "tech_landscape", "type": "research", "name": "Technology Landscape Report", "desc": "Analyze the available technologies and create a technology landscape report.", "prompt_file": "research_technical_analysis.md"},
-    {"id": "user_research", "type": "research", "name": "User Research Report", "desc": "Analyze potential users and create a user research report.", "prompt_file": "research_user_research.md"},
-
-    # Specs
     {"id": "1_prd", "type": "spec", "name": "PRD (Product Requirements Document)", "desc": "Create a Product Requirements Document (PRD).", "prompt_file": "spec_prd.md"},
     {"id": "2_tas", "type": "spec", "name": "TAS (Technical Architecture Specification)", "desc": "Create a Technical Architecture Specification (TAS).", "prompt_file": "spec_tas.md"},
     {"id": "3_mcp_design", "type": "spec", "name": "MCP and AI Development Design", "desc": "Create an MCP and AI Development Design document.", "prompt_file": "spec_mcp_design.md"},

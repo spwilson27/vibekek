@@ -87,7 +87,7 @@ from .executor import (
     _write_container_env_file,
 )
 from .dashboard import make_dashboard, _DashboardStream
-from .config import get_serena_enabled, get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override, set_agent_context_limit, get_docker_config, get_sccache_config, get_sccache_dist_config, get_sccache_services_config, ensure_sccache_services
+from .config import get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override, set_agent_context_limit, get_docker_config, get_sccache_config, get_sccache_dist_config, get_sccache_services_config, ensure_sccache_services
 from .agent_pool import AgentPoolManager, DockerConfig
 from .state import load_workflow_state, load_dags, get_tasks_dir, restore_state_from_branch
 from .runners import GeminiRunner, ClaudeRunner, CopilotRunner, OpencodeRunner, ClineRunner, AiderRunner, CodexRunner, QwenRunner, VALID_BACKENDS
@@ -205,25 +205,24 @@ def cmd_plan(args: argparse.Namespace) -> None:
         sys.stderr = _DashboardStream(dashboard, original_stderr)
         try:
             ctx = ProjectContext(ROOT_DIR, runner=runner, jobs=args.jobs, dashboard=dashboard)
-            ctx.ignore_sandbox = args.ignore_sandbox
             if args.phase and args.force:
                 phase_state_keys = {
-                    "3a-conflicts": ["conflict_resolution_completed"],
-                    "3b-adversarial": ["adversarial_review_completed"],
-                    "4-merge": ["requirements_merged"],
-                    "4-scope": ["scope_gate_passed"],
-                    "4-order": ["requirements_ordered"],
-                    "5-epics": ["phases_completed"],
-                    "5b-components": ["shared_components_completed"],
-                    "5c-contracts": ["interface_contracts_completed"],
-                    "6-tasks": ["tasks_completed"],
-                    "6a-fixup": ["fixup_validation_completed"],
-                    "6b-review": ["tasks_reviewed"],
-                    "6c-cross-review": ["cross_phase_reviewed_pass_1", "cross_phase_reviewed_pass_2"],
-                    "6d-reorder": ["tasks_reordered_pass_1", "tasks_reordered_pass_2"],
-                    "6e-depends-on-validation": ["depends_on_validated"],
-                    "6e-integration": ["integration_test_plan_completed"],
-                    "7-dag": ["dag_completed"],
+                    "5-conflicts": ["conflict_resolution_completed"],
+                    "6-adversarial": ["adversarial_review_completed"],
+                    "7-extract": ["requirements_extracted"],
+                    "8-filter": ["meta_requirements_filtered"],
+                    "9-merge": ["requirements_merged"],
+                    "10-dedup": ["requirements_deduplicated"],
+                    "11-scope": ["scope_gate_passed"],
+                    "12-order": ["requirements_ordered"],
+                    "13-epics": ["epics_completed"],
+                    "14-e2e": ["e2e_interfaces_completed"],
+                    "15-gates": ["feature_gates_completed"],
+                    "16-tasks": ["tasks_completed"],
+                    "17-review": ["tasks_reviewed"],
+                    "18-cross-review": ["cross_phase_reviewed"],
+                    "19-pre-init": ["pre_init_task_completed"],
+                    "20-dag": ["dag_completed"],
                 }
                 keys = phase_state_keys.get(args.phase)
                 if keys:
@@ -275,8 +274,6 @@ def cmd_run(args: argparse.Namespace) -> None:
     restore_state_from_branch(ROOT_DIR, dev_branch)
     master_dag = load_dags(tasks_dir)
     state = load_workflow_state()
-
-    serena_status = "enabled" if get_serena_enabled() else "disabled"
 
     # Build agent pool when --backend was not explicitly passed on the CLI.
     # args.backend is None here only when the user did not pass --backend;
@@ -599,7 +596,6 @@ def main() -> None:
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--backend", choices=sorted(VALID_BACKENDS), default=None, help="AI CLI backend to use (default: gemini)")
     shared.add_argument("--model", default=None, help="Model name to pass through to the AI CLI (e.g. 'claude-sonnet-4-5-20250514')")
-    shared.add_argument("--ignore-sandbox", action="store_true", default=None, help="Disable sandbox violation checks")
     shared.add_argument("--context-limit", type=int, default=None, dest="context_limit", help="Override context limit in tokens (default: 126000)")
 
     parser = argparse.ArgumentParser(description="AI Project Planning and Execution Workflow")
@@ -697,7 +693,6 @@ def main() -> None:
     _HARDCODED = {
         "backend": "gemini",
         "model": None,
-        "ignore_sandbox": False,
         "timeout": 600,
         "retries": 3,
         "auto_retries": None,

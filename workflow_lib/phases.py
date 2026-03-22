@@ -5,49 +5,29 @@ planning pipeline.  All phases inherit from :class:`BasePhase` and implement
 a single :meth:`~BasePhase.execute` method that receives the shared
 :class:`~workflow_lib.context.ProjectContext` instance.
 
-Phase catalogue
----------------
+Phase catalogue (sequential numbering)
+---------------------------------------
 
-+-------------------+------------------------------------------------------+
-| Class             | Purpose                                              |
-+===================+======================================================+
-| Phase1GenerateDoc | Initial AI generation of a planning document.        |
-+-------------------+------------------------------------------------------+
-| Phase2FleshOutDoc | Section-by-section expansion of a generated spec.   |
-+-------------------+------------------------------------------------------+
-| Phase3FinalReview | Holistic consistency review of all documents.        |
-+-------------------+------------------------------------------------------+
-| Phase3BAdversarialReview | Scope-creep / gaps review against the original |
-|                          | project description.                            |
-+-------------------+------------------------------------------------------+
-| Phase4AExtractRequirements | Extract structured requirements from a doc.  |
-+-------------------+------------------------------------------------------+
-| Phase4BMergeRequirements  | Consolidate per-doc requirements into master. |
-+-------------------+------------------------------------------------------+
-| Phase4BScopeGate  | Human checkpoint to review requirements scope.       |
-+-------------------+------------------------------------------------------+
-| Phase4COrderRequirements  | Sequence and prioritise requirements.         |
-+-------------------+------------------------------------------------------+
-| Phase5GenerateEpics       | Generate implementation epics/phases.         |
-+-------------------+------------------------------------------------------+
-| Phase5BSharedComponents   | Identify shared modules and ownership.        |
-+-------------------+------------------------------------------------------+
-| Phase6BreakDownTasks      | Decompose epics into atomic task files.       |
-+-------------------+------------------------------------------------------+
-| Phase6BReviewTasks        | Review tasks within each phase for coverage. |
-+-------------------+------------------------------------------------------+
-| Phase6CCrossPhaseReview   | Global duplicate/coverage review (2 passes). |
-+-------------------+------------------------------------------------------+
-| Phase6DReorderTasks       | Reorder tasks for logical progression.        |
-+-------------------+------------------------------------------------------+
-| Phase6EDependsOnValidation| Validate depends_on metadata before DAG gen.  |
-+-------------------+------------------------------------------------------+
-| Phase6EIntegrationTestPlan| Generate integration test plan.               |
-+-------------------+------------------------------------------------------+
-| Phase7ADAGGeneration      | Build per-phase dependency DAGs.              |
-+-------------------+------------------------------------------------------+
-| Phase8GenerateHarness     | Generate project-specific harness.py.         |
-+-------------------+------------------------------------------------------+
+Phase 1:  GenerateDoc — Sequential generation of spec documents.
+Phase 2:  FleshOutDoc — Section-by-section expansion (parallel).
+Phase 3:  SummarizeDoc — Compact summaries for context carriage (parallel).
+Phase 4:  FinalReview — Holistic consistency review.
+Phase 5:  ConflictResolution — Resolve contradictions between specs.
+Phase 6:  AdversarialReview — Scope-creep / gaps review.
+Phase 7:  ExtractRequirements — Per-doc JSON requirement extraction (parallel).
+Phase 8:  FilterMetaRequirements — Remove process/meta requirements (parallel).
+Phase 9:  MergeRequirements — Consolidate into requirements.json.
+Phase 10: DeduplicateRequirements — Remove duplicates.
+Phase 11: ScopeGate — Human checkpoint.
+Phase 12: OrderRequirements — E2E-first ordering.
+Phase 13: GenerateEpics — JSON epic/requirement mappings.
+Phase 14: E2EInterfaces — Public interface definitions per phase.
+Phase 15: FeatureGates — File-based feature gate definitions.
+Phase 16: RedGreenTasks — Red/Green task breakdown with JSON sidecars.
+Phase 17: ReviewRedGreenTasks — Per-phase task review (parallel).
+Phase 18: CrossPhaseReview — Global duplicate/coverage review.
+Phase 19: PreInitTask — Bootstrap task (Dockerfile, harness, gates).
+Phase 20: DAGGeneration — Per-phase dependency DAGs.
 """
 
 import concurrent.futures
@@ -68,7 +48,7 @@ BLUE = "\033[94m"
 RESET = "\033[0m"
 BOLD = "\033[1m"
 
-from .constants import TOOLS_DIR, DOCS, parse_requirements
+from .constants import TOOLS_DIR, DOCS
 from .context import ProjectContext, _count_tokens
 
 # Canonical set of non-task markdown files to exclude from DAG generation,
@@ -180,14 +160,10 @@ class Phase1GenerateDoc(BasePhase):
             
         target_path = ctx.get_target_path(self.doc)
         expected_file = ctx.get_document_path(self.doc)
-        out_folder = "specs" if self.doc["type"] == "spec" else "research"
-        
-        # Exclude research docs from spec context to prevent hallucinated
-        # market/competitive data from influencing architectural decisions
-        include_research = self.doc["type"] == "research"
+
         base_prompt_template = ctx.load_prompt(self.doc["prompt_file"])
         extra = _count_tokens(base_prompt_template) + _count_tokens(ctx.description_ctx) + 40
-        accumulated_context = ctx.get_accumulated_context(self.doc, include_research=include_research, extra_tokens=extra)
+        accumulated_context = ctx.get_accumulated_context(self.doc, extra_tokens=extra)
 
         base_prompt = base_prompt_template.replace("{target_path}", target_path)
         base_prompt = base_prompt.replace("{document_name}", self.doc["name"])
@@ -207,7 +183,7 @@ class Phase1GenerateDoc(BasePhase):
             f"5. You MUST end your turn immediately after writing the file.\n"
         )
         
-        print(f"\n=> [Phase 1: Generate] {self.doc['name']} into docs/plan/{out_folder}/{self.doc['id']}.md ...")
+        print(f"\n=> [Phase 1: Generate] {self.doc['name']} into docs/plan/specs/{self.doc['id']}.md ...")
         
         allowed_files = [expected_file]
         result = ctx.run_gemini(full_prompt, allowed_files=allowed_files)
@@ -219,9 +195,8 @@ class Phase1GenerateDoc(BasePhase):
             sys.exit(1)
             
         # Save canonical headers before any flesh-out passes can modify the doc
-        if self.doc["type"] == "spec":
-            ctx.save_headers(self.doc, expected_file)
-            allowed_files.append(ctx.get_headers_path(self.doc))
+        ctx.save_headers(self.doc, expected_file)
+        allowed_files.append(ctx.get_headers_path(self.doc))
 
         ctx.stage_changes(allowed_files)
         ctx.state.setdefault("generated", []).append(self.doc["id"])
@@ -230,7 +205,7 @@ class Phase1GenerateDoc(BasePhase):
 class Phase2FleshOutDoc(BasePhase):
     """Expand each section of a spec document with additional AI passes.
 
-    Only runs for spec-type documents (skipped for research).  Each markdown
+    Each markdown
     header in the document gets its own focused AI pass.  Sections that have
     already been expanded are skipped via ``ctx.state["fleshed_out_headers"]``.
 
@@ -262,20 +237,16 @@ class Phase2FleshOutDoc(BasePhase):
         :type ctx: ProjectContext
         :raises SystemExit: On AI runner failure for any section.
         """
-        if self.doc["type"] != "spec":
-            return
-            
         if self.doc["id"] in ctx.state.get("fleshed_out", []):
             print(f"Skipping fleshing out for {self.doc['name']} (already fleshed out).")
             return
-            
+
         expected_file = ctx.get_document_path(self.doc)
         target_path = ctx.get_target_path(self.doc)
-        out_folder = "specs"
         headers = ctx.parse_markdown_headers(expected_file, doc=self.doc)
         flesh_prompt_tmpl = ctx.load_prompt("flesh_out.md")
         extra = _count_tokens(flesh_prompt_tmpl) + _count_tokens(ctx.description_ctx) + 40
-        accumulated_context = ctx.get_accumulated_context(self.doc, include_research=False, extra_tokens=extra)
+        accumulated_context = ctx.get_accumulated_context(self.doc, extra_tokens=extra)
         
         ctx.state.setdefault("fleshed_out_headers", {})
         ctx.state["fleshed_out_headers"].setdefault(self.doc["id"], [])
@@ -383,7 +354,7 @@ class Phase2BSummarizeDoc(BasePhase):
 class Phase3FinalReview(BasePhase):
     """Holistic alignment review of all planning documents.
 
-    Checks all generated specs and research documents for consistency with
+    Checks all generated spec documents for consistency with
     the original project description.  Idempotent via
     ``ctx.state["final_review_completed"]``.
     """
@@ -403,7 +374,7 @@ class Phase3FinalReview(BasePhase):
         final_prompt_tmpl = ctx.load_prompt("final_review.md")
         final_prompt = ctx.format_prompt(final_prompt_tmpl, description_ctx=ctx.description_ctx)
         
-        # Final review can modify all existing specs and research files
+        # Final review can modify all existing spec files
         allowed_files = [ctx.get_document_path(d) for d in DOCS]
         result = ctx.run_gemini(final_prompt, allowed_files=allowed_files)
         
@@ -422,7 +393,7 @@ class Phase3FinalReview(BasePhase):
 class Phase3BAdversarialReview(BasePhase):
     """Devil's advocate review comparing specs against the original description.
 
-    Automatically removes scope creep from spec/research documents and
+    Automatically removes scope creep from spec documents and
     produces ``docs/plan/adversarial_review.md`` logging all changes.
     Prompts the user to review NEEDS CLARIFICATION items before continuing.
     Idempotent via ``ctx.state["adversarial_review_completed"]``.
@@ -451,9 +422,8 @@ class Phase3BAdversarialReview(BasePhase):
         )
 
         specs_dir = os.path.join(ctx.plan_dir, "specs") + os.sep
-        research_dir = os.path.join(ctx.plan_dir, "research") + os.sep
-        allowed_files = [expected_file, specs_dir, research_dir]
-        result = ctx.run_gemini(prompt, allowed_files=allowed_files, sandbox=False)
+        allowed_files = [expected_file, specs_dir]
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
 
         if result.returncode != 0 or not os.path.exists(expected_file):
             print("\n[!] Error during adversarial review.")
@@ -496,24 +466,17 @@ class Phase3BAdversarialReview(BasePhase):
         print("Adversarial review complete.")
 
 
-class Phase4AExtractRequirements(BasePhase):
-    """Extract structured requirements from a single planning document.
+class Phase7ExtractRequirements(BasePhase):
+    """Extract structured requirements from a single spec document as JSON.
 
-    Produces ``docs/plan/requirements/<doc_id>.md``.  Skipped for research
-    documents and for docs already recorded in
-    ``ctx.state["extracted_requirements"]``.  Runs automated verification
-    via ``verify.py --verify-doc`` after each extraction.
+    Produces ``docs/plan/requirements/<doc_id>.json``.  Skipped for docs already
+    recorded in ``ctx.state["extracted_requirements"]``.
 
     :param doc: Document descriptor dict.
     :type doc: dict
     """
 
     def __init__(self, doc: dict) -> None:
-        """Initialise the phase for a specific document.
-
-        :param doc: Document descriptor.
-        :type doc: dict
-        """
         self.doc = doc
 
     @property
@@ -522,32 +485,21 @@ class Phase4AExtractRequirements(BasePhase):
 
     @property
     def display_name(self) -> str:
-        return f"Phase4A: {self.doc.get('name', self.doc.get('id', '?'))}"
+        return f"Phase7: {self.doc.get('name', self.doc.get('id', '?'))}"
 
     def execute(self, ctx: ProjectContext) -> None:
-        """Extract requirements and verify coverage against the source document.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: On AI runner failure or verification failure.
-        """
-        if self.doc["type"] == "research":
-            print(f"   -> Skipping extraction for research doc: {self.doc['name']}...")
-            return
-
         if self.doc["id"] in ctx.state.get("extracted_requirements", []):
             return
-            
+
         doc_path = ctx.get_document_path(self.doc)
         if not os.path.exists(doc_path):
             return
-            
-        target_path = f"docs/plan/requirements/{self.doc['id']}.md"
-        expected_file = os.path.join(ctx.requirements_dir, f"{self.doc['id']}.md")
-        
-        doc_rel_path = f"docs/plan/{'specs' if self.doc['type'] == 'spec' else 'research'}/{self.doc['id']}.md"
-        
-        print(f"\n=> [Phase 4A: Extract Requirements] Extracting from {self.doc['name']}...")
+
+        target_path = f"docs/plan/requirements/{self.doc['id']}.json"
+        expected_file = os.path.join(ctx.requirements_dir, f"{self.doc['id']}.json")
+        doc_rel_path = f"docs/plan/specs/{self.doc['id']}.md"
+
+        print(f"\n=> [Phase 7: Extract Requirements] Extracting from {self.doc['name']}...")
         prompt_tmpl = ctx.load_prompt("extract_requirements.md")
         prompt = ctx.format_prompt(prompt_tmpl,
             description_ctx=ctx.description_ctx,
@@ -555,138 +507,205 @@ class Phase4AExtractRequirements(BasePhase):
             document_path=doc_rel_path,
             target_path=target_path
         )
-        
+
         allowed_files = [expected_file, doc_path]
         result = ctx.run_gemini(prompt, allowed_files=allowed_files)
-        
+
         if result.returncode != 0:
             print(f"\n[!] Error extracting requirements from {self.doc['name']}.")
-            print(result.stdout)
-            print(result.stderr)
             sys.exit(1)
-        
-        print(f"   -> Verifying extraction for {self.doc['name']}...")
+
+        # Validate JSON schema
+        print(f"   -> Validating extraction for {self.doc['name']}...")
         verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "doc", doc_path, expected_file],
+            [sys.executable, os.path.join(TOOLS_DIR, "validate.py"), "--phase", "7"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
-            print(f"\n[!] Automated verification failed for {self.doc['name']}:")
+            print(f"\n[!] Validation failed for {self.doc['name']}:")
             print(verify_res.stdout)
-            sys.exit(1)
-
-        # Verify description length (minimum 10 words)
-        print(f"   -> Verifying description length for {self.doc['name']}...")
-        desc_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "req-desc-length", expected_file],
-            capture_output=True, text=True, cwd=ctx.root_dir
-        )
-        if desc_res.returncode != 0:
-            print(f"\n[!] Description length validation failed for {self.doc['name']}:")
-            print(desc_res.stdout)
             sys.exit(1)
 
         ctx.stage_changes(allowed_files)
         ctx.state.setdefault("extracted_requirements", []).append(self.doc["id"])
         ctx.save_state()
 
-class Phase4BMergeRequirements(BasePhase):
-    """Consolidate all per-document requirement files into ``requirements.md``.
 
-    Runs ``verify.py --verify-master`` after merging.  Idempotent
-    via ``ctx.state["requirements_merged"]``.
+class Phase8FilterMetaRequirements(BasePhase):
+    """Filter out process/meta requirements from extracted requirement JSONs.
+
+    Runs in parallel across all per-document extracted requirement files.
+    Removes requirements that refer to process, methodology, or tooling
+    rather than actual product/technical requirements.
+
+    :param doc: Document descriptor dict.
+    :type doc: dict
+    """
+
+    def __init__(self, doc: dict) -> None:
+        self.doc = doc
+
+    @property
+    def operation(self) -> str:
+        return "Filter Meta Reqs"
+
+    @property
+    def display_name(self) -> str:
+        return f"Phase8: Filter {self.doc.get('name', self.doc.get('id', '?'))}"
+
+    def execute(self, ctx: ProjectContext) -> None:
+        req_file = os.path.join(ctx.requirements_dir, f"{self.doc['id']}.json")
+        if not os.path.exists(req_file):
+            print(f"   -> Skipping filter for {self.doc['id']} (no extracted JSON).")
+            return
+
+        print(f"\n=> [Phase 8: Filter Meta Requirements] Filtering {self.doc['name']}...")
+
+        with open(req_file, "r", encoding="utf-8") as f:
+            requirements_json = f.read()
+
+        target_path = f"docs/plan/requirements/{self.doc['id']}.json"
+
+        prompt_tmpl = ctx.load_prompt("filter_meta_requirements.md")
+        prompt = ctx.format_prompt(prompt_tmpl,
+            description_ctx=ctx.description_ctx,
+            requirements_json=requirements_json,
+            target_path=target_path
+        )
+
+        allowed_files = [req_file]
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
+
+        if result.returncode != 0:
+            print(f"\n[!] Error filtering meta requirements for {self.doc['name']}.")
+            sys.exit(1)
+
+        ctx.stage_changes(allowed_files)
+
+
+class Phase9MergeRequirements(BasePhase):
+    """Consolidate all per-document requirement JSON files into ``requirements.json``.
+
+    Idempotent via ``ctx.state["requirements_merged"]``.
     """
 
     def execute(self, ctx: ProjectContext) -> None:
-        """Merge per-doc requirement files and verify the master list.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: On AI runner or verification failure.
-        """
         if ctx.state.get("requirements_merged", False):
             print("Requirements merging already completed.")
             return
-            
-        print("\n=> [Phase 4B: Merge and Resolve Conflicts] Consolidating all requirements...")
+
+        print("\n=> [Phase 9: Merge Requirements] Consolidating all requirements into JSON...")
         prompt_tmpl = ctx.load_prompt("merge_requirements.md")
         prompt = ctx.format_prompt(prompt_tmpl, description_ctx=ctx.description_ctx)
-        
-        # This phase can modify requirements.md AND any source doc in docs/plan/specs/
 
-        # Allowed files include the final requirements.md and specs for potential conflict resolution
-        allowed_files = [os.path.join(ctx.root_dir, "docs/plan/requirements.md")]
-        allowed_files.extend([ctx.get_document_path(d) for d in DOCS if d["type"] != "research"])
-        
+        requirements_json = os.path.join(ctx.plan_dir, "requirements.json")
+        allowed_files = [requirements_json]
+
         result = ctx.run_gemini(prompt, allowed_files=allowed_files)
-        
+
         if result.returncode != 0:
             print("\n[!] Error merging requirements.")
             sys.exit(1)
-            
-        print("\n   -> Verifying merged requirements.md...")
+
+        # Validate merged JSON
+        print("\n   -> Validating merged requirements.json...")
         verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "master"],
+            [sys.executable, os.path.join(TOOLS_DIR, "validate.py"), "--phase", "9"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
-            print("\n[!] Automated verification failed after merging requirements:")
+            print("\n[!] Validation failed after merging requirements:")
             print(verify_res.stdout)
-            sys.exit(1)
-
-        # Verify description length (minimum 10 words)
-        print("\n   -> Verifying description length in requirements.md...")
-        desc_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "req-desc-length", "docs/plan/requirements.md"],
-            capture_output=True, text=True, cwd=ctx.root_dir
-        )
-        if desc_res.returncode != 0:
-            print("\n[!] Description length validation failed after merging requirements:")
-            print(desc_res.stdout)
             sys.exit(1)
 
         ctx.stage_changes(allowed_files)
         ctx.state["requirements_merged"] = True
         ctx.save_state()
 
-class Phase4BScopeGate(BasePhase):
-    """Human checkpoint to review the requirements scope before proceeding.
 
-    Displays a summary of unique requirement count and line count, then
-    prompts the user to continue (``c``), edit ``requirements.md`` (``e``),
-    or abort (``q``).  Idempotent via ``ctx.state["scope_gate_passed"]``.
+class Phase10DeduplicateRequirements(BasePhase):
+    """Deduplicate requirements in ``requirements.json``.
+
+    Updates ``requirements.json`` in-place (removing duplicates) and writes
+    a deduplication record to ``requirements_deduped.json``.
+    Idempotent via ``ctx.state["requirements_deduplicated"]``.
     """
 
     def execute(self, ctx: ProjectContext) -> None:
-        """Present the scope gate prompt and wait for user confirmation.
+        if ctx.state.get("requirements_deduplicated", False):
+            print("Requirements deduplication already completed.")
+            return
 
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: When the user chooses to quit.
-        """
+        print("\n=> [Phase 10: Deduplicate Requirements] Removing duplicates...")
+        requirements_json_path = os.path.join(ctx.plan_dir, "requirements.json")
+        deduped_path = os.path.join(ctx.plan_dir, "requirements_deduped.json")
+
+        if not os.path.exists(requirements_json_path):
+            print("\n[!] requirements.json not found.")
+            sys.exit(1)
+
+        with open(requirements_json_path, "r", encoding="utf-8") as f:
+            req_content = f.read()
+
+        prompt_tmpl = ctx.load_prompt("deduplicate_requirements.md")
+        prompt = ctx.format_prompt(prompt_tmpl,
+            description_ctx=ctx.description_ctx,
+            requirements_json_path="docs/plan/requirements.json",
+            deduped_target_path="docs/plan/requirements_deduped.json"
+        )
+
+        allowed_files = [requirements_json_path, deduped_path]
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
+
+        if result.returncode != 0:
+            print("\n[!] Error deduplicating requirements.")
+            sys.exit(1)
+
+        # Validate
+        print("\n   -> Validating deduplication...")
+        verify_res = subprocess.run(
+            [sys.executable, os.path.join(TOOLS_DIR, "validate.py"), "--phase", "10"],
+            capture_output=True, text=True, cwd=ctx.root_dir
+        )
+        if verify_res.returncode != 0:
+            print("\n[!] Validation failed after deduplication:")
+            print(verify_res.stdout)
+            sys.exit(1)
+
+        ctx.stage_changes(allowed_files)
+        ctx.state["requirements_deduplicated"] = True
+        ctx.save_state()
+
+
+class Phase11ScopeGate(BasePhase):
+    """Human checkpoint to review the requirements scope before proceeding.
+
+    Displays a summary of requirement count and prompts the user to continue,
+    edit, or abort.  Idempotent via ``ctx.state["scope_gate_passed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
         if ctx.state.get("scope_gate_passed", False):
             print("Scope gate already passed.")
             return
 
-        req_path = os.path.join(ctx.root_dir, "docs/plan/requirements.md")
+        req_path = os.path.join(ctx.plan_dir, "requirements.json")
         if not os.path.exists(req_path):
-            print("\n[!] docs/plan/requirements.md not found. Cannot perform scope gate.")
+            print("\n[!] requirements.json not found. Cannot perform scope gate.")
             sys.exit(1)
 
         with open(req_path, "r", encoding="utf-8") as f:
-            req_content = f.read()
+            req_data = json.load(f)
 
-        # Count requirements
-        req_ids = re.findall(r'\[([A-Z0-9_]+-[A-Z0-9\-_]+)\]', req_content)
-        unique_reqs = set(req_ids)
-        line_count = len(req_content.splitlines())
+        req_count = len(req_data.get("requirements", []))
 
         summary = (
             f"SCOPE GATE — Human Review Required\n"
-            f"  Total unique requirements: {len(unique_reqs)}\n"
-            f"  Requirements document: {line_count} lines\n"
+            f"  Total requirements: {req_count}\n"
+            f"  Requirements file: docs/plan/requirements.json\n"
+            f"  Dedup record: docs/plan/requirements_deduped.json\n"
             f"  Original description: {len(ctx.description_ctx.splitlines())} lines\n"
-            f"  Review 'docs/plan/requirements.md' to check for scope inflation.\n"
+            f"  Review requirements.json to check for scope inflation.\n"
             f"  You may edit the file to remove or defer requirements.\n"
             f"  [c]ontinue / [e]dit (opens $EDITOR) / [q]uit"
         )
@@ -701,10 +720,9 @@ class Phase4BScopeGate(BasePhase):
                 subprocess.run([editor, req_path])
                 # Recount after edit
                 with open(req_path, "r", encoding="utf-8") as f:
-                    req_content = f.read()
-                req_ids = re.findall(r'\[([A-Z0-9_]+-[A-Z0-9\-_]+)\]', req_content)
-                unique_reqs = set(req_ids)
-                print(f"\n  Updated requirement count: {len(unique_reqs)}")
+                    req_data = json.load(f)
+                req_count = len(req_data.get("requirements", []))
+                print(f"\n  Updated requirement count: {req_count}")
             elif action == 'c':
                 break
 
@@ -714,165 +732,402 @@ class Phase4BScopeGate(BasePhase):
         print("  Scope gate passed. Continuing...\n")
 
 
-class Phase4COrderRequirements(BasePhase):
-    """Sequence and prioritise requirements by dependency and implementation order.
+class Phase12OrderRequirements(BasePhase):
+    """Order requirements for implementation, prioritizing E2E testability.
 
-    Produces ``ordered_requirements.md``, verifies it with
-    ``verify.py --verify-ordered``, then renames it to
-    ``requirements.md``.  Idempotent via ``ctx.state["requirements_ordered"]``.
+    Reads ``requirements.json`` and produces ``requirements_ordered.json``.
+    Idempotent via ``ctx.state["requirements_ordered"]``.
     """
 
     def execute(self, ctx: ProjectContext) -> None:
-        """Generate and verify the ordered requirements document.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: On AI runner or verification failure.
-        """
         if ctx.state.get("requirements_ordered", False):
             print("Requirements ordering already completed.")
             return
-            
-        print("\n=> [Phase 4C: Order Requirements] Sequencing requirements and capturing dependencies...")
+
+        print("\n=> [Phase 12: Order Requirements] Sequencing for E2E-first implementation...")
         prompt_tmpl = ctx.load_prompt("order_requirements.md")
         prompt = ctx.format_prompt(prompt_tmpl, description_ctx=ctx.description_ctx)
-        
-        allowed_files = [os.path.join(ctx.root_dir, "ordered_requirements.md")]
-        
+
+        ordered_path = os.path.join(ctx.plan_dir, "requirements_ordered.json")
+        allowed_files = [ordered_path]
+
         result = ctx.run_gemini(prompt, allowed_files=allowed_files)
-        
+
         if result.returncode != 0:
-            print(result.stdout)
-            print(result.stderr)
             print("\n[!] Error ordering requirements.")
             sys.exit(1)
-            
-        print("\n   -> Verifying ordered_requirements.md against active requirements in docs/plan/requirements.md...")
+
+        # Validate
+        print("\n   -> Validating ordered requirements...")
         verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "ordered", "docs/plan/requirements.md", "ordered_requirements.md"],
+            [sys.executable, os.path.join(TOOLS_DIR, "validate.py"), "--phase", "12"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
-            print("\n[!] Automated verification failed after ordering requirements:")
+            print("\n[!] Validation failed after ordering requirements:")
             print(verify_res.stdout)
             sys.exit(1)
 
-        print("\n   -> Verifying requirement description lengths...")
-        verify_desc_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "req-desc-length", "docs/plan/requirements.md"],
-            capture_output=True, text=True, cwd=ctx.root_dir
-        )
-        if verify_desc_res.returncode != 0:
-            print("\n[!] Requirement description length verification failed:")
-            print(verify_desc_res.stdout)
-            sys.exit(1)
-
-        # Overwrite master with ordered version and cleanup
-        master_req_path = os.path.join(ctx.root_dir, "docs/plan/requirements.md")
-        ordered_req_path = os.path.join(ctx.root_dir, "ordered_requirements.md")
-        if os.path.exists(ordered_req_path):
-            if os.path.exists(master_req_path):
-                os.remove(master_req_path)
-            shutil.move(ordered_req_path, master_req_path)
-            
-        ctx.stage_changes([master_req_path])
+        ctx.stage_changes(allowed_files)
         ctx.state["requirements_ordered"] = True
         ctx.save_state()
 
-class Phase5GenerateEpics(BasePhase):
-    """Generate the ``docs/plan/phases/`` epic/phase documents.
 
-    Each phase file groups related requirements into an implementation epic.
-    Runs ``verify.py --verify-phases`` after generation.
-    Idempotent via ``ctx.state["phases_completed"]``.
+class Phase13GenerateEpics(BasePhase):
+    """Generate JSON epic/requirement mappings.
+
+    Produces ``docs/plan/epic_mappings.json`` with epics, their features,
+    and requirement mappings.  Validates with ``validate.py``.
+    Idempotent via ``ctx.state["epics_completed"]``.
     """
 
     def execute(self, ctx: ProjectContext) -> None:
-        """Generate phase documents and verify requirement coverage.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: On AI runner or verification failure.
-        """
-        if ctx.state.get("phases_completed", False):
-            print("Phase generation already completed.")
+        if ctx.state.get("epics_completed", False):
+            print("Epic generation already completed.")
             return
-            
-        print("\n=> [Phase 5: Generate Epics] Generating detailed phases/")
-        phases_prompt_tmpl = ctx.load_prompt("phases.md")
-        phases_prompt = ctx.format_prompt(phases_prompt_tmpl, description_ctx=ctx.description_ctx)
-        
-        phases_dir = os.path.join(ctx.plan_dir, "phases")
-        os.makedirs(phases_dir, exist_ok=True)
-        # Adding trailing slash allows creating content inside it
-        allowed_files = [phases_dir + os.sep]
-        result = ctx.run_gemini(phases_prompt, allowed_files=allowed_files)
-        
+
+        print("\n=> [Phase 13: Generate Epics] Generating JSON epic/requirement mappings...")
+        prompt_tmpl = ctx.load_prompt("phases.md")
+        prompt = ctx.format_prompt(prompt_tmpl, description_ctx=ctx.description_ctx)
+
+        epic_mappings_path = os.path.join(ctx.plan_dir, "epic_mappings.json")
+        allowed_files = [epic_mappings_path]
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
+
         if result.returncode != 0:
-            print("\n[!] Error generating phases.")
-            print(result.stdout)
-            print(result.stderr)
+            print("\n[!] Error generating epic mappings.")
             sys.exit(1)
-            
-        print("\n   -> Verifying phases/ covers all requirements...")
+
+        # Validate
+        print("\n   -> Validating epic mappings...")
         verify_res = subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "verify.py"), "phases", "docs/plan/requirements.md", "docs/plan/phases/"],
+            [sys.executable, os.path.join(TOOLS_DIR, "validate.py"), "--phase", "13"],
             capture_output=True, text=True, cwd=ctx.root_dir
         )
         if verify_res.returncode != 0:
-            print("\n[!] Automated verification failed: Not all requirements mapped to phases:")
+            print("\n[!] Validation failed:")
             print(verify_res.stdout)
             sys.exit(1)
-            
+
         ctx.stage_changes(allowed_files)
-        ctx.state["phases_completed"] = True
+        ctx.state["epics_completed"] = True
         ctx.save_state()
-        print("Successfully generated project phases.")
+        print("Successfully generated epic mappings.")
 
 
-class Phase5BSharedComponents(BasePhase):
-    """Generate a shared components manifest to coordinate parallel agents.
+class Phase14E2EInterfaces(BasePhase):
+    """Generate E2E interface definitions for each implementation phase.
 
-    Produces ``docs/plan/shared_components.md`` listing modules that are owned
-    or consumed by multiple implementation tasks.  Idempotent via
-    ``ctx.state["shared_components_completed"]``.
+    Produces ``docs/plan/e2e_interfaces.md`` with public API and data structure
+    definitions that E2E tests will validate.  Single agent.
+    Idempotent via ``ctx.state["e2e_interfaces_completed"]``.
     """
 
     def execute(self, ctx: ProjectContext) -> None:
-        """Generate the shared components manifest.
-
-        :param ctx: Shared project context.
-        :type ctx: ProjectContext
-        :raises SystemExit: On AI runner failure or when the output file is
-            not produced.
-        """
-        if ctx.state.get("shared_components_completed", False):
-            print("Shared components manifest already generated.")
+        if ctx.state.get("e2e_interfaces_completed", False):
+            print("E2E interfaces already generated.")
             return
 
-        print("\n=> [Phase 5B: Shared Components] Identifying shared modules and ownership...")
-        target_path = "docs/plan/shared_components.md"
-        expected_file = os.path.join(ctx.plan_dir, "shared_components.md")
+        print("\n=> [Phase 14: E2E Interfaces] Defining public interfaces per phase...")
 
-        prompt_tmpl = ctx.load_prompt("shared_components.md")
+        epic_mappings_path = os.path.join(ctx.plan_dir, "epic_mappings.json")
+        requirements_path = os.path.join(ctx.plan_dir, "requirements_ordered.json")
+        e2e_interfaces_path = os.path.join(ctx.plan_dir, "e2e_interfaces.md")
+
+        if not os.path.exists(epic_mappings_path):
+            print("\n[!] epic_mappings.json not found.")
+            sys.exit(1)
+
+        with open(epic_mappings_path, "r", encoding="utf-8") as f:
+            epic_mappings_json = f.read()
+        with open(requirements_path, "r", encoding="utf-8") as f:
+            requirements_json = f.read()
+
+        prompt_tmpl = ctx.load_prompt("e2e_interfaces.md")
         prompt = ctx.format_prompt(prompt_tmpl,
             description_ctx=ctx.description_ctx,
-            target_path=target_path
+            epic_mappings_json=epic_mappings_json,
+            requirements_json=requirements_json
         )
 
-        allowed_files = [expected_file]
+        allowed_files = [e2e_interfaces_path]
         result = ctx.run_gemini(prompt, allowed_files=allowed_files)
 
-        if result.returncode != 0 or not os.path.exists(expected_file):
-            print("\n[!] Error generating shared components manifest.")
-            print(result.stdout)
-            print(result.stderr)
+        if result.returncode != 0 or not os.path.exists(e2e_interfaces_path):
+            print("\n[!] Error generating E2E interfaces.")
             sys.exit(1)
 
         ctx.stage_changes(allowed_files)
-        ctx.state["shared_components_completed"] = True
+        ctx.state["e2e_interfaces_completed"] = True
         ctx.save_state()
-        print("Successfully generated shared components manifest.")
+        print("Successfully generated E2E interface definitions.")
+
+
+class Phase15FeatureGates(BasePhase):
+    """Break down E2E interface support into file-based feature gates.
+
+    Produces ``docs/plan/feature_gates.md`` defining feature gate files and
+    their mapping to E2E test scenarios.  Single agent.
+    Idempotent via ``ctx.state["feature_gates_completed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        if ctx.state.get("feature_gates_completed", False):
+            print("Feature gates already generated.")
+            return
+
+        print("\n=> [Phase 15: Feature Gates] Defining feature gate files...")
+
+        e2e_interfaces_path = os.path.join(ctx.plan_dir, "e2e_interfaces.md")
+        feature_gates_path = os.path.join(ctx.plan_dir, "feature_gates.md")
+
+        if not os.path.exists(e2e_interfaces_path):
+            print("\n[!] e2e_interfaces.md not found.")
+            sys.exit(1)
+
+        with open(e2e_interfaces_path, "r", encoding="utf-8") as f:
+            e2e_interfaces_content = f.read()
+
+        prompt_tmpl = ctx.load_prompt("feature_gates.md")
+        prompt = ctx.format_prompt(prompt_tmpl,
+            description_ctx=ctx.description_ctx,
+            e2e_interfaces_content=e2e_interfaces_content
+        )
+
+        allowed_files = [feature_gates_path]
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
+
+        if result.returncode != 0 or not os.path.exists(feature_gates_path):
+            print("\n[!] Error generating feature gates.")
+            sys.exit(1)
+
+        ctx.stage_changes(allowed_files)
+        ctx.state["feature_gates_completed"] = True
+        ctx.save_state()
+        print("Successfully generated feature gate definitions.")
+
+
+class Phase16RedGreenTasks(BasePhase):
+    """Break down epics into Red/Green task sets for each implementation phase.
+
+    Red tasks write public APIs with mocks and E2E tests.
+    Green tasks implement real functionality and create feature gate files.
+    Each task gets a .md file and a .json sidecar.
+
+    Runs in parallel across phases.  Validates with ``validate.py``.
+    Idempotent via ``ctx.state["tasks_completed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        if ctx.state.get("tasks_completed", False):
+            print("Red/Green task generation already completed.")
+            return
+
+        print("\n=> [Phase 16: Red/Green Tasks] Breaking down epics into Red/Green task sets...")
+
+        epic_mappings_path = os.path.join(ctx.plan_dir, "epic_mappings.json")
+        e2e_interfaces_path = os.path.join(ctx.plan_dir, "e2e_interfaces.md")
+        feature_gates_path = os.path.join(ctx.plan_dir, "feature_gates.md")
+        tasks_dir = os.path.join(ctx.plan_dir, "tasks")
+
+        if not os.path.exists(epic_mappings_path):
+            print("\n[!] epic_mappings.json not found.")
+            sys.exit(1)
+
+        with open(epic_mappings_path, "r", encoding="utf-8") as f:
+            epic_data = json.load(f)
+        with open(e2e_interfaces_path, "r", encoding="utf-8") as f:
+            e2e_interfaces = f.read()
+        with open(feature_gates_path, "r", encoding="utf-8") as f:
+            feature_gates = f.read()
+
+        # Group epics by phase
+        phases: Dict[int, list] = {}
+        for epic in epic_data.get("epics", []):
+            phase_num = epic.get("phase_number", 0)
+            phases.setdefault(phase_num, []).append(epic)
+
+        os.makedirs(tasks_dir, exist_ok=True)
+        allowed_files = [tasks_dir + os.sep]
+
+        def generate_phase_tasks(phase_num: int, phase_epics: list) -> bool:
+            phase_id = f"phase_{phase_num}"
+            phase_dir = os.path.join(tasks_dir, phase_id)
+            os.makedirs(phase_dir, exist_ok=True)
+
+            epic_json = json.dumps(phase_epics, indent=2)
+            target_dir = f"docs/plan/tasks/{phase_id}"
+
+            prompt_tmpl = ctx.load_prompt("red_green_tasks.md")
+            prompt = ctx.format_prompt(prompt_tmpl,
+                description_ctx=ctx.description_ctx,
+                phase_filename=phase_id,
+                epic_json=epic_json,
+                e2e_interfaces=e2e_interfaces,
+                feature_gates=feature_gates,
+                target_dir=target_dir
+            )
+
+            result = ctx.run_gemini(prompt, allowed_files=[phase_dir + os.sep])
+            if result.returncode != 0:
+                print(f"\n[!] Error generating tasks for {phase_id}.")
+                return False
+            return True
+
+        # Generate tasks in parallel
+        if ctx.jobs > 1 and len(phases) > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=ctx.jobs) as executor:
+                futures = {
+                    executor.submit(generate_phase_tasks, pn, epics): pn
+                    for pn, epics in sorted(phases.items())
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    pn = futures[future]
+                    if not future.result():
+                        sys.exit(1)
+        else:
+            for pn, epics in sorted(phases.items()):
+                if not generate_phase_tasks(pn, epics):
+                    sys.exit(1)
+
+        # Validate
+        print("\n   -> Validating task sidecars...")
+        verify_res = subprocess.run(
+            [sys.executable, os.path.join(TOOLS_DIR, "validate.py"), "--phase", "16"],
+            capture_output=True, text=True, cwd=ctx.root_dir
+        )
+        if verify_res.returncode != 0:
+            print("\n[!] Task validation failed:")
+            print(verify_res.stdout)
+            sys.exit(1)
+
+        ctx.stage_changes(allowed_files)
+        ctx.state["tasks_completed"] = True
+        ctx.save_state()
+        print("Successfully generated Red/Green tasks.")
+
+
+class Phase17ReviewRedGreenTasks(BasePhase):
+    """Review Red/Green tasks for a single implementation phase.
+
+    Checks completeness, no duplication between Red/Green, feature gate
+    coverage, and correct depends_on relationships.
+    Runs in parallel across phases.
+
+    :param phase_id: Phase directory name (e.g. ``"phase_1"``).
+    :type phase_id: str
+    """
+
+    def __init__(self, phase_id: str) -> None:
+        self.phase_id = phase_id
+
+    @property
+    def operation(self) -> str:
+        return "Review Tasks"
+
+    @property
+    def display_name(self) -> str:
+        return f"Phase17: Review {self.phase_id}"
+
+    def execute(self, ctx: ProjectContext) -> None:
+        tasks_dir = os.path.join(ctx.plan_dir, "tasks")
+        phase_dir = os.path.join(tasks_dir, self.phase_id)
+        if not os.path.isdir(phase_dir):
+            print(f"   -> Skipping review for {self.phase_id} (no directory).")
+            return
+
+        print(f"\n=> [Phase 17: Review] Reviewing Red/Green tasks for {self.phase_id}...")
+
+        # Collect red and green task content
+        red_content_parts = []
+        green_content_parts = []
+        for root, dirs, files in os.walk(phase_dir):
+            for fname in sorted(files):
+                if fname.endswith(".json") and not fname.startswith("dag"):
+                    fpath = os.path.join(root, fname)
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        sidecar = json.load(f)
+                    md_path = fpath.replace(".json", ".md")
+                    md_content = ""
+                    if os.path.exists(md_path):
+                        with open(md_path, "r", encoding="utf-8") as f:
+                            md_content = f.read()
+                    entry = f"### {fname}\n```json\n{json.dumps(sidecar, indent=2)}\n```\n{md_content}\n"
+                    if sidecar.get("type") == "red":
+                        red_content_parts.append(entry)
+                    else:
+                        green_content_parts.append(entry)
+
+        feature_gates_path = os.path.join(ctx.plan_dir, "feature_gates.md")
+        feature_gates = ""
+        if os.path.exists(feature_gates_path):
+            with open(feature_gates_path, "r", encoding="utf-8") as f:
+                feature_gates = f.read()
+
+        prompt_tmpl = ctx.load_prompt("review_red_green_tasks.md")
+        prompt = ctx.format_prompt(prompt_tmpl,
+            description_ctx=ctx.description_ctx,
+            phase_id=self.phase_id,
+            red_tasks_content="\n".join(red_content_parts) or "(no red tasks)",
+            green_tasks_content="\n".join(green_content_parts) or "(no green tasks)",
+            feature_gates=feature_gates
+        )
+
+        allowed_files = [phase_dir + os.sep]
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
+
+        if result.returncode != 0:
+            print(f"\n[!] Error reviewing tasks for {self.phase_id}.")
+            sys.exit(1)
+
+        ctx.stage_changes(allowed_files)
+
+
+class Phase19PreInitTask(BasePhase):
+    """Generate the Pre-Init task definition for project bootstrapping.
+
+    Creates a task .md and .json sidecar responsible for Dockerfile verification,
+    harness.py creation, feature gates directory setup, and E2E infrastructure.
+    Idempotent via ``ctx.state["pre_init_task_completed"]``.
+    """
+
+    def execute(self, ctx: ProjectContext) -> None:
+        if ctx.state.get("pre_init_task_completed", False):
+            print("Pre-Init task already generated.")
+            return
+
+        print("\n=> [Phase 19: Pre-Init Task] Generating bootstrap task definition...")
+
+        tasks_dir = os.path.join(ctx.plan_dir, "tasks")
+        pre_init_dir = os.path.join(tasks_dir, "phase_0")
+        os.makedirs(pre_init_dir, exist_ok=True)
+
+        requirements_path = os.path.join(ctx.plan_dir, "requirements_ordered.json")
+        requirements_json = ""
+        if os.path.exists(requirements_path):
+            with open(requirements_path, "r", encoding="utf-8") as f:
+                requirements_json = f.read()
+
+        target_path = "docs/plan/tasks/phase_0/00_pre_init"
+
+        prompt_tmpl = ctx.load_prompt("pre_init_task.md")
+        prompt = ctx.format_prompt(prompt_tmpl,
+            description_ctx=ctx.description_ctx,
+            requirements_json=requirements_json,
+            target_path=target_path
+        )
+
+        allowed_files = [pre_init_dir + os.sep]
+        result = ctx.run_gemini(prompt, allowed_files=allowed_files)
+
+        if result.returncode != 0:
+            print("\n[!] Error generating pre-init task.")
+            sys.exit(1)
+
+        ctx.stage_changes(allowed_files)
+        ctx.state["pre_init_task_completed"] = True
+        ctx.save_state()
+        print("Successfully generated pre-init task.")
 
 
 class Phase6BreakDownTasks(BasePhase):
@@ -935,7 +1190,7 @@ class Phase6BreakDownTasks(BasePhase):
             allowed_files = [group_filepath]
             
             if not os.path.exists(group_filepath):
-                group_result = ctx.run_gemini(grouping_prompt, allowed_files=allowed_files, sandbox=False)
+                group_result = ctx.run_gemini(grouping_prompt, allowed_files=allowed_files)
             
                 if group_result.returncode != 0:
                     print(f"\n[!] Error grouping tasks for {phase_filename}.")
@@ -994,7 +1249,7 @@ class Phase6BreakDownTasks(BasePhase):
                 
                         
                 allowed_files = [phase_task_dir + os.sep]
-                result = ctx.run_gemini(tasks_prompt, allowed_files=allowed_files, sandbox=False)
+                result = ctx.run_gemini(tasks_prompt, allowed_files=allowed_files)
                 
                 if result.returncode != 0:
                     print(f"\n[!] Error generating tasks for {target_dir}.")
@@ -1190,7 +1445,7 @@ class Phase6BReviewTasks(BasePhase):
             allowed_files = [phase_dir_path + os.sep]
 
             for attempt in range(1, 4):
-                result = ctx.run_gemini(prompt, allowed_files=allowed_files, sandbox=False)
+                result = ctx.run_gemini(prompt, allowed_files=allowed_files)
 
                 if result.returncode == 0 and os.path.exists(review_summary_path):
                     after_count = ctx.count_task_files(phase_dir_path)
@@ -1287,7 +1542,6 @@ class Phase6CCrossPhaseReview(BasePhase):
             result = ctx.run_gemini(
                 "cross_phase_review.md",
                 allowed_files=allowed_files,
-                sandbox=False,
                 context_files={
                     "description_ctx": ctx.input_dir,
                     "tasks_content": [os.path.join(tasks_dir, p) for p in phase_dirs],
@@ -1375,7 +1629,6 @@ class Phase6DReorderTasks(BasePhase):
             result = ctx.run_gemini(
                 "reorder_tasks.md",
                 allowed_files=allowed_files,
-                sandbox=False,
                 context_files={
                     "description_ctx": ctx.input_dir,
                     "tasks_content": [os.path.join(tasks_dir, p) for p in phase_dirs],
@@ -1462,22 +1715,33 @@ class Phase7ADAGGeneration(BasePhase):
         return [c for c in components if c and c.lower() != 'none']
 
     @staticmethod
+    def _read_sidecar_deps(phase_dir_path: str, task_id: str) -> Optional[List[str]]:
+        """Read depends_on from a task's JSON sidecar file.
+
+        :param phase_dir_path: Absolute path to the phase task directory.
+        :param task_id: Task ID in ``sub_epic/filename.md`` format.
+        :returns: List of dependency task IDs, or ``None`` if no sidecar exists.
+        """
+        sidecar_path = os.path.join(phase_dir_path, task_id.replace(".md", ".json"))
+        if not os.path.exists(sidecar_path):
+            return None
+        try:
+            with open(sidecar_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("depends_on", [])
+        except (json.JSONDecodeError, KeyError):
+            return None
+
+    @staticmethod
     def _build_programmatic_dag(phase_dir_path: str) -> Optional[Dict[str, List[str]]]:
-        """Build a DAG from ``depends_on`` and ``shared_components`` task metadata.
+        """Build a DAG from task JSON sidecars or markdown metadata.
 
-        Scans every ``.md`` file under *phase_dir_path*, parses their
-        ``depends_on`` fields, and augments the result with implicit
-        shared-component dependencies (the first task to reference a component
-        is treated as its creator; all later tasks that reference the same
-        component implicitly depend on it).
+        Prefers JSON sidecar ``depends_on`` fields; falls back to parsing
+        markdown front-matter.  Returns ``None`` when any task is missing
+        dependency metadata entirely (triggering AI fallback).
 
-        :param phase_dir_path: Absolute path to a phase task directory, e.g.
-            ``docs/plan/tasks/phase_1/``.
-        :type phase_dir_path: str
-        :returns: ``{task_id: [prerequisite_task_ids]}`` mapping when all
-            tasks have ``depends_on`` metadata, or ``None`` when any task is
-            missing the field (triggering AI fallback).
-        :rtype: Optional[Dict[str, List[str]]]
+        :param phase_dir_path: Absolute path to a phase task directory.
+        :returns: ``{task_id: [prerequisite_task_ids]}`` mapping, or ``None``.
         """
         dag = {}
         task_files = {}  # filename -> sub_epic/filename mapping
@@ -1493,13 +1757,16 @@ class Phase7ADAGGeneration(BasePhase):
 
             for md_file in sorted(md_files):
                 task_id = f"{sub_epic}/{md_file}"
-                filepath = os.path.join(sub_epic_dir, md_file)
-                with open(filepath, "r", encoding="utf-8") as f:
-                    content = f.read()
-
                 task_files[md_file] = task_id
 
-                deps = Phase7ADAGGeneration._parse_depends_on(content)
+                # Prefer JSON sidecar, fall back to markdown parsing
+                deps = Phase7ADAGGeneration._read_sidecar_deps(phase_dir_path, task_id)
+                if deps is None:
+                    filepath = os.path.join(sub_epic_dir, md_file)
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    deps = Phase7ADAGGeneration._parse_depends_on(content)
+
                 if deps is None:
                     all_have_metadata = False
                     continue
@@ -1507,13 +1774,11 @@ class Phase7ADAGGeneration(BasePhase):
                 # Resolve dependency filenames to full task_ids
                 resolved_deps = []
                 for dep in deps:
-                    # dep might be just a filename or sub_epic/filename
                     if '/' in dep:
                         resolved_deps.append(dep)
                     elif dep in task_files:
                         resolved_deps.append(task_files[dep])
                     else:
-                        # Try to find it in any sub_epic
                         for se in sorted(sub_epics):
                             candidate = f"{se}/{dep}"
                             candidate_path = os.path.join(phase_dir_path, se, dep)
@@ -1521,41 +1786,10 @@ class Phase7ADAGGeneration(BasePhase):
                                 resolved_deps.append(candidate)
                                 break
 
-                # Filter out self-references
                 dag[task_id] = [d for d in resolved_deps if d != task_id]
 
         if not all_have_metadata:
             return None
-
-        # Add shared component dependencies: if task A creates component X
-        # and task B consumes component X, B depends on A
-        component_creators = {}  # component_name -> task_id
-        component_consumers: Dict[str, List[str]] = {}  # component_name -> [task_ids]
-
-        for sub_epic in sorted(sub_epics):
-            sub_epic_dir = os.path.join(phase_dir_path, sub_epic)
-            md_files = [f for f in os.listdir(sub_epic_dir)
-                       if f.endswith(".md") and f not in _NON_TASK_FILES]
-            for md_file in sorted(md_files):
-                task_id = f"{sub_epic}/{md_file}"
-                filepath = os.path.join(sub_epic_dir, md_file)
-                with open(filepath, "r", encoding="utf-8") as f:
-                    content = f.read()
-                components = Phase7ADAGGeneration._parse_shared_components(content)
-                for comp in components:
-                    # Heuristic: first task to reference a component is the creator
-                    if comp not in component_creators:
-                        component_creators[comp] = task_id
-                    else:
-                        component_consumers.setdefault(comp, []).append(task_id)
-
-        # Add implicit dependencies from shared components
-        for comp, consumers in component_consumers.items():
-            creator = component_creators.get(comp)
-            if creator:
-                for consumer in consumers:
-                    if consumer in dag and creator not in dag[consumer]:
-                        dag[consumer].append(creator)
 
         return dag
 
@@ -1673,7 +1907,6 @@ class Phase7ADAGGeneration(BasePhase):
                 result = ctx.run_gemini(
                     "dag_tasks.md",
                     allowed_files=[dag_file_path],
-                    sandbox=False,
                     context_files={
                         "description_ctx": ctx.input_dir,
                         "tasks_content": phase_dir_path,
@@ -1772,7 +2005,7 @@ class Phase7ADAGGeneration(BasePhase):
 class Phase3AConflictResolution(BasePhase):
     """Systematic conflict resolution between planning documents.
 
-    Compares all spec and research documents for contradictions and resolves
+    Compares all spec documents for contradictions and resolves
     them using a defined priority hierarchy.  Produces
     ``docs/plan/conflict_resolution.md``.  Idempotent via
     ``ctx.state["conflict_resolution_completed"]``.
@@ -1795,7 +2028,7 @@ class Phase3AConflictResolution(BasePhase):
 
         allowed_files = [expected_file]
         allowed_files.extend([ctx.get_document_path(d) for d in DOCS])
-        result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+        result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
         if result.returncode != 0 or not os.path.exists(expected_file):
             print("\n[!] Error during conflict resolution review.")
