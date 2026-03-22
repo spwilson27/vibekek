@@ -1635,8 +1635,8 @@ def run_impl_stage(
         success = True
         return True
 
-    except RuntimeError as e:
-        _log(f"      [!] [Impl] {e}")
+    except Exception as e:
+        _log(f"      [!] [Impl] {type(e).__name__}: {e}")
         if dashboard:
             dashboard.set_agent(full_task_id, "Impl", "failed", str(e))
         return False
@@ -1723,8 +1723,8 @@ def run_review_stage(
         success = True
         return True
 
-    except RuntimeError as e:
-        _log(f"      [!] [Review] {e}")
+    except Exception as e:
+        _log(f"      [!] [Review] {type(e).__name__}: {e}")
         if dashboard:
             dashboard.set_agent(full_task_id, "Review", "failed", str(e))
         return False
@@ -1856,8 +1856,8 @@ def run_validate_stage(
                                  f"Failed after {max_retries} attempts", agent_name=None)
         return False
 
-    except RuntimeError as e:
-        _log(f"      [!] [Verify] {e}")
+    except Exception as e:
+        _log(f"      [!] [Verify] {type(e).__name__}: {e}")
         if dashboard:
             # Verify doesn't spawn an agent, so clear agent_name
             dashboard.set_agent(full_task_id, "Verify", "failed", str(e), agent_name=None)
@@ -2877,11 +2877,16 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
                     if shutdown_requested:
                         dashboard.log(f"   -> [Shutdown] Task {task_id} interrupted. Will resume on next run.")
                         continue
+                    tb_str = traceback.format_exc()
                     traceback.print_exc()
+                    dashboard.log(f"   -> [Exception] Task {task_id}: {type(exc).__name__}: {exc}")
+                    for tb_line in tb_str.strip().splitlines()[-5:]:
+                        dashboard.log(f"      {tb_line}")
                     with state_lock:
                         attempts = task_attempts.get(task_id, 1)
                     if attempts <= max_task_retries:
-                        dashboard.log(f"   -> [Retry] Task {task_id} raised exception (attempt {attempts}/{max_task_retries + 1}). Re-queuing...")
+                        dashboard.log(f"   -> [Retry] Task {task_id} raised exception (attempt {attempts}/{max_task_retries + 1}). Re-queuing after 10s delay...")
+                        time.sleep(10)
                     else:
                         with state_lock:
                             failed_tasks.add(f"Task {task_id} generated an exception after {attempts} attempt(s).")
