@@ -92,6 +92,12 @@ def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined
         phase = task_id.split("/")[0]
         phases.setdefault(phase, []).append(task_id)
 
+    def _phase_num(name: str) -> int:
+        try:
+            return int(name.split("_")[1])
+        except (IndexError, ValueError):
+            return 999
+
     # Also find tasks on disk not in DAG
     on_disk = set()
     if os.path.exists(tasks_dir):
@@ -102,7 +108,7 @@ def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined
             "REQUIREMENTS_TRACEABILITY.md",
             "review_summary.md",
         }
-        for phase_dir in sorted(os.listdir(tasks_dir)):
+        for phase_dir in sorted(os.listdir(tasks_dir), key=_phase_num):
             phase_path = os.path.join(tasks_dir, phase_dir)
             if not os.path.isdir(phase_path) or not phase_dir.startswith("phase_"):
                 continue
@@ -121,7 +127,7 @@ def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined
 
     print(f"\nPlan Status: {n_completed}/{total} completed, {n_blocked} blocked, {n_pending} pending\n")
 
-    for phase in sorted(phases.keys()):
+    for phase in sorted(phases.keys(), key=_phase_num):
         tasks = phases[phase]
         phase_done = sum(1 for t in tasks if t in completed)
         print(f"  {phase} ({phase_done}/{len(tasks)})")
