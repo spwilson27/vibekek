@@ -188,15 +188,21 @@ def cmd_plan(args: argparse.Namespace) -> None:
 
     runner = _make_runner(args.backend, model=args.model)
 
-    # Apply per-agent context_limit when the selected backend matches a pool
-    # definition.  The CLI --context-limit flag (already applied in main()) takes
-    # precedence over this, so set_agent_context_limit only has effect when no
-    # CLI override was given.
+    # Build agent pool for parallel phases when pool configs are available.
+    # The pool enables multi-agent parallelism in phases 2, 3, 7, 8, 17.
+    agent_pool: Optional[AgentPoolManager] = None
     agent_configs = get_agent_pool_configs()
-    for _ac in agent_configs:
-        if _ac.backend == args.backend and _ac.context_limit is not None:
-            set_agent_context_limit(_ac.context_limit)
-            break
+    if agent_configs:
+        agent_pool = AgentPoolManager(agent_configs)
+        # Auto-set jobs to total pool parallel capacity when user didn't
+        # explicitly pass --jobs (default is 1).
+        if args.jobs == 1:
+            args.jobs = sum(ac.parallel for ac in agent_configs)
+        # Apply per-agent context_limit for the default backend
+        for _ac in agent_configs:
+            if _ac.backend == args.backend and _ac.context_limit is not None:
+                set_agent_context_limit(_ac.context_limit)
+                break
 
     with make_dashboard(log_file=log_stream) as dashboard:
         original_stdout = sys.stdout
@@ -234,9 +240,17 @@ def cmd_plan(args: argparse.Namespace) -> None:
                 else:
                     dashboard.log(f"Warning: unknown phase '{args.phase}' for --force, ignoring.")
 
+            if agent_pool:
+                names = ", ".join(f"{c.name}({c.backend}, parallel={c.parallel})" for c in agent_configs)
+                dashboard.log(f"[Plan] Agent pool: {names}")
+                dashboard.log(f"[Plan] Parallel jobs: {args.jobs}")
+            else:
+                dashboard.log(f"[Plan] No agent pool configured (using single backend: {args.backend})")
+                dashboard.log(f"[Plan] Parallel jobs: {args.jobs}")
             orchestrator = Orchestrator(ctx, dashboard=dashboard,
                                        max_retries=args.retries, timeout=args.timeout,
-                                       auto_retries=args.auto_retries)
+                                       auto_retries=args.auto_retries,
+                                       agent_pool=agent_pool)
             orchestrator.run()
         finally:
             sys.stdout = original_stdout

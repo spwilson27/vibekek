@@ -15,6 +15,7 @@ import subprocess
 import sys
 import json
 import re
+import threading
 from typing import Any, Callable, List, Dict, Optional, Union
 
 from .constants import TOOLS_DIR, INPUT_DIR, GEN_STATE_FILE, DOCS
@@ -165,6 +166,10 @@ class ProjectContext:
         self.dashboard = dashboard
         self.current_phase: str = ""
         self.agent_timeout: Optional[int] = None
+        # Thread-local overrides for parallel phase execution.
+        # Parallel workers set _tls.runner and _tls.phase so each thread
+        # uses its own pool-acquired runner and dashboard identity.
+        self._tls = threading.local()
 
         # Ensures directories exist
         os.makedirs(self.specs_dir, exist_ok=True)
@@ -595,6 +600,7 @@ class ProjectContext:
         *,
         context_files: Optional[Dict[str, Union[str, List[str]]]] = None,
         params: Optional[Dict[str, Any]] = None,
+        runner: Optional["AIRunner"] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Invoke the configured AI runner.
 
@@ -622,6 +628,10 @@ class ProjectContext:
         :param params: Small static template values (e.g. file paths, phase
             IDs) that do not require truncation.
         :type params: dict[str, Any] or None
+        :param runner: Optional override runner for this call.  When provided,
+            this runner is used instead of ``self.runner``.  Thread-safe:
+            each parallel phase can pass its own pool-acquired runner.
+        :type runner: AIRunner or None
         :returns: The completed process result from the underlying runner.
         :rtype: subprocess.CompletedProcess
         """
@@ -633,10 +643,18 @@ class ProjectContext:
             )
             ctx_strs = self.build_context_strings(context_files or {}, extra_tokens=extra)
             full_prompt = self.format_prompt(tmpl, **(params or {}), **ctx_strs)
+        # Resolve runner: explicit arg > thread-local override > instance default
+        tls_runner = getattr(self._tls, "runner", None)
+        active_runner = runner if runner is not None else (tls_runner or self.runner)
+
+        # Resolve phase name: thread-local override > instance attribute
+        tls_phase = getattr(self._tls, "phase", None)
+        effective_phase = tls_phase or self.current_phase
+
         on_line: Optional[Callable[[str], None]] = None
         if self.dashboard is not None:
             _dash = self.dashboard
-            _phase = self.current_phase
+            _phase = effective_phase
             _task_id = f"plan/{_phase}" if _phase else ""
             def on_line(line: str) -> None:
                 prefixed = f"[{_phase}] {line}" if _phase else line
@@ -644,7 +662,7 @@ class ProjectContext:
                 if _task_id:
                     _dash.update_last_line(_task_id, line)
         effective_timeout = timeout if timeout is not None else self.agent_timeout
-        result = self.runner.run(self.root_dir, full_prompt, self.image_paths, on_line=on_line, timeout=effective_timeout)
+        result = active_runner.run(self.root_dir, full_prompt, self.image_paths, on_line=on_line, timeout=effective_timeout)
         if result.returncode != 0:
             self._log_failure_summary(result)
             self._write_last_failed_command(full_prompt)
@@ -695,27 +713,22 @@ class ProjectContext:
         *,
         context_files: Optional[Dict[str, Union[str, List[str]]]] = None,
         params: Optional[Dict[str, Any]] = None,
+        runner: Optional["AIRunner"] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Alias for :meth:`run_ai` retained for backwards compatibility.
 
-        Accepts the same *context_files* and *params* keyword arguments as
-        :meth:`run_ai`.
-
         :param full_prompt: Fully rendered prompt string, or template filename
             when *context_files* / *params* are given.
-        :type full_prompt: str
         :param allowed_files: Paths the AI is permitted to touch.
-        :type allowed_files: list[str] or None
         :param timeout: Maximum seconds to wait for the AI process.
-        :type timeout: int or None
         :param context_files: See :meth:`run_ai`.
         :param params: See :meth:`run_ai`.
+        :param runner: Optional override runner for this call.
         :returns: The completed process result.
-        :rtype: subprocess.CompletedProcess
         """
         return self.run_ai(
             full_prompt, allowed_files, timeout=timeout,
-            context_files=context_files, params=params,
+            context_files=context_files, params=params, runner=runner,
         )
 
     def count_task_files(self, directory: str) -> int:

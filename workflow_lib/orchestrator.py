@@ -11,16 +11,20 @@ Typical usage::
     Orchestrator(ctx).run()
 """
 
+import concurrent.futures
 import os
 import signal
 import subprocess
 import sys
-from typing import Any, Callable, Optional, Union
+import threading
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from .constants import DOCS
 from .context import ProjectContext
+from .config import set_agent_context_limit
 from .discord import notify_failure
 from .prompt_registry import validate_all_prompts_exist
+from .runners import make_runner
 from .phases import *
 
 
@@ -33,28 +37,21 @@ class Orchestrator:
     :param dashboard: Optional dashboard instance for routing output and
         displaying per-phase status.  When ``None`` all output goes to
         ``sys.stdout`` via ``print``.
+    :param agent_pool: Optional :class:`~workflow_lib.agent_pool.AgentPoolManager`
+        for distributing parallel phases across configured agents.
     """
 
     def __init__(self, ctx: ProjectContext, dashboard: Optional[Any] = None,
                  max_retries: int = 3, timeout: int = 600,
-                 auto_retries: Optional[int] = None) -> None:
-        """Initialise the orchestrator with a project context.
-
-        :param ctx: The :class:`~workflow_lib.context.ProjectContext` instance
-            that phases will read and mutate.
-        :type ctx: ProjectContext
-        :param dashboard: Optional dashboard.
-        :param max_retries: Maximum retry attempts per phase (0 = no retries).
-        :param timeout: Timeout in seconds per AI agent invocation.
-        :param auto_retries: Number of automatic retries before prompting
-            the user.  ``None`` means always prompt immediately.
-        """
+                 auto_retries: Optional[int] = None,
+                 agent_pool: Optional[Any] = None) -> None:
         self.ctx = ctx
         self.dashboard = dashboard
         self.max_retries = max(max_retries, 1)  # At least 1 attempt
         self.auto_retries = auto_retries or 0
         self.ctx.agent_timeout = timeout if timeout > 0 else None
         self.shutdown_requested = False
+        self.agent_pool = agent_pool
         self._prev_sigint_handler: Optional[Union[Callable, int, signal.Handlers]] = None
 
     def _log(self, message: str) -> None:
@@ -225,8 +222,125 @@ class Orchestrator:
         finally:
             self.restore_signal_handler()
 
+    def _run_parallel_phases(self, phases: List[Any], label: str = "") -> None:
+        """Run a batch of phases in parallel, optionally using the agent pool.
+
+        When ``ctx.jobs > 1``, phases are submitted to a
+        :class:`~concurrent.futures.ThreadPoolExecutor`.  Each worker sets
+        thread-local overrides on the shared :class:`ProjectContext` so that
+        ``run_ai()`` uses the correct runner and dashboard identity without
+        mutating shared state.
+
+        When an agent pool is configured, each worker acquires an agent from
+        the pool.  Without a pool, the default runner is used for all workers.
+
+        Falls back to sequential execution when ``ctx.jobs <= 1``.
+
+        :param phases: List of phase objects to execute.
+        :param label: Human-readable label for logging (e.g. "Phase 2").
+        """
+        if self.ctx.jobs <= 1 or len(phases) <= 1:
+            self._log(f"[{label}] Running {len(phases)} phase(s) sequentially "
+                      f"(jobs={self.ctx.jobs}, pool={'yes' if self.agent_pool else 'no'}).")
+            for phase in phases:
+                self.run_phase_with_retry(phase)
+            return
+
+        self._log(f"[{label}] Running {len(phases)} phases in parallel "
+                  f"(jobs={self.ctx.jobs}, pool={'yes' if self.agent_pool else 'no'})...")
+        errors: List[str] = []
+        lock = threading.Lock()
+
+        def _run_one(phase: Any) -> None:
+            if self.shutdown_requested:
+                return
+            name = phase.display_name
+            stage = phase.operation
+            agent_cfg = None
+            agent_name = ""
+
+            # Acquire from pool if available; otherwise use default runner
+            if self.agent_pool is not None:
+                self._log(f"[{label}] Acquiring agent for {name}...")
+                agent_cfg = self.agent_pool.acquire(timeout=300.0, step=None)
+                if agent_cfg is None:
+                    self._log(f"[{label}] TIMEOUT acquiring agent for {name}")
+                    with lock:
+                        errors.append(f"Timeout acquiring agent for {name}")
+                    return
+                agent_name = agent_cfg.name
+                self._log(f"[{label}] Acquired {agent_name} for {name}")
+
+            try:
+                # Build a per-thread runner from pool config or use default
+                if agent_cfg is not None:
+                    thread_runner = make_runner(
+                        agent_cfg.backend,
+                        model=agent_cfg.model,
+                        user=agent_cfg.user,
+                        env=agent_cfg.env,
+                    )
+                    if agent_cfg.context_limit is not None:
+                        set_agent_context_limit(agent_cfg.context_limit)
+                else:
+                    thread_runner = self.ctx.runner
+
+                # Set thread-local overrides so run_ai() picks them up
+                self.ctx._tls.runner = thread_runner
+                self.ctx._tls.phase = name
+
+                # Register on dashboard
+                task_key = f"plan/{name}"
+                self._log(f"[{label}] Dashboard: set_agent({task_key!r}, {stage!r}, 'running', agent_name={agent_name!r})")
+                if self.dashboard:
+                    self.dashboard.set_agent(
+                        task_key, stage, "running",
+                        agent_name=agent_name,
+                    )
+
+                phase.execute(self.ctx)
+
+                self._log(f"-> Phase {name} completed" +
+                          (f" ({agent_name})." if agent_name else "."))
+                if self.dashboard:
+                    self.dashboard.set_agent(
+                        task_key, stage, "done",
+                        agent_name=agent_name,
+                    )
+            except (SystemExit, Exception) as exc:
+                if isinstance(exc, SystemExit) and exc.code == 0:
+                    if self.dashboard:
+                        self.dashboard.set_agent(f"plan/{name}", stage, "done",
+                                                 agent_name=agent_name)
+                    return
+                self._log(f"[!] Phase {name} failed" +
+                          (f" ({agent_name}): {exc}" if agent_name else f": {exc}"))
+                if self.dashboard:
+                    self.dashboard.set_agent(f"plan/{name}", stage, "failed",
+                                             agent_name=agent_name)
+                with lock:
+                    errors.append(f"{name}: {exc}")
+            finally:
+                # Clean up thread-local overrides
+                self.ctx._tls.runner = None
+                self.ctx._tls.phase = None
+                if agent_cfg is not None:
+                    self.agent_pool.release(agent_cfg)
+                    if agent_cfg.context_limit is not None:
+                        set_agent_context_limit(None)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.ctx.jobs) as executor:
+            futures = [executor.submit(_run_one, p) for p in phases]
+            concurrent.futures.wait(futures)
+
+        if errors:
+            for err in errors:
+                self._log(f"[!] {err}")
+            notify_failure(f"Plan parallel phase '{label}' had {len(errors)} failure(s).")
+            sys.exit(1)
+
     def _run_phases(self) -> None:
-        """Internal method that runs all planning phases sequentially."""
+        """Internal method that runs all planning phases."""
         self._log("Beginning multi-phase document generation and lifecycle orchestration...")
 
         # Startup validation: ensure all prompt files exist before running any phase
@@ -244,12 +358,14 @@ class Orchestrator:
             self._validate_artifacts([expected], f"Phase1/{doc['id']}")
 
         # Phase 2: Flesh out each spec document (parallel)
-        for doc in DOCS:
-            self.run_phase_with_retry(Phase2FleshOutDoc(doc))
+        self._run_parallel_phases(
+            [Phase2FleshOutDoc(doc) for doc in DOCS], "Phase 2: Flesh Out"
+        )
 
         # Phase 3: Summarize each document (parallel)
-        for doc in DOCS:
-            self.run_phase_with_retry(Phase2BSummarizeDoc(doc))
+        self._run_parallel_phases(
+            [Phase2BSummarizeDoc(doc) for doc in DOCS], "Phase 3: Summarize"
+        )
 
         # Phase 4: Final holistic review
         self.run_phase_with_retry(Phase3FinalReview())
@@ -270,15 +386,19 @@ class Orchestrator:
 
         # Phase 7: Extract requirements from each doc (parallel, JSON output)
         if not self.ctx.state.get("requirements_extracted", False):
-            for doc in DOCS:
-                self.run_phase_with_retry(Phase7ExtractRequirements(doc))
+            self._run_parallel_phases(
+                [Phase7ExtractRequirements(doc) for doc in DOCS],
+                "Phase 7: Extract Requirements"
+            )
             self.ctx.state["requirements_extracted"] = True
             self.ctx.save_state()
 
         # Phase 8: Filter meta requirements (parallel per doc)
         if not self.ctx.state.get("meta_requirements_filtered", False):
-            for doc in DOCS:
-                self.run_phase_with_retry(Phase8FilterMetaRequirements(doc))
+            self._run_parallel_phases(
+                [Phase8FilterMetaRequirements(doc) for doc in DOCS],
+                "Phase 8: Filter Meta Requirements"
+            )
             self.ctx.state["meta_requirements_filtered"] = True
             self.ctx.save_state()
 
@@ -338,8 +458,10 @@ class Orchestrator:
                     d for d in os.listdir(tasks_dir)
                     if os.path.isdir(os.path.join(tasks_dir, d)) and d.startswith("phase_")
                 ])
-                for phase_id in phase_dirs:
-                    self.run_phase_with_retry(Phase17ReviewRedGreenTasks(phase_id))
+                self._run_parallel_phases(
+                    [Phase17ReviewRedGreenTasks(pid) for pid in phase_dirs],
+                    "Phase 17: Review Tasks"
+                )
             self.ctx.state["tasks_reviewed"] = True
             self.ctx.save_state()
 

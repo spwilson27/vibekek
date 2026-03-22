@@ -194,7 +194,7 @@ class AgentPoolManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def acquire(self, timeout: float = 300.0, step: str = "all") -> Optional[AgentConfig]:
+    def acquire(self, timeout: float = 300.0, step: Optional[str] = "all") -> Optional[AgentConfig]:
         """Block until an agent slot is available and return it.
 
         Walks agents in priority order, skipping any that are at their
@@ -245,7 +245,7 @@ class AgentPoolManager:
                 now = time.time()
                 next_wakeup = now + 5.0
                 for cfg in self._configs:
-                    if "all" not in cfg.steps and step not in cfg.steps:
+                    if step is not None and "all" not in cfg.steps and step not in cfg.steps:
                         continue
                     if self._active[cfg.name] < cfg.parallel:
                         qe = self._quota_expiry.get(cfg.name, 0)
@@ -290,19 +290,21 @@ class AgentPoolManager:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _pick(self, step: str = "all") -> Optional[AgentConfig]:
+    def _pick(self, step: Optional[str] = "all") -> Optional[AgentConfig]:
         """Return the best available agent for *step* or ``None`` (must hold *_lock*).
 
         An agent is eligible when:
 
-        * Its :attr:`~AgentConfig.steps` list contains *step* or ``"all"``.
-        * Its quota-suppression window has not elapsed.
+        * *step* is ``None`` (match any agent), **or** its
+          :attr:`~AgentConfig.steps` list contains *step* or ``"all"``.
+        * Its quota-suppression window has elapsed.
         * Its active job count is below :attr:`~AgentConfig.parallel`.
         """
         now = time.time()
         for cfg in self._configs:  # already sorted by priority
-            # Step filter: agent must allow this step or be configured for "all".
-            if "all" not in cfg.steps and step not in cfg.steps:
+            # Step filter: None matches any agent; otherwise agent must
+            # allow this step or be configured for "all".
+            if step is not None and "all" not in cfg.steps and step not in cfg.steps:
                 continue
             if now < self._quota_expiry.get(cfg.name, 0):
                 continue  # quota suppressed

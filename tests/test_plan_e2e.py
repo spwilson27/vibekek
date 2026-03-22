@@ -440,6 +440,398 @@ class TestPlanningIdempotency:
             )
 
 
+class TestParallelAgentPool:
+    """Verify parallel phases use the agent pool and dashboard correctly."""
+
+    def test_parallel_phases_acquire_from_pool_and_show_in_dashboard(self, tmp_path):
+        """Phase 2 (flesh out) runs in parallel, acquires agents, updates dashboard."""
+        tools_dir = _create_tools_layout(tmp_path)
+        subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=False,
+                       capture_output=True)
+
+        from workflow_lib.agent_pool import AgentConfig, AgentPoolManager
+        from workflow_lib.constants import DOCS
+
+        # Create a pool with 2 agents
+        pool = AgentPoolManager([
+            AgentConfig(name="agent-alpha", backend="gemini", user="",
+                        parallel=2, priority=1, quota_time=60),
+            AgentConfig(name="agent-beta", backend="gemini", user="",
+                        parallel=2, priority=2, quota_time=60),
+        ])
+
+        import threading
+
+        # Track which agents are acquired and dashboard calls
+        acquired_agents = []  # (thread_id, agent_name)
+        lock = threading.Lock()
+
+        original_acquire = pool.acquire
+        def spy_acquire(*args, **kwargs):
+            cfg = original_acquire(*args, **kwargs)
+            if cfg:
+                with lock:
+                    acquired_agents.append((threading.current_thread().ident, cfg.name))
+            return cfg
+
+        pool.acquire = spy_acquire
+
+        # Track dashboard set_agent calls
+        real_set_agent_calls = []
+        def capture_set_agent(task_id, stage, status, last_line="", agent_name=""):
+            with lock:
+                real_set_agent_calls.append({
+                    "task_id": task_id,
+                    "stage": stage,
+                    "status": status,
+                    "agent_name": agent_name,
+                })
+
+        mock_dashboard = MagicMock()
+        mock_dashboard.set_agent = capture_set_agent
+        mock_dashboard.log = MagicMock()
+        mock_dashboard.update_last_line = MagicMock()
+        mock_dashboard.prompt_input = MagicMock(return_value="c")
+
+        # Mock make_runner to return a mock runner that tracks calls
+        runners_created = []
+        def mock_make_runner(backend, model=None, **kwargs):
+            mock_runner = MagicMock()
+            mock_runner.run = MagicMock(return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""))
+            with lock:
+                runners_created.append((threading.current_thread().ident, backend, model))
+            return mock_runner
+
+        agent = _make_agent({})
+
+        with _standard_patches(tmp_path, tools_dir):
+            with patch("workflow_lib.context.ProjectContext.run_gemini", agent), \
+                 patch("workflow_lib.orchestrator.make_runner", mock_make_runner), \
+                 patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+                from workflow_lib.context import ProjectContext
+                from workflow_lib.orchestrator import Orchestrator
+
+                ctx = ProjectContext(str(tmp_path), jobs=3, dashboard=mock_dashboard)
+
+                # Pre-populate all Phase 1 outputs so Phase 2 has docs to flesh out
+                for doc in DOCS:
+                    ctx.state.setdefault("generated", []).append(doc["id"])
+                ctx.save_state()
+                _pre_populate_plan_artifacts(tmp_path)
+
+                orc = Orchestrator(ctx, dashboard=mock_dashboard, agent_pool=pool)
+                from workflow_lib.phases import Phase2FleshOutDoc
+                phases = [Phase2FleshOutDoc(doc) for doc in DOCS]
+                orc._run_parallel_phases(phases, "Phase 2: Flesh Out")
+
+        # --- Assertions ---
+
+        # 1. Agents were acquired from the pool (one per phase)
+        assert len(acquired_agents) == len(DOCS), (
+            f"Expected {len(DOCS)} pool.acquire calls, got {len(acquired_agents)}"
+        )
+
+        # 2. Multiple threads were used
+        unique_threads = {t for t, _ in acquired_agents}
+        assert len(unique_threads) > 1, (
+            f"Expected multiple threads, got {len(unique_threads)}"
+        )
+
+        # 3. make_runner was called for each phase (one runner per agent)
+        assert len(runners_created) == len(DOCS), (
+            f"Expected {len(DOCS)} make_runner calls, got {len(runners_created)}"
+        )
+
+        # 4. Dashboard set_agent was called with agent names from the pool
+        running_calls = [c for c in real_set_agent_calls if c["status"] == "running"]
+        done_calls = [c for c in real_set_agent_calls if c["status"] == "done"]
+
+        assert len(running_calls) > 0, "No 'running' dashboard calls were made"
+        assert len(done_calls) > 0, "No 'done' dashboard calls were made"
+
+        pool_names = {"agent-alpha", "agent-beta"}
+        for call in running_calls:
+            assert call["agent_name"] in pool_names, (
+                f"Dashboard call had agent_name={call['agent_name']!r}, "
+                f"expected one of {pool_names}"
+            )
+
+        # 5. Dashboard task_ids should be plan/{phase_display_name}
+        for call in running_calls:
+            assert call["task_id"].startswith("plan/"), (
+                f"Expected task_id starting with 'plan/', got {call['task_id']!r}"
+            )
+
+    def test_parallel_phases_without_pool_still_parallelizes(self, tmp_path):
+        """With --jobs > 1 but no pool, phases still run in parallel with default runner."""
+        tools_dir = _create_tools_layout(tmp_path)
+        subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=False,
+                       capture_output=True)
+
+        import threading
+        threads_used = set()
+        lock = threading.Lock()
+
+        agent = _make_agent({})
+        original_agent = agent
+
+        def tracking_agent(self, full_prompt, allowed_files=None, **kwargs):
+            with lock:
+                threads_used.add(threading.current_thread().ident)
+            return original_agent(self, full_prompt, allowed_files=allowed_files, **kwargs)
+
+        with _standard_patches(tmp_path, tools_dir):
+            with patch("workflow_lib.context.ProjectContext.run_gemini", tracking_agent), \
+                 patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+                from workflow_lib.context import ProjectContext
+                from workflow_lib.orchestrator import Orchestrator
+                from workflow_lib.constants import DOCS
+
+                ctx = ProjectContext(str(tmp_path), jobs=3)
+
+                # Pre-populate Phase 1 outputs
+                for doc in DOCS:
+                    ctx.state.setdefault("generated", []).append(doc["id"])
+                ctx.save_state()
+                _pre_populate_plan_artifacts(tmp_path)
+
+                orc = Orchestrator(ctx, agent_pool=None)  # No pool
+                from workflow_lib.phases import Phase2FleshOutDoc
+                phases = [Phase2FleshOutDoc(doc) for doc in DOCS]
+                orc._run_parallel_phases(phases, "Phase 2: Flesh Out")
+
+        assert len(threads_used) > 1, (
+            f"Expected parallel execution across threads, only got {len(threads_used)} thread(s)"
+        )
+
+    def test_parallel_phases_sequential_with_jobs_1(self, tmp_path):
+        """With --jobs 1, phases run sequentially even with a pool configured."""
+        tools_dir = _create_tools_layout(tmp_path)
+        subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=False,
+                       capture_output=True)
+
+        from workflow_lib.agent_pool import AgentConfig, AgentPoolManager
+
+        pool = AgentPoolManager([
+            AgentConfig(name="agent-alpha", backend="gemini", user="",
+                        parallel=2, priority=1, quota_time=60),
+        ])
+
+        acquire_calls = []
+        original_acquire = pool.acquire
+        def spy_acquire(*args, **kwargs):
+            acquire_calls.append(1)
+            return original_acquire(*args, **kwargs)
+        pool.acquire = spy_acquire
+
+        agent = _make_agent({})
+
+        with _standard_patches(tmp_path, tools_dir):
+            with patch("workflow_lib.context.ProjectContext.run_gemini", agent), \
+                 patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+                from workflow_lib.context import ProjectContext
+                from workflow_lib.orchestrator import Orchestrator
+                from workflow_lib.constants import DOCS
+
+                ctx = ProjectContext(str(tmp_path), jobs=1)  # jobs=1
+
+                for doc in DOCS:
+                    ctx.state.setdefault("generated", []).append(doc["id"])
+                ctx.save_state()
+                _pre_populate_plan_artifacts(tmp_path)
+
+                orc = Orchestrator(ctx, agent_pool=pool)
+                from workflow_lib.phases import Phase2FleshOutDoc
+                phases = [Phase2FleshOutDoc(doc) for doc in DOCS]
+                orc._run_parallel_phases(phases, "Phase 2: Flesh Out")
+
+        # With jobs=1, pool.acquire should never be called (sequential path)
+        assert len(acquire_calls) == 0, (
+            f"Expected no pool.acquire calls with jobs=1, got {len(acquire_calls)}"
+        )
+
+    def test_pool_acquires_agents_with_specific_steps(self, tmp_path):
+        """Agents with steps=["review"] or steps=["develop"] are still acquired for planning.
+
+        This is the regression test for the bug where acquire(step="all")
+        would skip agents that didn't have "all" in their steps list,
+        causing the pool to block indefinitely.
+        """
+        tools_dir = _create_tools_layout(tmp_path)
+        subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=False,
+                       capture_output=True)
+
+        from workflow_lib.agent_pool import AgentConfig, AgentPoolManager
+        from workflow_lib.constants import DOCS
+
+        # Create agents with SPECIFIC steps — no "all" anywhere.
+        # This matches real-world configs like steps=["review"].
+        pool = AgentPoolManager([
+            AgentConfig(name="review-only", backend="claude", user="",
+                        parallel=2, priority=1, quota_time=60,
+                        steps=["review"]),
+            AgentConfig(name="develop-only", backend="gemini", user="",
+                        parallel=2, priority=2, quota_time=60,
+                        steps=["develop"]),
+        ])
+
+        import threading
+        lock = threading.Lock()
+        acquired_agents = []
+
+        original_acquire = pool.acquire
+        def spy_acquire(*args, **kwargs):
+            cfg = original_acquire(*args, **kwargs)
+            if cfg:
+                with lock:
+                    acquired_agents.append(cfg.name)
+            return cfg
+        pool.acquire = spy_acquire
+
+        agent = _make_agent({})
+        mock_make_runner = MagicMock(return_value=MagicMock(
+            run=MagicMock(return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""))))
+
+        with _standard_patches(tmp_path, tools_dir):
+            with patch("workflow_lib.context.ProjectContext.run_gemini", agent), \
+                 patch("workflow_lib.orchestrator.make_runner", mock_make_runner), \
+                 patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+                from workflow_lib.context import ProjectContext
+                from workflow_lib.orchestrator import Orchestrator
+
+                ctx = ProjectContext(str(tmp_path), jobs=3)
+                for doc in DOCS:
+                    ctx.state.setdefault("generated", []).append(doc["id"])
+                ctx.save_state()
+                _pre_populate_plan_artifacts(tmp_path)
+
+                orc = Orchestrator(ctx, agent_pool=pool)
+                from workflow_lib.phases import Phase2FleshOutDoc
+                # Use just 2 phases to keep the test fast
+                phases = [Phase2FleshOutDoc(DOCS[0]), Phase2FleshOutDoc(DOCS[1])]
+                orc._run_parallel_phases(phases, "Phase 2: Flesh Out")
+
+        # Both phases must have acquired an agent — if the step filter
+        # blocked them, acquired_agents would be empty and acquire()
+        # would have timed out (causing an error).
+        assert len(acquired_agents) == 2, (
+            f"Expected 2 acquire calls, got {len(acquired_agents)}. "
+            f"Agents with specific steps were not matched for planning."
+        )
+        # All acquired agents must come from our pool
+        valid_names = {"review-only", "develop-only"}
+        for name in acquired_agents:
+            assert name in valid_names, (
+                f"Unexpected agent {name!r}, expected one of {valid_names}"
+            )
+
+    def test_pool_acquire_step_none_matches_any(self, tmp_path):
+        """acquire(step=None) matches agents regardless of their steps config.
+
+        Direct unit test for the _pick fix — verifies that step=None
+        bypasses the step filter entirely.
+        """
+        from workflow_lib.agent_pool import AgentConfig, AgentPoolManager
+
+        pool = AgentPoolManager([
+            AgentConfig(name="review-only", backend="claude", user="",
+                        parallel=1, priority=1, quota_time=60,
+                        steps=["review"]),
+        ])
+
+        # step=None should match the review-only agent
+        agent = pool.acquire(timeout=1.0, step=None)
+        assert agent is not None, (
+            "acquire(step=None) failed to match agent with steps=['review']"
+        )
+        assert agent.name == "review-only"
+        pool.release(agent)
+
+        # step="all" should NOT match (agent doesn't have "all" in steps)
+        agent2 = pool.acquire(timeout=0.1, step="all")
+        assert agent2 is None, (
+            "acquire(step='all') should not match agent with steps=['review']"
+        )
+
+        # step="review" should match
+        agent3 = pool.acquire(timeout=1.0, step="review")
+        assert agent3 is not None
+        assert agent3.name == "review-only"
+        pool.release(agent3)
+
+        # step="develop" should NOT match
+        agent4 = pool.acquire(timeout=0.1, step="develop")
+        assert agent4 is None, (
+            "acquire(step='develop') should not match agent with steps=['review']"
+        )
+
+    def test_thread_local_runner_not_shared(self, tmp_path):
+        """Each parallel thread gets its own runner via thread-local, not by mutating ctx.runner."""
+        tools_dir = _create_tools_layout(tmp_path)
+        subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=False,
+                       capture_output=True)
+
+        from workflow_lib.agent_pool import AgentConfig, AgentPoolManager
+
+        pool = AgentPoolManager([
+            AgentConfig(name="agent-alpha", backend="gemini", user="",
+                        parallel=5, priority=1, quota_time=60),
+        ])
+
+        import threading
+
+        # Track that make_runner is called (meaning new runners are created per-thread)
+        lock = threading.Lock()
+        runners_created = []
+
+        def mock_make_runner(backend, model=None, **kwargs):
+            mock_runner = MagicMock()
+            mock_runner.run = MagicMock(return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""))
+            with lock:
+                runners_created.append(id(mock_runner))
+            return mock_runner
+
+        agent = _make_agent({})
+
+        with _standard_patches(tmp_path, tools_dir):
+            with patch("workflow_lib.context.ProjectContext.run_gemini", agent), \
+                 patch("workflow_lib.orchestrator.make_runner", mock_make_runner), \
+                 patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+                from workflow_lib.context import ProjectContext
+                from workflow_lib.orchestrator import Orchestrator
+                from workflow_lib.constants import DOCS
+
+                ctx = ProjectContext(str(tmp_path), jobs=4)
+                original_runner_id = id(ctx.runner)
+
+                for doc in DOCS:
+                    ctx.state.setdefault("generated", []).append(doc["id"])
+                ctx.save_state()
+                _pre_populate_plan_artifacts(tmp_path)
+
+                orc = Orchestrator(ctx, agent_pool=pool)
+                from workflow_lib.phases import Phase2FleshOutDoc
+                phases = [Phase2FleshOutDoc(doc) for doc in DOCS]
+                orc._run_parallel_phases(phases, "Phase 2: Flesh Out")
+
+        # ctx.runner should not have been permanently changed
+        assert id(ctx.runner) == original_runner_id, (
+            "ctx.runner was permanently mutated by parallel execution"
+        )
+
+        # Each phase should have gotten its own runner (not sharing the default)
+        assert len(runners_created) == len(DOCS), (
+            f"Expected {len(DOCS)} runners created, got {len(runners_created)}"
+        )
+        # All runner IDs should be unique (different objects)
+        assert len(set(runners_created)) == len(runners_created), (
+            "Expected unique runner per thread, but some runners were reused"
+        )
+
+
 class TestStatePrePopulation:
     """Verify .gen_state.json is pre-populated with all phase keys."""
 
