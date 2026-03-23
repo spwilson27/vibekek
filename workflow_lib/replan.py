@@ -179,21 +179,21 @@ def _run_all_checks(quiet: bool = False, checks_filter: Optional[List[str]] = No
     """
     verify_script = os.path.join(TOOLS_DIR, "verify.py")
     plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
     phases_dir = os.path.join(plan_dir, "phases")
     tasks_dir = get_tasks_dir()
 
     all_checks: List[Tuple[str, List[str]]] = []
 
     if os.path.exists(req_file):
-        all_checks.append(("verify-req-format", [sys.executable, verify_script, "req-format", "docs/plan/requirements.md"]))
-        all_checks.append(("verify-desc-length", [sys.executable, verify_script, "req-desc-length", "docs/plan/requirements.md"]))
+        all_checks.append(("verify-req-format", [sys.executable, verify_script, "req-format", "docs/plan/requirements.json"]))
+        all_checks.append(("verify-desc-length", [sys.executable, verify_script, "req-desc-length", "docs/plan/requirements.json"]))
 
     if os.path.exists(req_file) and os.path.isdir(os.path.join(plan_dir, "requirements")):
-        all_checks.append(("verify-master", [sys.executable, verify_script, "master", "docs/plan/requirements.md", "docs/plan/requirements"]))
+        all_checks.append(("verify-master", [sys.executable, verify_script, "master", "docs/plan/requirements.json", "docs/plan/requirements"]))
 
     if os.path.exists(req_file) and os.path.isdir(phases_dir):
-        all_checks.append(("verify-phases", [sys.executable, verify_script, "phases", "docs/plan/requirements.md", "docs/plan/phases/"]))
+        all_checks.append(("verify-phases", [sys.executable, verify_script, "phases", "docs/plan/requirements.json", "docs/plan/phases/"]))
 
     if os.path.isdir(phases_dir) and os.path.isdir(tasks_dir):
         all_checks.append(("verify-tasks", [sys.executable, verify_script, "tasks", "docs/plan/phases/", "docs/plan/tasks/"]))
@@ -249,7 +249,7 @@ def cmd_validate(args: "argparse.Namespace") -> None:  # type: ignore[name-defin
     """Run all applicable verification checks against the current plan artefacts.
 
     Determines which checks are relevant based on what artefacts exist on disk
-    (``requirements.md``, ``docs/plan/phases/``, ``docs/plan/tasks/``), then
+    (``requirements.json``, ``docs/plan/phases/``, ``docs/plan/tasks/``), then
     runs each via ``verify.py``.  Exits with code 1 if any check
     fails.
 
@@ -527,7 +527,7 @@ def cmd_add(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 
 
 def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
-    """Add, remove, or interactively edit ``docs/plan/requirements.md``.
+    """Add, remove, or interactively edit ``docs/plan/requirements.json``.
 
     Exactly one of the mutually exclusive flags must be set:
 
@@ -535,7 +535,7 @@ def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-def
       runs ``verify-master``.
     * ``--remove <REQ_ID>`` — moves the requirement block to a
       "Removed or Modified Requirements" section and shows affected tasks.
-    * ``--edit`` — opens ``$EDITOR`` directly on ``docs/plan/requirements.md``, then
+    * ``--edit`` — opens ``$EDITOR`` directly on ``docs/plan/requirements.json``, then
       runs ``verify-master``.
 
     Supports ``--dry-run`` for ``--remove`` (shows affected tasks without
@@ -548,10 +548,10 @@ def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-def
         - ``edit_req`` (bool) — flag for ``--edit``.
         - ``dry_run`` (bool) — preview mode.
     :type args: argparse.Namespace
-    :raises SystemExit: When ``docs/plan/requirements.md`` is not found or the
+    :raises SystemExit: When ``docs/plan/requirements.json`` is not found or the
         requirement ID is not present.
     """
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
     if not os.path.exists(req_file):
         print(f"Error: {req_file} not found.")
         sys.exit(1)
@@ -570,7 +570,7 @@ def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-def
             content = f.read()
 
         if f"[{req_id}]" not in content:
-            print(f"Requirement [{req_id}] not found in requirements.md")
+            print(f"Requirement [{req_id}] not found in requirements.json")
             sys.exit(1)
 
         if args.dry_run:
@@ -897,7 +897,7 @@ def _fix_phase_mappings(unmapped_reqs: List[str], ctx: ProjectContext, dry_run: 
 
     plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
     phases_dir = os.path.join(plan_dir, "phases")
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
 
     print(f"\n=> Fixing {len(unmapped_reqs)} requirement(s) not mapped to any phase:")
     for r in sorted(unmapped_reqs):
@@ -1106,7 +1106,7 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 
     - **verify-desc-length**: Expands short requirement descriptions.
     - **verify-master**: Appends missing requirement definitions from extracted
-      docs to ``requirements.md``.
+      docs to ``requirements.json``.
     - **verify-phases**: Assigns unmapped requirements to the best-fit phase
       using AI.
     - **verify-tasks**: Generates new task files to cover unmapped requirements
@@ -1198,18 +1198,18 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 
 
 def _fix_master_list(missing_reqs: List[str], dry_run: bool = False) -> bool:
-    """Append missing requirement definitions to ``docs/plan/requirements.md``.
+    """Append missing requirement definitions to ``docs/plan/requirements.json``.
 
     Scans ``docs/plan/requirements/*.md`` for heading-level definitions of
     the missing IDs and appends the full requirement blocks to the master
     file.
 
-    :param missing_reqs: List of requirement IDs missing from docs/plan/requirements.md.
+    :param missing_reqs: List of requirement IDs missing from docs/plan/requirements.json.
     :param dry_run: If ``True``, print what would be added without writing.
     :returns: ``True`` if any requirements were added.
     """
     req_dir = os.path.join(ROOT_DIR, "docs", "plan", "requirements")
-    master_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    master_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
     missing_set = set(missing_reqs)
 
     if not missing_set:
@@ -1247,14 +1247,14 @@ def _fix_master_list(missing_reqs: List[str], dry_run: bool = False) -> bool:
     if not_found:
         print(f"  WARNING: Could not find definitions for: {sorted(not_found)}")
 
-    print(f"  Adding {len(found_blocks)} requirement(s) to requirements.md:")
+    print(f"  Adding {len(found_blocks)} requirement(s) to requirements.json:")
     for req_id in sorted(found_blocks):
         print(f"    + [{req_id}]")
 
     if dry_run:
         return True
 
-    # Append to requirements.md
+    # Append to requirements.json
     with open(master_file, "a", encoding="utf-8") as f:
         f.write("\n")
         for req_id in sorted(found_blocks):
@@ -1489,17 +1489,17 @@ def _fix_single_dag_ref(
 def _fix_description_length(ctx: ProjectContext, dry_run: bool = False) -> bool:
     """Fix verify-desc-length failures by expanding short descriptions.
 
-    Spawns an AI agent to review docs/plan/requirements.md and expand all descriptions
+    Spawns an AI agent to review docs/plan/requirements.json and expand all descriptions
     that are shorter than 10 words to meet the minimum length requirement.
 
     :param ctx: Project context with AI runner.
     :param dry_run: Preview mode — don't actually run AI.
     :returns: ``True`` if fix was attempted (or dry-run shown), ``False`` if nothing to do.
     """
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
 
     if not os.path.exists(req_file):
-        print("Error: docs/plan/requirements.md not found.")
+        print("Error: docs/plan/requirements.json not found.")
         return False
 
     # Run verify-desc-length to get the list of short descriptions
@@ -1726,7 +1726,7 @@ def _run_verify(mode: str) -> None:
     """
     verify_script = os.path.join(TOOLS_DIR, "verify.py")
     cmd_map = {
-        "master": [sys.executable, verify_script, "master", "docs/plan/requirements.md", "docs/plan/requirements"],
+        "master": [sys.executable, verify_script, "master", "docs/plan/requirements.json", "docs/plan/requirements"],
         "dags": [sys.executable, verify_script, "dags", "docs/plan/tasks/"],
     }
     cmd = cmd_map.get(mode)
@@ -1746,12 +1746,12 @@ def _run_verify(mode: str) -> None:
 
 
 def _load_requirements_ctx() -> str:
-    """Load docs/plan/requirements.md content, or empty string if missing."""
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    """Load docs/plan/requirements.json content, or empty string if missing."""
+    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
     if os.path.exists(req_file):
         with open(req_file, "r", encoding="utf-8") as f:
             return f.read()
-    return "(no docs/plan/requirements.md found)"
+    return "(no docs/plan/requirements.json found)"
 
 
 def _load_phases_ctx() -> str:
@@ -1996,8 +1996,8 @@ def cmd_add_feature(args: "argparse.Namespace") -> None:  # type: ignore[name-de
         next_task_num=str(next_task_num),
     )
 
-    # Allow writes to: sub-epic dir, docs/plan/requirements.md, phase doc, shared_components
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    # Allow writes to: sub-epic dir, docs/plan/requirements.json, phase doc, shared_components
+    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
     phase_doc = os.path.join(ROOT_DIR, "docs", "plan", "phases", f"{phase_id}.md")
     shared_comp = os.path.join(ROOT_DIR, "docs", "plan", "shared_components.md")
     allowed_files = [

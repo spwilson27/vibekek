@@ -11,12 +11,12 @@ You are a Lead AI Developer. Your job is to create a SINGLE new task document fo
 {existing_tasks_content}
 
 # TASK
-1. Read `docs/plan/requirements.md` and the specific phase document `docs/plan/phases/{phase_filename}`.
+1. Read `docs/plan/requirements.json` and the specific phase document `docs/plan/phases/{phase_filename}`.
 2. Review the SHARED COMPONENTS and EXISTING TASKS sections above to understand what already exists.
 3. Create exactly ONE new task document based on this description:
    **{user_description}**
 4. Write it to `docs/plan/tasks/{target_dir}/{task_filename}`.
-5. The task MUST reference any relevant requirement IDs from `requirements.md`.
+5. The task MUST reference any relevant requirement IDs from `requirements.json`.
 6. Set appropriate `depends_on` references to existing tasks in this sub-epic that must complete first.
 
 # CONSTRAINTS

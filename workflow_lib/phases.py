@@ -797,7 +797,8 @@ class Phase13GenerateEpics(BasePhase):
         prompt = ctx.format_prompt(prompt_tmpl, description_ctx=ctx.description_ctx)
 
         epic_mappings_path = os.path.join(ctx.plan_dir, "epic_mappings.json")
-        allowed_files = [epic_mappings_path]
+        phases_dir = os.path.join(ctx.plan_dir, "phases") + os.sep
+        allowed_files = [epic_mappings_path, phases_dir]
         result = ctx.run_gemini(prompt, allowed_files=allowed_files)
 
         if result.returncode != 0:

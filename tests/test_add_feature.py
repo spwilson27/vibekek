@@ -145,7 +145,7 @@ def _setup_project(tmp_path: Path) -> Path:
             (tools / "prompts" / name).write_text(f"# stub for {name}\n{{description_ctx}}")
 
     # Requirements
-    (tmp_path / "requirements.md").write_text(
+    (tmp_path / "requirements.json").write_text(
         "# Requirements\n## Active\n### **[REQ-001]** Core feature\n"
     )
 
@@ -905,7 +905,7 @@ class TestHelpers:
         req_content = "# Requirements\n- [REQ-001] Test\n"
         req_dir = tmp_path / "docs" / "plan"
         req_dir.mkdir(parents=True, exist_ok=True)
-        (req_dir / "requirements.md").write_text(req_content)
+        (req_dir / "requirements.json").write_text(req_content)
         with patch("workflow_lib.replan.ROOT_DIR", str(tmp_path)):
             result = _load_requirements_ctx()
         assert "REQ-001" in result
@@ -913,7 +913,7 @@ class TestHelpers:
     def test_load_requirements_ctx_missing_file(self, tmp_path):
         with patch("workflow_lib.replan.ROOT_DIR", str(tmp_path)):
             result = _load_requirements_ctx()
-        assert "no docs/plan/requirements.md" in result
+        assert "no docs/plan/requirements.json" in result
 
     def test_load_phases_ctx_reads_files(self, tmp_path):
         phases_dir = tmp_path / "docs" / "plan" / "phases"

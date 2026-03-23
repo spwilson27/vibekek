@@ -15,7 +15,7 @@ The following requirements from `docs/plan/phases/{phase_filename}` are NOT cove
 {unmapped_reqs_list}
 
 # TASK
-1. Read `docs/plan/requirements.md` and the specific phase document `docs/plan/phases/{phase_filename}`.
+1. Read `docs/plan/requirements.json` and the specific phase document `docs/plan/phases/{phase_filename}`.
 2. Review the SHARED COMPONENTS and EXISTING TASKS sections above to understand what already exists.
 3. For EACH unmapped requirement listed above, either:
    a. Create a NEW task document that covers it, OR

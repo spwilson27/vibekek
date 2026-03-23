@@ -26,7 +26,7 @@ Examples:
     python .tools/verify.py all
     python .tools/verify.py dags docs/plan/tasks/
     python .tools/verify.py depends-on docs/plan/tasks/phase_1/
-    python .tools/verify.py req-format requirements.md
+    python .tools/verify.py req-format requirements.json
 """
 
 import argparse
@@ -742,7 +742,7 @@ def verify_all(root_dir: str) -> int:
     print(f"{BOLD}{'='*60}{RESET}\n")
 
     results: Dict[str, bool] = {}
-    req_file = os.path.join(root_dir, "docs/plan/requirements.md")
+    req_file = os.path.join(root_dir, "docs/plan/requirements.json")
     phases_dir = os.path.join(root_dir, "docs", "plan", "phases")
     tasks_dir = os.path.join(root_dir, "docs", "plan", "tasks")
     requirements_dir = os.path.join(root_dir, "docs", "plan", "requirements")
@@ -771,7 +771,7 @@ def verify_all(root_dir: str) -> int:
         results["depends-on"] = verify_depends_on(tasks_dir) == 0
 
     # Ordered requirements (if exists)
-    ordered_file = os.path.join(root_dir, "ordered_requirements.md")
+    ordered_file = os.path.join(root_dir, "ordered_requirements.json")
     if os.path.exists(ordered_file):
         print(f"\n{BOLD}[8/8] Ordered Requirements{RESET}")
         results["ordered"] = verify_ordered(req_file, ordered_file) == 0
@@ -811,7 +811,7 @@ Examples:
   %(prog)s all
       Run all verification checks
 
-  %(prog)s req-format requirements.md
+  %(prog)s req-format requirements.json
       Verify requirement ID format
 
   %(prog)s dags docs/plan/tasks/

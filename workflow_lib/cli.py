@@ -670,11 +670,11 @@ def main() -> None:
     p_add_feat.add_argument("--sub-epic", dest="sub_epic", help="Target sub-epic name")
     p_add_feat.add_argument("--dry-run", action="store_true")
 
-    p_mod_req = sub.add_parser("modify-req", parents=[shared], help="Modify docs/plan/requirements.md")
+    p_mod_req = sub.add_parser("modify-req", parents=[shared], help="Modify docs/plan/requirements.json")
     mg = p_mod_req.add_mutually_exclusive_group(required=True)
     mg.add_argument("--add", dest="add_req", metavar="DESC", help="Add a requirement (opens editor)")
     mg.add_argument("--remove", dest="remove_req", metavar="REQ_ID", help="Remove a requirement by ID")
-    mg.add_argument("--edit", dest="edit_req", action="store_true", help="Open docs/plan/requirements.md in editor")
+    mg.add_argument("--edit", dest="edit_req", action="store_true", help="Open docs/plan/requirements.json in editor")
     p_mod_req.add_argument("--dry-run", action="store_true")
 
     p_regen_dag = sub.add_parser("regen-dag", parents=[shared], help="Rebuild DAG for all phases (or a single --phase)")

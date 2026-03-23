@@ -38,7 +38,7 @@ def _setup_dirs(tmp, phases_content, tasks_content, grouping_jsons=None, req_con
                 json.dump(data, f)
 
     if req_content:
-        with open(os.path.join(tmp, "requirements.md"), "w") as f:
+        with open(os.path.join(tmp, "requirements.json"), "w") as f:
             f.write(req_content)
 
     return tasks_dir

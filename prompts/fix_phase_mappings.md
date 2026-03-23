@@ -8,7 +8,7 @@ You are a Lead Technical Program Manager. Your job is to assign requirements tha
 {phases_content}
 
 # UNMAPPED REQUIREMENTS
-The following requirements exist in `docs/plan/requirements.md` but are not listed in any phase file:
+The following requirements exist in `docs/plan/requirements.json` but are not listed in any phase file:
 {unmapped_reqs_list}
 
 # REQUIREMENT DETAILS
@@ -25,7 +25,7 @@ The following requirements exist in `docs/plan/requirements.md` but are not list
 # CONSTRAINTS
 - You MUST assign ALL unmapped requirements listed above. Every one must end up in exactly one phase file.
 - Do NOT remove or modify existing requirement mappings.
-- Do NOT modify `requirements.md` or any other file — only edit phase files.
+- Do NOT modify `requirements.json` or any other file — only edit phase files.
 - A requirement MUST be in the same phase as or a later phase than its dependencies.
 - Prefer placing requirements near related requirements in the same phase.
 

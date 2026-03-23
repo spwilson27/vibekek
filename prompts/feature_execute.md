@@ -7,7 +7,7 @@ You are a Lead AI Developer and Project Manager. Your job is to integrate a new 
 # SHARED COMPONENTS
 {shared_components_ctx}
 
-# EXISTING REQUIREMENTS (from docs/plan/requirements.md)
+# EXISTING REQUIREMENTS (from docs/plan/requirements.json)
 {requirements_ctx}
 
 # EXISTING PHASES
@@ -25,7 +25,7 @@ Phase document: `docs/plan/phases/{phase_id}.md`
 Integrate this feature into the existing project plan. Perform the following steps IN ORDER:
 
 ## Step 1: Update Requirements
-- Read `docs/plan/requirements.md`
+- Read `docs/plan/requirements.json`
 - Append new requirements from the feature spec to the end of the file
 - Use the next available REQ ID numbers (scan existing IDs to determine the next sequential number)
 - Each requirement must follow the existing format in the file
