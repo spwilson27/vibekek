@@ -327,6 +327,7 @@ def validate_phase_16(state: Dict) -> List[str]:
         return errors
 
     schema = _load_schema("task_sidecar.json")
+    max_req_mappings = 5
     sidecar_count = 0
     for root, dirs, files in os.walk(tasks_dir):
         for fname in files:
@@ -339,6 +340,14 @@ def validate_phase_16(state: Dict) -> List[str]:
                 errs = _validate_object(data, schema, rel)
                 errors.extend(errs)
                 sidecar_count += 1
+
+                # Enforce requirement_mappings cap
+                req_count = len(data.get("requirement_mappings", []))
+                if req_count > max_req_mappings:
+                    errors.append(
+                        f"{rel}: requirement_mappings has {req_count} entries "
+                        f"(max {max_req_mappings}) — split into smaller tasks"
+                    )
             except json.JSONDecodeError as e:
                 errors.append(f"{rel}: invalid JSON: {e}")
 

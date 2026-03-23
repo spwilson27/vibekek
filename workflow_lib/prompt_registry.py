@@ -40,7 +40,7 @@ PROMPT_PLACEHOLDERS = {
     "order_requirements.md": {"description_ctx"},
 
     # Phase 13: Epic mappings
-    "phases.md": {"description_ctx"},
+    "phases.md": {"description_ctx", "summaries_ctx"},
 
     # Phase 14-15: E2E interfaces and feature gates
     "e2e_interfaces.md": {"description_ctx", "epic_mappings_json", "requirements_json"},

@@ -1421,25 +1421,33 @@ class TestPhase4C:
 
 
 class TestPhase5:
+    def _ctx_with_summaries(self, tmp_path, **kwargs):
+        ctx = _mock_ctx(**kwargs)
+        summaries_dir = tmp_path / "summaries"
+        summaries_dir.mkdir(parents=True, exist_ok=True)
+        (summaries_dir / "1_prd.md").write_text("# Summary\nKey decisions.\n")
+        ctx.summaries_dir = str(summaries_dir)
+        return ctx
+
     def test_already_done_skip(self):
         ctx = _mock_ctx(state={"epics_completed": True})
         Phase13GenerateEpics().execute(ctx)
         ctx.run_gemini.assert_not_called()
 
-    def test_run_fails_exits(self):
-        ctx = _mock_ctx()
+    def test_run_fails_exits(self, tmp_path):
+        ctx = self._ctx_with_summaries(tmp_path)
         ctx.run_gemini.return_value = MagicMock(returncode=1, stdout="", stderr="")
         with pytest.raises(SystemExit):
             Phase13GenerateEpics().execute(ctx)
 
-    def test_verify_fails_exits(self):
-        ctx = _mock_ctx()
+    def test_verify_fails_exits(self, tmp_path):
+        ctx = self._ctx_with_summaries(tmp_path)
         with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="err", stderr="")), \
              pytest.raises(SystemExit):
             Phase13GenerateEpics().execute(ctx)
 
-    def test_success(self):
-        ctx = _mock_ctx()
+    def test_success(self, tmp_path):
+        ctx = self._ctx_with_summaries(tmp_path)
         with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
             Phase13GenerateEpics().execute(ctx)
         assert ctx.state.get("epics_completed")

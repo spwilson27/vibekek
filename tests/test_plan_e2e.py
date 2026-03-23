@@ -251,11 +251,14 @@ def _pre_populate_plan_artifacts(tmp_path):
     phase_dir = tasks_dir / "phase_1" / "auth"
     phase_dir.mkdir(parents=True, exist_ok=True)
 
-    # Spec documents
+    # Spec documents and summaries
     from workflow_lib.constants import DOCS
+    summaries_dir = plan_dir / "summaries"
+    summaries_dir.mkdir(parents=True, exist_ok=True)
     for doc in DOCS:
         (plan_dir / "specs" / f"{doc['id']}.md").parent.mkdir(parents=True, exist_ok=True)
         (plan_dir / "specs" / f"{doc['id']}.md").write_text(f"# {doc['name']}\nStub.\n")
+        (summaries_dir / f"{doc['id']}.md").write_text(f"# Summary: {doc['name']}\nKey decisions.\n")
 
     # Reviews
     (plan_dir / "conflict_resolution.md").write_text("# Conflict Resolution\nNo conflicts.\n")
@@ -1479,6 +1482,48 @@ class TestValidation:
         rc, out = self._run_validate(tmp_path, phase=16)
         assert rc != 0, f"Expected failure for invalid contributes_to pattern"
         assert "not-a-valid-id" in out
+
+    # --- Requirement mappings cap tests (Phase 16) ---
+
+    def test_task_requirement_mappings_within_cap(self, tmp_path):
+        """Task with 5 or fewer requirement_mappings passes."""
+        plan_dir = tmp_path / "docs" / "plan"
+        task_dir = plan_dir / "tasks" / "phase_1" / "auth"
+        task_dir.mkdir(parents=True)
+
+        sidecar = dict(TASK_SIDECAR, requirement_mappings=[
+            "1_PRD-REQ-001", "1_PRD-REQ-002", "1_PRD-REQ-003",
+            "1_PRD-REQ-004", "1_PRD-REQ-005"
+        ])
+        (task_dir / "01_task.json").write_text(json.dumps(sidecar))
+        (task_dir / "01_task.md").write_text("# Task\n")
+
+        state = {"tasks_completed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=16)
+        assert rc == 0, f"Validation failed: {out}"
+
+    def test_task_requirement_mappings_exceeds_cap(self, tmp_path):
+        """Task with more than 5 requirement_mappings is caught."""
+        plan_dir = tmp_path / "docs" / "plan"
+        task_dir = plan_dir / "tasks" / "phase_1" / "auth"
+        task_dir.mkdir(parents=True)
+
+        sidecar = dict(TASK_SIDECAR, requirement_mappings=[
+            "1_PRD-REQ-001", "1_PRD-REQ-002", "1_PRD-REQ-003",
+            "1_PRD-REQ-004", "1_PRD-REQ-005", "1_PRD-REQ-006"
+        ])
+        (task_dir / "01_task.json").write_text(json.dumps(sidecar))
+        (task_dir / "01_task.md").write_text("# Task\n")
+
+        state = {"tasks_completed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=16)
+        assert rc != 0, f"Expected failure for exceeding requirement_mappings cap"
+        assert "6 entries" in out
+        assert "max 5" in out
 
 
 class TestValidationNoPhaseRun:

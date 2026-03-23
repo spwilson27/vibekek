@@ -792,8 +792,24 @@ class Phase13GenerateEpics(BasePhase):
             return
 
         print("\n=> [Phase 13: Generate Epics] Generating JSON epic/requirement mappings...")
+
+        # Load all spec summaries to inject as context
+        summaries_parts = []
+        for fname in sorted(os.listdir(ctx.summaries_dir)):
+            fpath = os.path.join(ctx.summaries_dir, fname)
+            if os.path.isfile(fpath) and fname.endswith(".md"):
+                with open(fpath, "r", encoding="utf-8") as f:
+                    summaries_parts.append(
+                        f"<summary name=\"{fname}\">\n{f.read()}\n</summary>"
+                    )
+        summaries_ctx = "\n\n".join(summaries_parts) if summaries_parts else "(no summaries found)"
+
         prompt_tmpl = ctx.load_prompt("phases.md")
-        prompt = ctx.format_prompt(prompt_tmpl, description_ctx=ctx.description_ctx)
+        prompt = ctx.format_prompt(
+            prompt_tmpl,
+            description_ctx=ctx.description_ctx,
+            summaries_ctx=summaries_ctx,
+        )
 
         epic_mappings_path = os.path.join(ctx.plan_dir, "epic_mappings.json")
         phases_dir = os.path.join(ctx.plan_dir, "phases") + os.sep

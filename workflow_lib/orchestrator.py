@@ -366,6 +366,10 @@ class Orchestrator:
         self._run_parallel_phases(
             [Phase2BSummarizeDoc(doc) for doc in DOCS], "Phase 3: Summarize"
         )
+        for doc in DOCS:
+            self._validate_artifacts(
+                [self.ctx.get_summary_path(doc)], f"Phase3/Summarize/{doc['id']}"
+            )
 
         # Phase 4: Final holistic review
         self.run_phase_with_retry(Phase3FinalReview())

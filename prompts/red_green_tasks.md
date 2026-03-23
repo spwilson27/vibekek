@@ -48,6 +48,7 @@ Every `.md` task file MUST have a corresponding `.json` sidecar with the same ba
 - **`requirement_mappings`**: ONLY include requirement IDs that are directly exercised by a named test assertion or implementation step in this task. If a Red task writes `e2e_layer_create`, the requirements validated by that test go here.
 - **`contributes_to`**: Include requirement IDs that are tangentially advanced (e.g., infrastructure the requirement depends on) but not directly tested by this task's assertions.
 - A requirement in `requirement_mappings` means "this task proves this requirement works." A requirement in `contributes_to` means "this task helps but doesn't prove it alone."
+- **HARD LIMIT: Maximum 5 requirement IDs in `requirement_mappings` per task.** If a behavior cluster would cover more than 5 requirements, split it into multiple tasks. This ensures each task is focused and completable in a single agent session. There is no limit on `contributes_to`.
 
 # DEPENDENCY RULES
 - All Red tasks for a phase MUST complete before any Green task in that phase can start.
@@ -55,14 +56,23 @@ Every `.md` task file MUST have a corresponding `.json` sidecar with the same ba
 - Red tasks may depend on other Red tasks within the same phase if ordering matters.
 - Cross-phase dependencies must reference tasks from earlier phases only.
 
+# TASK DECOMPOSITION RULES
+- Decompose by **testable behavior cluster**, NOT by service or interface. A single service (e.g., SessionService) should produce multiple Red tasks — one per distinct testable behavior (e.g., "session open/close lifecycle", "protocol version negotiation", "connection limit enforcement").
+- Each Red task should define **2-6 focused E2E test cases** that validate a coherent behavior.
+- Each Red task MUST have at most **5 requirement_mappings**. If a behavior needs more, split into smaller tasks.
+- Each Green task implements the real logic for **one Red task's tests**. Prefer 1:1 Red:Green pairing.
+- Phases with many requirements (50+) should produce many focused tasks (10-30+), not a few large ones.
+
 # CHAIN OF THOUGHT
 Before generating the final documents, silently plan your approach:
 1. Read the phase document and identify all epics and requirements.
 2. Map each epic to its E2E interfaces and feature gates.
-3. Design Red tasks: one per public interface or logical API group — each Red task stubs the interface and writes E2E tests.
-4. Design Green tasks: one per implementation unit — each Green task implements real logic and creates gate files.
-5. Verify full coverage: every requirement, every interface, every feature gate must be addressed. For each requirement, decide whether it belongs in `requirement_mappings` (directly tested) or `contributes_to` (tangentially advanced) for the task that handles it.
-6. Validate dependency ordering: no circular dependencies, Red before Green.
+3. Group requirements into **testable behavior clusters** of at most 5 directly-tested requirements each. A behavior cluster is a set of requirements that can be validated together by 2-6 focused E2E tests. If you have a service with 15 requirements, split into 3-4 behavior clusters.
+4. Design Red tasks: **one per behavior cluster** — each Red task stubs only what its tests need and writes 2-6 E2E tests.
+5. Design Green tasks: **one per Red task** — each Green task implements real logic and creates gate files.
+6. Verify full coverage: every requirement, every interface, every feature gate must be addressed. For each requirement, decide whether it belongs in `requirement_mappings` (directly tested) or `contributes_to` (tangentially advanced) for the task that handles it.
+7. Validate dependency ordering: no circular dependencies, Red before Green.
+8. Count `requirement_mappings` per task — if any task has more than 5, split it.
 
 # CONSTRAINTS
 - You MUST use your file editing tools to write task files into `docs/plan/tasks/{target_dir}/`.
@@ -88,7 +98,10 @@ Each task `.md` file must use this structure:
 {red|green}
 
 ## Directly Tested Requirements
-- [{REQ_ID_1}], [{REQ_ID_2}]
+| Requirement | Validated By |
+|---|---|
+| [{REQ_ID_1}] | `e2e_test_name_1` — {what the test asserts about this requirement} |
+| [{REQ_ID_2}] | `e2e_test_name_2` — {what the test asserts about this requirement} |
 
 ## Contributes To
 - [{REQ_ID_3}], [{REQ_ID_4}]
