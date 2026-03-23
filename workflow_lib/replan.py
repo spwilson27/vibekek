@@ -126,14 +126,29 @@ def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined
                 entry_path = os.path.join(phase_path, entry)
                 # Flat task .json sidecar files (the canonical source)
                 if entry.endswith(".json") and os.path.isfile(entry_path) and entry not in _NON_TASK_JSON:
-                    task_ref = f"{phase_dir}/{entry[:-5]}"
+                    # Use task_id from JSON if present (matches load_dags behavior)
+                    try:
+                        with open(entry_path, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                        task_ref = meta.get("task_id", f"{phase_dir}/{entry[:-5]}")
+                    except (json.JSONDecodeError, OSError):
+                        task_ref = f"{phase_dir}/{entry[:-5]}"
                     on_disk.add(task_ref)
                 # Legacy subdirectory structure
                 elif os.path.isdir(entry_path):
                     for sub in sorted(os.listdir(entry_path)):
                         sub_path = os.path.join(entry_path, sub)
                         if sub.endswith(".json") and os.path.isfile(sub_path):
-                            task_ref = f"{phase_dir}/{entry}/{sub[:-5]}"
+                            fallback_ref = f"{phase_dir}/{entry}/{sub[:-5]}"
+                            try:
+                                with open(sub_path, "r", encoding="utf-8") as f:
+                                    meta = json.load(f)
+                                task_ref = meta.get("task_id", fallback_ref)
+                                # Normalize: match load_dags behavior
+                                if not task_ref.startswith("phase_"):
+                                    task_ref = f"{phase_dir}/{entry}/{task_ref}"
+                            except (json.JSONDecodeError, OSError):
+                                task_ref = fallback_ref
                             on_disk.add(task_ref)
 
     total = len(master_dag)
