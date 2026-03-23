@@ -371,7 +371,7 @@ def _start_task_container(
     # the host checkout is not held open by the container mount.  This lets
     # the developer edit or delete harness.py on the host without affecting
     # running containers, and avoids any cross-container interference.
-    harness_src = os.path.join(ROOT_DIR, "harness.py")
+    harness_src = os.path.join(TOOLS_DIR, "harness", "harness.py")
     if not os.path.exists(harness_src):
         log(f"      [!] harness.py not found at {harness_src!r} — cannot bind-mount into container")
         with _active_containers_lock:
@@ -2572,7 +2572,7 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
         pass  # Agents may not be configured
     
     # Check for harness.py — informational; phase_0 tasks skip presubmit anyway
-    harness_path = os.path.join(ROOT_DIR, "harness.py")
+    harness_path = os.path.join(TOOLS_DIR, "harness", "harness.py")
     if os.path.exists(harness_path):
         dashboard.log(f"=> harness.py found at {harness_path!r}")
     else:

@@ -279,11 +279,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     """
     dev_branch = get_dev_branch()
 
-    result = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, cwd=ROOT_DIR)
-    current_branch = result.stdout.strip()
-    if current_branch == dev_branch:
-        print(f"Error: currently on dev branch '{dev_branch}'. Check out a different branch before running.", file=sys.stderr)
-        sys.exit(1)
+    # No longer an issue now that we use pivot
+    # result = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, cwd=ROOT_DIR)
+    # current_branch = result.stdout.strip()
+    #if current_branch == dev_branch:
+    #    print(f"Error: currently on dev branch '{dev_branch}'. Check out a different branch before running.", file=sys.stderr)
+    #    sys.exit(1)
 
     signal.signal(signal.SIGINT, signal_handler)
     tasks_dir = get_tasks_dir()
