@@ -1874,23 +1874,26 @@ class TestReplanHelpers:
              patch("builtins.print"):
             _show_affected_tasks("REQ-001")
 
-    def test_run_verify_pass(self):
-        from workflow_lib.replan import _run_verify
+    def test_run_validate_pass(self):
+        from workflow_lib.replan import _run_validate
         mock_res = MagicMock(returncode=0)
         with patch("subprocess.run", return_value=mock_res), \
              patch("builtins.print"):
-            _run_verify("verify-master")
+            _run_validate(phase=9)
 
-    def test_run_verify_fail(self):
-        from workflow_lib.replan import _run_verify
+    def test_run_validate_fail(self):
+        from workflow_lib.replan import _run_validate
         mock_res = MagicMock(returncode=1, stdout="err", stderr="")
         with patch("subprocess.run", return_value=mock_res), \
              patch("builtins.print"):
-            _run_verify("verify-master")
+            _run_validate(phase=20)
 
-    def test_run_verify_unknown_mode(self):
-        from workflow_lib.replan import _run_verify
-        _run_verify("unknown-mode")  # should do nothing
+    def test_run_validate_all(self):
+        from workflow_lib.replan import _run_validate
+        mock_res = MagicMock(returncode=0)
+        with patch("subprocess.run", return_value=mock_res), \
+             patch("builtins.print"):
+            _run_validate()  # no phase = --all
 
     def test_rebuild_phase_dag_programmatic(self):
         from workflow_lib.replan import _rebuild_phase_dag
@@ -1983,7 +1986,7 @@ class TestReplanCmdsCoverage:
         from workflow_lib.replan import cmd_modify_req
         with patch("os.path.exists", return_value=True), \
              patch("subprocess.run"), \
-             patch("workflow_lib.replan._run_verify"):
+             patch("workflow_lib.replan._run_validate"):
             cmd_modify_req(self._make_args(edit_req=True, remove_req=None, add_req=None, dry_run=False))
 
     def test_cmd_modify_req_not_found(self):
@@ -2021,7 +2024,7 @@ class TestReplanCmdsCoverage:
         from workflow_lib.replan import cmd_modify_req
         with patch("os.path.exists", return_value=True), \
              patch("subprocess.run"), \
-             patch("workflow_lib.replan._run_verify"), \
+             patch("workflow_lib.replan._run_validate"), \
              patch("workflow_lib.replan.load_replan_state",
                    return_value={"replan_history": []}), \
              patch("workflow_lib.replan.save_replan_state"):
@@ -2262,7 +2265,7 @@ class TestReplanCmdsCoverage:
              patch("os.listdir", return_value=[]), \
              patch("workflow_lib.replan.parse_requirements", return_value=set()), \
              patch("workflow_lib.replan._rebuild_phase_dag"), \
-             patch("workflow_lib.replan._run_verify"), \
+             patch("workflow_lib.replan._run_validate"), \
              patch("workflow_lib.replan.load_replan_state",
                    return_value={"replan_history": []}), \
              patch("workflow_lib.replan.save_replan_state"), \

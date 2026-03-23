@@ -11,8 +11,8 @@ You are a Technical Program Manager. Your job is to translate a project requirem
 4. Every single requirement from `docs/plan/requirements.json` MUST be mapped to at least one epic.
 5. Write `docs/plan/epic_mappings.json` — a JSON file containing all epics, their features, and requirement mappings. The file MUST conform to the schema described in the OUTPUT FORMAT section below.
 6. Write a detailed Markdown document for each phase inside the `docs/plan/phases/` directory (e.g., `docs/plan/phases/phase_0.md`, `docs/plan/phases/phase_1.md`). These provide human-readable detail for each phase.
-7. You MUST verify that 100% of the requirements were mapped by running `python .tools/verify.py phases docs/plan/requirements.json docs/plan/phases/`.
-8. If the script reports unmapped requirements, you MUST update both `docs/plan/epic_mappings.json` and the documents in `docs/plan/phases/` to include them, then run the script again until it passes perfectly.
+7. You MUST verify that the epic mappings are valid by running `python .tools/validate.py --phase 13`.
+8. If the script reports errors, you MUST fix both `docs/plan/epic_mappings.json` and the documents in `docs/plan/phases/` and run the script again until it passes.
 
 # CHAIN OF THOUGHT
 Before generating the final documents, silently plan your approach:

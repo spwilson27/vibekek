@@ -52,8 +52,7 @@ from .constants import TOOLS_DIR, DOCS
 from .context import ProjectContext, _count_tokens
 
 # Canonical set of non-task markdown files to exclude from DAG generation,
-# task counting, dependency validation, etc.  Keep this in sync with the
-# ``_NON_TASK_FILES`` set in ``verify.py``.
+# task counting, dependency validation, etc.
 _NON_TASK_FILES = {
     "README.md",
     "SUB_EPIC_SUMMARY.md",
@@ -1533,44 +1532,25 @@ class Phase7ADAGGeneration(BasePhase):
                     print("\n[!] Error encountered in parallel DAG generation. Exiting.")
                     os._exit(1)
 
-        # Post-generation validation: verify depends_on metadata format
-        # Only run if we actually generated/validated DAGs (not in test scenarios with fake paths)
+        # Post-generation validation: run validate.py --phase 20
         if os.path.exists(tasks_dir):
-            print("\n" + "="*60)
-            print("=> [Phase 20: Post-Validation] Validating depends_on metadata...")
-            print("="*60 + "\n")
-
-            validation_script = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "verify.py"
-            )
+            print("\n=> [Phase 20: Post-Validation] Validating DAGs...")
 
             import subprocess
             result = subprocess.run(
-                [sys.executable, validation_script, "depends-on", tasks_dir],
-                capture_output=True,
-                text=True
+                [sys.executable, os.path.join(TOOLS_DIR, "validate.py"), "--phase", "20"],
+                capture_output=True, text=True, cwd=ctx.root_dir
             )
 
             if result.returncode != 0:
                 print(result.stdout)
-                print(result.stderr)
-                print("\n" + "="*60)
-                print(f"{RED}[!] VALIDATION FAILED{RESET}")
-                print("="*60)
-                print("\nThe depends_on metadata in task files has formatting issues.")
-                print("To fix these issues, you have two options:\n")
-                print("1. Manual fix:")
-                print("   - Review the errors above")
-                print("   - Edit the task files to fix the depends_on lines")
-                print("   - Re-run: python .tools/verify.py depends-on docs/plan/tasks/\n")
-                print("2. Automatic fix:")
-                print("   - Run: python .tools/verify.py depends-on --fix docs/plan/tasks/\n")
+                if result.stderr:
+                    print(result.stderr)
+                print("\n[!] DAG validation failed.")
                 print("After fixing, re-run Phase 7A to regenerate DAGs.\n")
                 sys.exit(1)
             else:
                 print(result.stdout)
-                print(f"{GREEN}✓ All depends_on metadata is valid{RESET}\n")
 
         ctx.stage_changes([tasks_dir])
         ctx.state["dag_completed"] = True

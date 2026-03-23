@@ -85,33 +85,3 @@ class TestPromptPlaceholders:
         )
 
 
-class TestPerPhaseDagCycleDetection:
-    """Verify that verify.py detects per-phase cycles."""
-
-    def test_find_cycle_detects_simple_cycle(self):
-        from verify import _find_cycle
-        dag = {"a": ["b"], "b": ["a"]}
-        cycle = _find_cycle(dag)
-        assert cycle is not None, "Should detect a→b→a cycle"
-
-    def test_find_cycle_no_cycle(self):
-        from verify import _find_cycle
-        dag = {"a": [], "b": ["a"], "c": ["b"]}
-        cycle = _find_cycle(dag)
-        assert cycle is None, "Should not detect a cycle in a valid DAG"
-
-
-class TestDuplicateRequirementDetection:
-    """Verify the uniqueness checker works."""
-
-    def test_detects_duplicates(self, tmp_path):
-        from verify import verify_req_uniqueness
-        (tmp_path / "a.md").write_text("[1_PRD-REQ-001] First\n")
-        (tmp_path / "b.md").write_text("[1_PRD-REQ-001] Duplicate\n")
-        assert verify_req_uniqueness(str(tmp_path)) == 1
-
-    def test_passes_unique(self, tmp_path):
-        from verify import verify_req_uniqueness
-        (tmp_path / "a.md").write_text("[1_PRD-REQ-001] First\n")
-        (tmp_path / "b.md").write_text("[2_TAS-REQ-001] Second\n")
-        assert verify_req_uniqueness(str(tmp_path)) == 0

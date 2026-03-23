@@ -19,7 +19,7 @@ import sys
 import threading
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from .constants import DOCS, TOOLS_DIR
+from .constants import DOCS
 from .context import ProjectContext
 from .config import set_agent_context_limit
 from .discord import notify_failure
@@ -477,22 +477,23 @@ class Orchestrator:
         # Phase 20: DAG generation
         self.run_phase_with_retry(Phase7ADAGGeneration())
 
-        # Final validation: run the same verify.py checks as `workflow.py validate`
-        # to catch cross-artifact inconsistencies that per-phase validators miss.
-        self._log("\n=> [Final Validation] Running full plan verification...")
-        verify_script = os.path.join(TOOLS_DIR, "verify.py")
-        verify_res = subprocess.run(
-            [sys.executable, verify_script, "all"],
+        # Final validation: run validate.py --all to catch any cross-artifact
+        # inconsistencies that per-phase validators may have missed.
+        self._log("\n=> [Final Validation] Running full plan validation...")
+        from .constants import TOOLS_DIR
+        validate_script = os.path.join(TOOLS_DIR, "validate.py")
+        validate_res = subprocess.run(
+            [sys.executable, validate_script, "--all"],
             capture_output=True, text=True, cwd=self.ctx.root_dir
         )
-        if verify_res.returncode != 0:
+        if validate_res.returncode != 0:
             self._log("[!] Final validation failed:")
-            self._log(verify_res.stdout)
-            if verify_res.stderr:
-                self._log(verify_res.stderr)
+            self._log(validate_res.stdout)
+            if validate_res.stderr:
+                self._log(validate_res.stderr)
             notify_failure("Plan final validation failed.")
             sys.exit(1)
-        self._log(verify_res.stdout.strip() if verify_res.stdout.strip() else "All checks passed.")
+        self._log(validate_res.stdout.strip() if validate_res.stdout.strip() else "All checks passed.")
 
         self._log("Project generation orchestration complete.")
 
