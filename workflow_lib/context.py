@@ -472,12 +472,18 @@ class ProjectContext:
 
     def get_accumulated_context(
         self,
-        current_doc: Dict[str, Any],
+        current_doc: Optional[Dict[str, Any]] = None,
         extra_tokens: int = 0,
+        include_all: bool = False,
     ) -> str:
-        """Build an XML-tagged context string from all documents preceding *current_doc*.
+        """Build an XML-tagged context string from other spec documents.
 
-        When a summary exists for a preceding document (in ``docs/plan/summaries/``),
+        By default only documents *preceding* ``current_doc`` in the canonical
+        :data:`~.constants.DOCS` order are included.  When ``include_all`` is
+        ``True``, **all** documents except ``current_doc`` are included so that
+        spec-editing phases have full cross-spec visibility.
+
+        When a summary exists for a document (in ``docs/plan/summaries/``),
         the summary is used instead of the full document to keep the prompt within
         model input limits.
 
@@ -485,21 +491,25 @@ class ProjectContext:
         so the total stays within ``context_limit``.  Truncated documents include
         a file-path hint so the agent can read the full content if needed.
 
-        :param current_doc: The document currently being generated.  Documents
-            before this one in :data:`~.constants.DOCS` are included.
+        :param current_doc: The document currently being generated / edited.
         :type current_doc: dict
         :param extra_tokens: Tokens reserved for the rest of the prompt (template,
             description context, etc.) so the accumulated context leaves room.
         :type extra_tokens: int
+        :param include_all: When ``True``, include all documents except
+            ``current_doc`` (not just preceding ones).
+        :type include_all: bool
         :returns: Concatenated ``<previous_document>`` XML blocks for each
-            existing preceding document.
+            existing document.
         :rtype: str
         """
         # Collect raw document entries: (doc, lines[], file_path, is_summary)
         entries: list = []
         for prev_doc in DOCS:
             if prev_doc == current_doc:
-                break
+                if not include_all:
+                    break
+                continue
             summary_file = self.get_summary_path(prev_doc)
             full_file = self.get_document_path(prev_doc)
             if os.path.exists(summary_file):

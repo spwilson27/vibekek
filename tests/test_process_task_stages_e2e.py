@@ -213,7 +213,7 @@ class TestProcessTaskPresubmit:
         result = _call_process_task(
             remote, local, "phase_1/05_presubmit_fail.md",
             run_agent_mock=lambda *a, **kw: True,
-            presubmit_cmd="/bin/false",
+            presubmit_cmd="/usr/bin/false",
             max_retries=1,
         )
         assert result is False
@@ -360,7 +360,7 @@ class TestProcessTaskCleanupBehaviour:
                 result = process_task(
                     root_dir=local,
                     full_task_id="phase_1/10_cleanup_fail.md",
-                    presubmit_cmd="/bin/false",
+                    presubmit_cmd="/usr/bin/false",
                     dev_branch="dev",
                     remote_url=remote,
                     max_retries=1,

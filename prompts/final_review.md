@@ -4,6 +4,9 @@ You are the Principal Systems Architect. Your job is to review the completely ge
 # ORIGINAL PROJECT DESCRIPTION (Primary source of truth — do not add scope beyond this)
 {description_ctx}
 
+# ALL SPEC DOCUMENTS (for cross-reference)
+{accumulated_context}
+
 # TASK
 Review all documents in the `docs/plan/specs/` and `docs/plan/research/` directories.
 Fix any conflicting requirements, duplicate information, or structural issues.

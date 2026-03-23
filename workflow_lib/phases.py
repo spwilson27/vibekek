@@ -245,7 +245,7 @@ class Phase2FleshOutDoc(BasePhase):
         headers = ctx.parse_markdown_headers(expected_file, doc=self.doc)
         flesh_prompt_tmpl = ctx.load_prompt("flesh_out.md")
         extra = _count_tokens(flesh_prompt_tmpl) + _count_tokens(ctx.description_ctx) + 40
-        accumulated_context = ctx.get_accumulated_context(self.doc, extra_tokens=extra)
+        accumulated_context = ctx.get_accumulated_context(self.doc, extra_tokens=extra, include_all=True)
         
         ctx.state.setdefault("fleshed_out_headers", {})
         ctx.state["fleshed_out_headers"].setdefault(self.doc["id"], [])
@@ -371,7 +371,9 @@ class Phase3FinalReview(BasePhase):
             
         print("\n=> [Phase 4: Final Alignment Review] Reviewing all documents for consistency...")
         final_prompt_tmpl = ctx.load_prompt("final_review.md")
-        final_prompt = ctx.format_prompt(final_prompt_tmpl, description_ctx=ctx.description_ctx)
+        extra = _count_tokens(final_prompt_tmpl) + _count_tokens(ctx.description_ctx) + 40
+        accumulated_context = ctx.get_accumulated_context(extra_tokens=extra)
+        final_prompt = ctx.format_prompt(final_prompt_tmpl, description_ctx=ctx.description_ctx, accumulated_context=accumulated_context)
         
         # Final review can modify all existing spec files
         allowed_files = [ctx.get_document_path(d) for d in DOCS]
@@ -415,9 +417,12 @@ class Phase3BAdversarialReview(BasePhase):
         expected_file = os.path.join(ctx.plan_dir, "adversarial_review.md")
 
         prompt_tmpl = ctx.load_prompt("adversarial_review.md")
+        extra = _count_tokens(prompt_tmpl) + _count_tokens(ctx.description_ctx) + 40
+        accumulated_context = ctx.get_accumulated_context(extra_tokens=extra)
         prompt = ctx.format_prompt(prompt_tmpl,
             description_ctx=ctx.description_ctx,
-            target_path=target_path
+            target_path=target_path,
+            accumulated_context=accumulated_context
         )
 
         specs_dir = os.path.join(ctx.plan_dir, "specs") + os.sep
@@ -1593,9 +1598,12 @@ class Phase3AConflictResolution(BasePhase):
         expected_file = os.path.join(ctx.plan_dir, "conflict_resolution.md")
 
         prompt_tmpl = ctx.load_prompt("conflict_resolution_review.md")
+        extra = _count_tokens(prompt_tmpl) + _count_tokens(ctx.description_ctx) + 40
+        accumulated_context = ctx.get_accumulated_context(extra_tokens=extra)
         prompt = ctx.format_prompt(prompt_tmpl,
             description_ctx=ctx.description_ctx,
-            target_path=target_path
+            target_path=target_path,
+            accumulated_context=accumulated_context
         )
 
         allowed_files = [expected_file]

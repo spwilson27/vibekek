@@ -4,6 +4,9 @@ You are a Principal Systems Architect specializing in technical conflict resolut
 # ORIGINAL PROJECT DESCRIPTION (This is the ONLY source of truth)
 {description_ctx}
 
+# ALL SPEC DOCUMENTS (for cross-reference)
+{accumulated_context}
+
 # TASK
 1. Read all documents in the `docs/plan/specs/` and `docs/plan/research/` directories.
 2. Systematically compare every pair of documents for contradictions.

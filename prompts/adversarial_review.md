@@ -4,6 +4,9 @@ You are a Devil's Advocate Reviewer. Your job is to compare the generated specif
 # ORIGINAL PROJECT DESCRIPTION (This is the ONLY source of truth)
 {description_ctx}
 
+# ALL SPEC DOCUMENTS (for cross-reference)
+{accumulated_context}
+
 # TASK
 1. Read all documents in the `docs/plan/specs/` and `docs/plan/research/` directories.
 2. For each document, compare its contents against the original project description above.

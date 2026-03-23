@@ -907,13 +907,16 @@ class TestParallelAgentPool:
         # Track that make_runner is called (meaning new runners are created per-thread)
         lock = threading.Lock()
         runners_created = []
+        _runner_counter = [0]
 
         def mock_make_runner(backend, model=None, **kwargs):
             mock_runner = MagicMock()
             mock_runner.run = MagicMock(return_value=subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="", stderr=""))
             with lock:
-                runners_created.append(id(mock_runner))
+                _runner_counter[0] += 1
+                mock_runner._unique_id = _runner_counter[0]
+                runners_created.append(mock_runner._unique_id)
             return mock_runner
 
         agent = _make_agent({})
