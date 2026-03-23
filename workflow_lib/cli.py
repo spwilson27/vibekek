@@ -85,6 +85,12 @@ from .executor import (
     _start_task_container,
     _stop_task_container,
     _write_container_env_file,
+    get_task_details,
+    get_project_context,
+    get_memory_context,
+    get_spec_context,
+    get_shared_components_context,
+    truncate_task_context,
 )
 from .dashboard import make_dashboard, _DashboardStream
 from .config import get_config_defaults, get_dev_branch, get_agent_pool_configs, set_context_limit_override, set_agent_context_limit, get_docker_config, get_sccache_config, get_sccache_dist_config, get_sccache_services_config, ensure_sccache_services
@@ -597,6 +603,89 @@ def cmd_docker(args: argparse.Namespace) -> None:
             _stop_task_container(container_name, log)
 
 
+def cmd_task_prompt(args: argparse.Namespace) -> None:
+    """Generate the full rendered prompt for a task and print it.
+
+    Builds the same context that ``run`` would pass to an AI agent, renders
+    the chosen prompt template with token-aware truncation, and writes the
+    result to stdout (or a file with ``--output``).
+    """
+    from .config import get_context_limit
+
+    task_path = args.task
+
+    # Resolve to a full_task_id relative to docs/plan/tasks/
+    tasks_root = os.path.join(ROOT_DIR, "docs", "plan", "tasks")
+    if os.path.isabs(task_path) or os.path.exists(task_path):
+        # Absolute or cwd-relative path — resolve to relative task id
+        abs_path = os.path.abspath(task_path)
+        if not os.path.exists(abs_path):
+            print(f"Error: file not found: {abs_path}", file=sys.stderr)
+            sys.exit(1)
+        if abs_path.startswith(tasks_root + os.sep):
+            full_task_id = os.path.relpath(abs_path, tasks_root)
+        else:
+            # File outside tasks dir — use get_task_details with absolute path
+            full_task_id = abs_path
+    else:
+        # Treat as relative to docs/plan/tasks/
+        full_task_id = task_path
+        if not os.path.exists(os.path.join(tasks_root, full_task_id)):
+            print(f"Error: task not found: {os.path.join(tasks_root, full_task_id)}", file=sys.stderr)
+            sys.exit(1)
+
+    # Derive phase_filename and task_name from full_task_id
+    parts = full_task_id.replace(os.sep, "/").split("/", 1)
+    phase_filename = parts[0] if len(parts) > 1 else "unknown"
+    task_name = parts[1] if len(parts) > 1 else parts[0]
+
+    # Read task details — handle both relative task IDs and absolute paths
+    if os.path.isabs(full_task_id):
+        with open(full_task_id, "r", encoding="utf-8") as f:
+            task_details = f.read()
+    else:
+        task_details = get_task_details(full_task_id)
+
+    if not task_details.strip():
+        print(f"Error: no content found for task: {full_task_id}", file=sys.stderr)
+        sys.exit(1)
+
+    context = {
+        "phase_filename": phase_filename,
+        "task_name": task_name,
+        "target_dir": full_task_id,
+        "task_details": task_details,
+        "description_ctx": get_project_context(),
+        "memory_ctx": get_memory_context(ROOT_DIR),
+        "clone_dir": ROOT_DIR,
+        "spec_ctx": get_spec_context(),
+        "shared_components_ctx": get_shared_components_context(),
+    }
+
+    # Load prompt template
+    prompt_path = os.path.join(TOOLS_DIR, "prompts", args.prompt)
+    if not os.path.exists(prompt_path):
+        print(f"Error: prompt template not found: {prompt_path}", file=sys.stderr)
+        sys.exit(1)
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        prompt_tmpl = f.read()
+
+    # Truncate and render
+    effective_ctx = truncate_task_context(
+        context, get_context_limit(), prompt_tmpl=prompt_tmpl,
+    )
+    prompt = prompt_tmpl
+    for k, v in effective_ctx.items():
+        prompt = prompt.replace(f"{{{k}}}", str(v))
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(prompt)
+        print(f"Prompt written to {args.output} ({len(prompt)} chars)", file=sys.stderr)
+    else:
+        print(prompt)
+
+
 def main() -> None:
     """Parse CLI arguments and dispatch to the appropriate command handler.
 
@@ -697,6 +786,12 @@ def main() -> None:
     p_fixup = sub.add_parser("fixup", parents=[shared], help="Run validation and automatically fix failures (phase mappings + task coverage)")
     p_fixup.add_argument("--dry-run", action="store_true")
 
+    # task-prompt
+    p_task_prompt = sub.add_parser("task-prompt", parents=[shared], help="Generate full task prompt for manual agent use")
+    p_task_prompt.add_argument("task", help="Path to task .md file (absolute or relative to docs/plan/tasks/)")
+    p_task_prompt.add_argument("--prompt", default="implement_task.md", help="Prompt template filename from .tools/prompts/ (default: implement_task.md)")
+    p_task_prompt.add_argument("--output", "-o", default=None, help="Write prompt to file instead of stdout")
+
     args = parser.parse_args()
 
     # Layer defaults: hardcoded -> .workflow.jsonc -> CLI args.
@@ -740,6 +835,7 @@ def main() -> None:
         "regen-components": cmd_regen_components,
         "cascade": cmd_cascade,
         "fixup": cmd_fixup,
+        "task-prompt": cmd_task_prompt,
     }
 
     commands[args.command](args)

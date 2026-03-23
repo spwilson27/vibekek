@@ -984,14 +984,29 @@ class TestStateCoverage:
         assert state["replan_history"][0]["action"] == "block"
 
     def test_load_dags_dag_reviewed_fallback(self):
-        """load_dags uses dag_reviewed.json when present."""
-        dag_data = json.dumps({"01_task.md": []})
+        """load_dags reads task_id from JSON sidecar files."""
+        sidecar = json.dumps({"task_id": "phase_1/sub/01_task", "depends_on": []})
+
+        def fake_listdir(path):
+            if path == "/fake/tasks":
+                return ["phase_1"]
+            if path.endswith("phase_1"):
+                return ["green_01_task.json"]
+            return []
+
+        def fake_isdir(path):
+            return path in ("/fake/tasks/phase_1",) or path == "/fake/tasks"
+
+        def fake_isfile(path):
+            return path.endswith(".json")
+
         with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=["phase_1"]), \
-             patch("os.path.isdir", return_value=True), \
-             patch("builtins.open", mock_open(read_data=dag_data)):
+             patch("os.listdir", side_effect=fake_listdir), \
+             patch("os.path.isdir", side_effect=fake_isdir), \
+             patch("os.path.isfile", side_effect=fake_isfile), \
+             patch("builtins.open", mock_open(read_data=sidecar)):
             result = load_dags("/fake/tasks")
-        assert any("phase_1" in k for k in result.keys())
+        assert "phase_1/sub/01_task" in result
 
     def test_load_dags_dag_json_decode_error(self):
         with patch("os.path.exists", side_effect=lambda p: True), \
@@ -1516,26 +1531,22 @@ class TestReplanCmds:
     def test_cmd_validate_no_artifacts(self):
         from workflow_lib.replan import cmd_validate
         import pytest
-        with patch("os.path.exists", return_value=False), \
-             patch("os.path.isdir", return_value=False), \
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("workflow_lib.replan.subprocess.run", return_value=mock_result), \
              pytest.raises(SystemExit) as exc:
             cmd_validate(self._make_args())
         assert exc.value.code == 0
 
     def test_cmd_validate_all_pass(self):
         from workflow_lib.replan import cmd_validate
-        with patch("os.path.exists", return_value=True), \
-             patch("os.path.isdir", return_value=True), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+        with patch("workflow_lib.replan.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
              pytest.raises(SystemExit) as exc:
             cmd_validate(self._make_args())
         assert exc.value.code == 0
 
     def test_cmd_validate_fail(self):
         from workflow_lib.replan import cmd_validate
-        with patch("os.path.exists", return_value=True), \
-             patch("os.path.isdir", return_value=True), \
-             patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="error\n", stderr="")), \
+        with patch("workflow_lib.replan.subprocess.run", return_value=MagicMock(returncode=1, stdout="error\n", stderr="")), \
              pytest.raises(SystemExit) as exc:
             cmd_validate(self._make_args())
         assert exc.value.code == 1
@@ -2049,12 +2060,12 @@ class TestReplanCmdsCoverage:
     def test_fix_description_length_no_issues(self):
         from workflow_lib.replan import _fix_description_length
         ctx = self._mock_ctx()
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
+        # All descriptions >= 10 words => nothing to fix
+        req_json = json.dumps({"requirements": [
+            {"id": "REQ-001", "description": "This is a sufficiently long description with more than ten words in it"}
+        ]})
         with patch("os.path.exists", return_value=True), \
-             patch("subprocess.run", return_value=mock_result), \
+             patch("builtins.open", mock_open(read_data=req_json)), \
              patch("builtins.print"):
             result = _fix_description_length(ctx, dry_run=False)
         assert result is False
@@ -2062,13 +2073,12 @@ class TestReplanCmdsCoverage:
     def test_fix_description_length_dry_run(self):
         from workflow_lib.replan import _fix_description_length
         ctx = self._mock_ctx()
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = "  - [REQ-001] (5 words)\n"
-        mock_result.stderr = ""
+        # JSON with a short description (< 10 words)
+        req_json = json.dumps({"requirements": [
+            {"id": "REQ-001", "description": "Short desc"}
+        ]})
         with patch("os.path.exists", return_value=True), \
-             patch("subprocess.run", return_value=mock_result), \
-             patch("builtins.open", mock_open(read_data="### **[REQ-001]** short\n")), \
+             patch("builtins.open", mock_open(read_data=req_json)), \
              patch("builtins.print"):
             result = _fix_description_length(ctx, dry_run=True)
         assert result is True
@@ -2077,13 +2087,11 @@ class TestReplanCmdsCoverage:
         from workflow_lib.replan import _fix_description_length
         ctx = self._mock_ctx()
         ctx.run_ai.return_value = MagicMock(returncode=1, stdout="error", stderr="err")
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = "  - [REQ-001] (5 words)\n"
-        mock_result.stderr = ""
+        req_json = json.dumps({"requirements": [
+            {"id": "REQ-001", "description": "Short desc"}
+        ]})
         with patch("os.path.exists", return_value=True), \
-             patch("subprocess.run", return_value=mock_result), \
-             patch("builtins.open", mock_open(read_data="### **[REQ-001]** short\n")), \
+             patch("builtins.open", mock_open(read_data=req_json)), \
              patch("builtins.print"):
             result = _fix_description_length(ctx, dry_run=False)
         assert result is False
@@ -4510,12 +4518,19 @@ class TestSoftInterrupt:
         state = {"completed_tasks": [], "merged_tasks": []}
         dag = {"phase_1/task_a": []}
 
+        mock_docker = MagicMock()
+        mock_docker.copy_files = []
+
         # Should exit immediately with graceful shutdown message
-        self._mod._execute_dag_inner(
-            "/root", dag, state, jobs=1, presubmit_cmd="./presubmit",
-            backend="gemini",
-            cache_lock=threading.Lock(), dashboard=dash,
-        )
+        with patch('workflow_lib.executor.get_pivot_remote', return_value="origin"), \
+             patch('workflow_lib.executor.get_gitlab_remote_url', return_value=None), \
+             patch('workflow_lib.executor.get_docker_config', return_value=mock_docker), \
+             patch('workflow_lib.config.get_agent_pool_configs', return_value=[]):
+            self._mod._execute_dag_inner(
+                "/root", dag, state, jobs=1, presubmit_cmd="./presubmit",
+                backend="gemini",
+                cache_lock=threading.Lock(), dashboard=dash,
+            )
         logged = " ".join(str(c) for c in dash.log.call_args_list)
         assert "graceful shutdown" in logged.lower()
 

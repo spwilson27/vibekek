@@ -324,7 +324,7 @@ class Orchestrator:
                 # Clean up thread-local overrides
                 self.ctx._tls.runner = None
                 self.ctx._tls.phase = None
-                if agent_cfg is not None:
+                if agent_cfg is not None and self.agent_pool is not None:
                     self.agent_pool.release(agent_cfg)
                     if agent_cfg.context_limit is not None:
                         set_agent_context_limit(None)

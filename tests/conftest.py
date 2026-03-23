@@ -1,10 +1,14 @@
 """Global test safety net: block real agent CLI invocations and host filesystem writes."""
 import os
+import sys
 import builtins
 import subprocess
 import tempfile
 import pytest
 from unittest.mock import patch
+
+# Ensure workflow_lib is importable when running from project root
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 BLOCKED_COMMANDS = {"gemini", "claude", "copilot", "opencode", "cline", "aider", "codex", "qwen"}
 

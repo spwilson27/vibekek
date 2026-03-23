@@ -289,6 +289,12 @@ class TestPlanningE2E:
         (plan_dir / "e2e_interfaces.md").write_text("# E2E Interfaces\n")
         (plan_dir / "feature_gates.md").write_text("# Feature Gates\n")
 
+        # Create summary artifacts
+        summaries_dir = plan_dir / "summaries"
+        summaries_dir.mkdir(parents=True, exist_ok=True)
+        for doc in DOCS:
+            (summaries_dir / f"{doc['id']}.md").write_text(f"# Summary: {doc['name']}\nStub.\n")
+
         tasks_dir = plan_dir / "tasks" / "phase_1"
         tasks_dir.mkdir(parents=True)
         dag_file = tasks_dir / "dag.json"
@@ -886,11 +892,15 @@ class TestCustomDevBranchE2E:
         dag = {}
         state = {"completed_tasks": [], "merged_tasks": []}
 
+        mock_docker = MagicMock()
+        mock_docker.copy_files = []
         with patch("workflow_lib.executor.get_dev_branch",
                    return_value=custom_branch), \
              patch("workflow_lib.executor.load_blocked_tasks",
                    return_value=set()), \
-             patch("workflow_lib.executor.save_workflow_state"):
+             patch("workflow_lib.executor.save_workflow_state"), \
+             patch("workflow_lib.executor.get_docker_config", return_value=mock_docker), \
+             patch("workflow_lib.config.get_agent_pool_configs", return_value=[]):
             execute_dag(root, dag, state, jobs=1,
                         presubmit_cmd="echo ok", backend="gemini")
 

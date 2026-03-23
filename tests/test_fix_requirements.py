@@ -3,10 +3,13 @@
 import json
 import os
 import re
+import sys
 import tempfile
 import types
 import unittest
 from unittest.mock import MagicMock, patch, ANY
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from workflow_lib.replan import (
     cmd_fixup, _fix_task_mappings, _fix_phase_mappings,
@@ -887,6 +890,7 @@ class TestCmdFixupPhaseRemovedRegression(unittest.TestCase):
                 mock_sp.return_value = types.SimpleNamespace(
                     returncode=0,
                     stdout="Success: All requirements mapped.\n",
+                    stderr="",
                 )
                 cmd_fixup(args)
                 # The fixer must not be invoked for removed reqs
@@ -915,6 +919,7 @@ class TestCmdFixupPhaseRemovedRegression(unittest.TestCase):
                 mock_sp.return_value = types.SimpleNamespace(
                     returncode=0,
                     stdout="Success: All requirements mapped.\n",
+                    stderr="",
                 )
                 cmd_fixup(args)
 
