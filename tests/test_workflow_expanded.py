@@ -400,13 +400,26 @@ def test_phase3_final_review(mock_ctx):
 
 # Run workflow tests
 def test_load_dags():
+    sidecar = json.dumps({"task_id": "phase_1/01_task", "depends_on": []})
+
+    def fake_listdir(path):
+        if path == "tasks":
+            return ["phase_1"]
+        return ["01_task.json"]
+
+    def fake_isdir(path):
+        return path in ("tasks/phase_1", "tasks")
+
+    def fake_isfile(path):
+        return path.endswith(".json")
+
     with patch('os.path.exists', return_value=True), \
-         patch('os.listdir', return_value=["phase_1"]), \
-         patch('os.path.isdir', return_value=True):
-        m = mock_open(read_data='{"01_task": []}')
-        with patch('builtins.open', m):
-            dags = load_dags("tasks")
-            assert "phase_1/01_task" in dags
+         patch('os.listdir', side_effect=fake_listdir), \
+         patch('os.path.isdir', side_effect=fake_isdir), \
+         patch('os.path.isfile', side_effect=fake_isfile), \
+         patch('builtins.open', mock_open(read_data=sidecar)):
+        dags = load_dags("tasks")
+        assert "phase_1/01_task" in dags
 
 def test_get_ready_tasks():
     dag = {
