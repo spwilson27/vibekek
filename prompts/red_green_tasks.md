@@ -61,7 +61,7 @@ Every `.md` task file MUST have a corresponding `.json` sidecar with the same ba
 - Each Red task should define **2-6 focused E2E test cases** that validate a coherent behavior.
 - Each Red task MUST have at most **5 requirement_mappings**. If a behavior needs more, split into smaller tasks.
 - Each Green task implements the real logic for **one Red task's tests**. Prefer 1:1 Red:Green pairing.
-- Phases with many requirements (50+) should produce many focused tasks (10-30+), not a few large ones.
+- Phases with many requirements (50+) should produce many focused tasks (30+), not a few large ones.
 
 # CHAIN OF THOUGHT
 Before generating the final documents, silently plan your approach:
