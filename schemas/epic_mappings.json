@@ -44,9 +44,43 @@
               "required": ["name", "requirement_ids"],
               "additionalProperties": false
             }
+          },
+          "shared_components": {
+            "type": "object",
+            "properties": {
+              "owns": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "contract": { "type": "string", "description": "Canonical crate path or trait that defines this component's API" }
+                  },
+                  "required": ["name", "contract"],
+                  "additionalProperties": false
+                },
+                "description": "Components whose canonical implementation is defined in this phase"
+              },
+              "consumes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "from_epic": { "type": "string", "description": "Epic ID that owns this component" }
+                  },
+                  "required": ["name", "from_epic"],
+                  "additionalProperties": false
+                },
+                "description": "Components owned by earlier phases that this phase depends on"
+              }
+            },
+            "required": ["owns", "consumes"],
+            "additionalProperties": false,
+            "description": "Cross-cutting components this phase owns or consumes from other phases"
           }
         },
-        "required": ["epic_id", "name", "phase_number", "requirement_ids", "features"],
+        "required": ["epic_id", "name", "phase_number", "requirement_ids", "features", "shared_components"],
         "additionalProperties": false
       }
     }

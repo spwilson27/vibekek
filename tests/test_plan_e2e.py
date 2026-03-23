@@ -127,7 +127,13 @@ EPIC_MAPPINGS = {
             "features": [
                 {"name": "Basic Login", "requirement_ids": ["1_PRD-REQ-001"]},
                 {"name": "Profile", "requirement_ids": ["1_PRD-REQ-002"]},
-            ]
+            ],
+            "shared_components": {
+                "owns": [
+                    {"name": "AuthService", "contract": "dreamer-core::auth::AuthService"}
+                ],
+                "consumes": []
+            }
         }
     ]
 }
@@ -1106,7 +1112,8 @@ class TestValidation:
             "name": "Auth",
             "phase_number": 1,
             "requirement_ids": ["1_PRD-REQ-001"],  # missing REQ-002
-            "features": [{"name": "Login", "requirement_ids": ["1_PRD-REQ-001"]}]
+            "features": [{"name": "Login", "requirement_ids": ["1_PRD-REQ-001"]}],
+            "shared_components": {"owns": [], "consumes": []}
         }]}
         (plan_dir / "epic_mappings.json").write_text(json.dumps(partial_epic))
 
@@ -1194,6 +1201,284 @@ class TestValidation:
         rc, out = self._run_validate(tmp_path, phase=18)
         assert rc != 0, f"Expected validation failure for missing gate producer"
         assert "nonexistent_gate" in out
+
+    # --- Shared component ownership tests (Phase 13) ---
+
+    def test_epic_shared_components_valid(self, tmp_path):
+        """Epic with valid shared_components passes validation."""
+        plan_dir = tmp_path / "docs" / "plan"
+        plan_dir.mkdir(parents=True)
+
+        (plan_dir / "requirements_ordered.json").write_text(json.dumps(ORDERED_REQS, indent=2))
+        (plan_dir / "epic_mappings.json").write_text(json.dumps(EPIC_MAPPINGS, indent=2))
+
+        state = {"epics_completed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=13)
+        assert rc == 0, f"Validation failed: {out}"
+
+    def test_epic_shared_components_missing(self, tmp_path):
+        """Epic missing shared_components field is caught."""
+        plan_dir = tmp_path / "docs" / "plan"
+        plan_dir.mkdir(parents=True)
+
+        (plan_dir / "requirements_ordered.json").write_text(json.dumps(ORDERED_REQS, indent=2))
+
+        epic_no_sc = {"epics": [{
+            "epic_id": "auth",
+            "name": "Auth",
+            "phase_number": 1,
+            "requirement_ids": ["1_PRD-REQ-001", "1_PRD-REQ-002"],
+            "features": [{"name": "Login", "requirement_ids": ["1_PRD-REQ-001"]}]
+        }]}
+        (plan_dir / "epic_mappings.json").write_text(json.dumps(epic_no_sc))
+
+        state = {"epics_completed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=13)
+        assert rc != 0, f"Expected failure for missing shared_components"
+        assert "shared_components" in out
+
+    def test_epic_shared_components_dual_ownership(self, tmp_path):
+        """Component owned by two epics is caught."""
+        plan_dir = tmp_path / "docs" / "plan"
+        plan_dir.mkdir(parents=True)
+
+        (plan_dir / "requirements_ordered.json").write_text(json.dumps(ORDERED_REQS, indent=2))
+
+        dual_owner = {"epics": [
+            {
+                "epic_id": "EPIC-000",
+                "name": "Bootstrap",
+                "phase_number": 0,
+                "requirement_ids": ["1_PRD-REQ-001"],
+                "features": [{"name": "Setup", "requirement_ids": ["1_PRD-REQ-001"]}],
+                "shared_components": {
+                    "owns": [{"name": "CommandBus", "contract": "core::CommandBus"}],
+                    "consumes": []
+                }
+            },
+            {
+                "epic_id": "EPIC-001",
+                "name": "Core",
+                "phase_number": 1,
+                "requirement_ids": ["1_PRD-REQ-002"],
+                "features": [{"name": "Core", "requirement_ids": ["1_PRD-REQ-002"]}],
+                "shared_components": {
+                    "owns": [{"name": "CommandBus", "contract": "core::CommandBus"}],
+                    "consumes": []
+                }
+            }
+        ]}
+        (plan_dir / "epic_mappings.json").write_text(json.dumps(dual_owner))
+
+        state = {"epics_completed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=13)
+        assert rc != 0, f"Expected failure for dual ownership"
+        assert "CommandBus" in out
+        assert "owned by both" in out
+
+    def test_epic_shared_components_consume_from_later_phase(self, tmp_path):
+        """Consuming a component from a later phase is caught."""
+        plan_dir = tmp_path / "docs" / "plan"
+        plan_dir.mkdir(parents=True)
+
+        (plan_dir / "requirements_ordered.json").write_text(json.dumps(ORDERED_REQS, indent=2))
+
+        bad_consume = {"epics": [
+            {
+                "epic_id": "EPIC-000",
+                "name": "Bootstrap",
+                "phase_number": 0,
+                "requirement_ids": ["1_PRD-REQ-001"],
+                "features": [{"name": "Setup", "requirement_ids": ["1_PRD-REQ-001"]}],
+                "shared_components": {
+                    "owns": [],
+                    "consumes": [{"name": "AuthService", "from_epic": "EPIC-001"}]
+                }
+            },
+            {
+                "epic_id": "EPIC-001",
+                "name": "Auth",
+                "phase_number": 1,
+                "requirement_ids": ["1_PRD-REQ-002"],
+                "features": [{"name": "Auth", "requirement_ids": ["1_PRD-REQ-002"]}],
+                "shared_components": {
+                    "owns": [{"name": "AuthService", "contract": "core::AuthService"}],
+                    "consumes": []
+                }
+            }
+        ]}
+        (plan_dir / "epic_mappings.json").write_text(json.dumps(bad_consume))
+
+        state = {"epics_completed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=13)
+        assert rc != 0, f"Expected failure for consuming from later phase"
+        assert "earlier phases" in out
+
+    def test_epic_shared_components_consume_unknown_epic(self, tmp_path):
+        """Consuming from a nonexistent epic is caught."""
+        plan_dir = tmp_path / "docs" / "plan"
+        plan_dir.mkdir(parents=True)
+
+        (plan_dir / "requirements_ordered.json").write_text(json.dumps(ORDERED_REQS, indent=2))
+
+        bad_ref = {"epics": [{
+            "epic_id": "EPIC-001",
+            "name": "Auth",
+            "phase_number": 1,
+            "requirement_ids": ["1_PRD-REQ-001", "1_PRD-REQ-002"],
+            "features": [{"name": "Auth", "requirement_ids": ["1_PRD-REQ-001"]}],
+            "shared_components": {
+                "owns": [],
+                "consumes": [{"name": "CommandBus", "from_epic": "EPIC-NONEXISTENT"}]
+            }
+        }]}
+        (plan_dir / "epic_mappings.json").write_text(json.dumps(bad_ref))
+
+        state = {"epics_completed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=13)
+        assert rc != 0, f"Expected failure for unknown epic reference"
+        assert "EPIC-NONEXISTENT" in out
+
+    # --- Requirement traceability tests (Phase 18) ---
+
+    def test_traceability_all_requirements_tested(self, tmp_path):
+        """All requirements covered by task requirement_mappings passes."""
+        plan_dir = tmp_path / "docs" / "plan"
+        task_dir = plan_dir / "tasks" / "phase_1" / "auth"
+        task_dir.mkdir(parents=True)
+
+        (plan_dir / "requirements.json").write_text(json.dumps(MERGED_REQS, indent=2))
+
+        # Task covers both requirements in requirement_mappings
+        sidecar = dict(TASK_SIDECAR, requirement_mappings=["1_PRD-REQ-001", "1_PRD-REQ-002"])
+        (task_dir / "01_task.json").write_text(json.dumps(sidecar))
+        (task_dir / "01_task.md").write_text("# Task\n")
+
+        # Green task produces the gate
+        green = dict(GREEN_TASK_SIDECAR, requirement_mappings=[])
+        (task_dir / "02_green.json").write_text(json.dumps(green))
+        (task_dir / "02_green.md").write_text("# Green Task\n")
+
+        state = {"cross_phase_reviewed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=18)
+        assert rc == 0, f"Validation failed: {out}"
+
+    def test_traceability_untested_requirement(self, tmp_path):
+        """Requirement not in any task's requirement_mappings is caught."""
+        plan_dir = tmp_path / "docs" / "plan"
+        task_dir = plan_dir / "tasks" / "phase_1" / "auth"
+        task_dir.mkdir(parents=True)
+
+        (plan_dir / "requirements.json").write_text(json.dumps(MERGED_REQS, indent=2))
+
+        # Task only covers REQ-001, REQ-002 is missing
+        sidecar = dict(TASK_SIDECAR, requirement_mappings=["1_PRD-REQ-001"])
+        (task_dir / "01_task.json").write_text(json.dumps(sidecar))
+        (task_dir / "01_task.md").write_text("# Task\n")
+
+        green = dict(GREEN_TASK_SIDECAR, requirement_mappings=[])
+        (task_dir / "02_green.json").write_text(json.dumps(green))
+        (task_dir / "02_green.md").write_text("# Green Task\n")
+
+        state = {"cross_phase_reviewed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=18)
+        assert rc != 0, f"Expected failure for untested requirement"
+        assert "not directly tested" in out
+        assert "1_PRD-REQ-002" in out
+
+    def test_traceability_contributes_to_not_counted(self, tmp_path):
+        """Requirement only in contributes_to (not requirement_mappings) is flagged."""
+        plan_dir = tmp_path / "docs" / "plan"
+        task_dir = plan_dir / "tasks" / "phase_1" / "auth"
+        task_dir.mkdir(parents=True)
+
+        (plan_dir / "requirements.json").write_text(json.dumps(MERGED_REQS, indent=2))
+
+        # REQ-001 in requirement_mappings, REQ-002 only in contributes_to
+        sidecar = dict(TASK_SIDECAR,
+                       requirement_mappings=["1_PRD-REQ-001"],
+                       contributes_to=["1_PRD-REQ-002"])
+        (task_dir / "01_task.json").write_text(json.dumps(sidecar))
+        (task_dir / "01_task.md").write_text("# Task\n")
+
+        green = dict(GREEN_TASK_SIDECAR,
+                     requirement_mappings=[],
+                     contributes_to=[])
+        (task_dir / "02_green.json").write_text(json.dumps(green))
+        (task_dir / "02_green.md").write_text("# Green Task\n")
+
+        state = {"cross_phase_reviewed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=18)
+        assert rc != 0, f"Expected failure — contributes_to should not count as tested"
+        assert "1_PRD-REQ-002" in out
+
+    # --- Task sidecar contributes_to schema tests (Phase 16) ---
+
+    def test_task_sidecar_with_contributes_to_valid(self, tmp_path):
+        """Task sidecar with valid contributes_to field passes validation."""
+        plan_dir = tmp_path / "docs" / "plan"
+        task_dir = plan_dir / "tasks" / "phase_1" / "auth"
+        task_dir.mkdir(parents=True)
+
+        sidecar = dict(TASK_SIDECAR, contributes_to=["1_PRD-REQ-002"])
+        (task_dir / "01_task.json").write_text(json.dumps(sidecar))
+        (task_dir / "01_task.md").write_text("# Task\n")
+
+        state = {"tasks_completed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=16)
+        assert rc == 0, f"Validation failed: {out}"
+
+    def test_task_sidecar_without_contributes_to_valid(self, tmp_path):
+        """Task sidecar without contributes_to still passes (field is optional)."""
+        plan_dir = tmp_path / "docs" / "plan"
+        task_dir = plan_dir / "tasks" / "phase_1" / "auth"
+        task_dir.mkdir(parents=True)
+
+        sidecar = dict(TASK_SIDECAR)  # No contributes_to
+        assert "contributes_to" not in sidecar
+        (task_dir / "01_task.json").write_text(json.dumps(sidecar))
+        (task_dir / "01_task.md").write_text("# Task\n")
+
+        state = {"tasks_completed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=16)
+        assert rc == 0, f"Validation failed: {out}"
+
+    def test_task_sidecar_contributes_to_invalid_pattern(self, tmp_path):
+        """contributes_to with invalid requirement ID pattern is caught."""
+        plan_dir = tmp_path / "docs" / "plan"
+        task_dir = plan_dir / "tasks" / "phase_1" / "auth"
+        task_dir.mkdir(parents=True)
+
+        sidecar = dict(TASK_SIDECAR, contributes_to=["not-a-valid-id"])
+        (task_dir / "01_task.json").write_text(json.dumps(sidecar))
+        (task_dir / "01_task.md").write_text("# Task\n")
+
+        state = {"tasks_completed": True}
+        (tmp_path / ".gen_state.json").write_text(json.dumps(state))
+
+        rc, out = self._run_validate(tmp_path, phase=16)
+        assert rc != 0, f"Expected failure for invalid contributes_to pattern"
+        assert "not-a-valid-id" in out
 
 
 class TestValidationNoPhaseRun:

@@ -278,6 +278,43 @@ def validate_phase_13(state: Dict) -> List[str]:
         except (json.JSONDecodeError, KeyError):
             pass
 
+    # Validate shared_components ownership and consumption
+    epics = data.get("epics", [])
+    epic_by_id: Dict[str, Dict] = {e["epic_id"]: e for e in epics}
+    component_owners: Dict[str, str] = {}  # component name -> owning epic_id
+
+    for epic in epics:
+        sc = epic.get("shared_components", {})
+        phase_num = epic.get("phase_number", 0)
+        epic_id = epic.get("epic_id", "?")
+
+        for owned in sc.get("owns", []):
+            comp_name = owned.get("name", "")
+            if comp_name in component_owners:
+                errors.append(
+                    f"epic_mappings.json: component '{comp_name}' owned by both "
+                    f"'{component_owners[comp_name]}' and '{epic_id}'"
+                )
+            else:
+                component_owners[comp_name] = epic_id
+
+        for consumed in sc.get("consumes", []):
+            comp_name = consumed.get("name", "")
+            from_epic = consumed.get("from_epic", "")
+            if from_epic not in epic_by_id:
+                errors.append(
+                    f"epic_mappings.json: {epic_id} consumes '{comp_name}' from "
+                    f"unknown epic '{from_epic}'"
+                )
+            else:
+                owner_phase = epic_by_id[from_epic].get("phase_number", 0)
+                if owner_phase >= phase_num:
+                    errors.append(
+                        f"epic_mappings.json: {epic_id} (phase {phase_num}) consumes "
+                        f"'{comp_name}' from '{from_epic}' (phase {owner_phase}) — "
+                        f"consumed components must come from earlier phases"
+                    )
+
     return errors
 
 
@@ -350,6 +387,35 @@ def validate_phase_18(state: Dict) -> List[str]:
             errors.append(
                 f"Feature gate '{gate}' is tested by red task(s) but no green task produces it"
             )
+
+    # Traceability: check every requirement is directly tested by at least one task
+    merged_path = os.path.join(PLAN_DIR, "requirements.json")
+    if os.path.exists(merged_path):
+        try:
+            merged = _load_json(merged_path)
+            all_req_ids = {r["id"] for r in merged.get("requirements", [])}
+
+            # Collect requirement IDs from requirement_mappings (directly tested)
+            tested_req_ids: Set[str] = set()
+            for root, dirs, files in os.walk(tasks_dir):
+                for fname in files:
+                    if not fname.endswith(".json") or fname.startswith("dag"):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    try:
+                        data = _load_json(fpath)
+                        tested_req_ids.update(data.get("requirement_mappings", []))
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+            untested = all_req_ids - tested_req_ids
+            if untested:
+                errors.append(
+                    f"{len(untested)} requirement(s) not directly tested by any task's "
+                    f"requirement_mappings: {sorted(untested)[:10]}..."
+                )
+        except (json.JSONDecodeError, KeyError):
+            pass
 
     return errors
 

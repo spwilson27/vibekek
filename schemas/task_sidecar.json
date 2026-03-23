@@ -33,7 +33,15 @@
         "type": "string",
         "pattern": "^[A-Z0-9_]+-REQ-[0-9]+$"
       },
-      "description": "Requirement IDs this task helps fulfill"
+      "description": "Requirement IDs directly tested by assertions in this task"
+    },
+    "contributes_to": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z0-9_]+-REQ-[0-9]+$"
+      },
+      "description": "Requirement IDs partially advanced but not directly tested by this task"
     },
     "epic_id": {
       "type": "string",

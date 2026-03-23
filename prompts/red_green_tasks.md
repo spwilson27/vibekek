@@ -39,9 +39,15 @@ Every `.md` task file MUST have a corresponding `.json` sidecar with the same ba
   "depends_on": ["{task_id_1}", "{task_id_2}"],
   "feature_gates": ["features/{gate_name}"],
   "requirement_mappings": ["{REQ_ID_1}", "{REQ_ID_2}"],
+  "contributes_to": ["{REQ_ID_3}", "{REQ_ID_4}"],
   "epic_id": "{epic_id}"
 }
 ```
+
+**Requirement mapping rules:**
+- **`requirement_mappings`**: ONLY include requirement IDs that are directly exercised by a named test assertion or implementation step in this task. If a Red task writes `e2e_layer_create`, the requirements validated by that test go here.
+- **`contributes_to`**: Include requirement IDs that are tangentially advanced (e.g., infrastructure the requirement depends on) but not directly tested by this task's assertions.
+- A requirement in `requirement_mappings` means "this task proves this requirement works." A requirement in `contributes_to` means "this task helps but doesn't prove it alone."
 
 # DEPENDENCY RULES
 - All Red tasks for a phase MUST complete before any Green task in that phase can start.
@@ -55,7 +61,7 @@ Before generating the final documents, silently plan your approach:
 2. Map each epic to its E2E interfaces and feature gates.
 3. Design Red tasks: one per public interface or logical API group — each Red task stubs the interface and writes E2E tests.
 4. Design Green tasks: one per implementation unit — each Green task implements real logic and creates gate files.
-5. Verify full coverage: every requirement, every interface, every feature gate must be addressed.
+5. Verify full coverage: every requirement, every interface, every feature gate must be addressed. For each requirement, decide whether it belongs in `requirement_mappings` (directly tested) or `contributes_to` (tangentially advanced) for the task that handles it.
 6. Validate dependency ordering: no circular dependencies, Red before Green.
 
 # CONSTRAINTS
@@ -81,8 +87,11 @@ Each task `.md` file must use this structure:
 ## Type
 {red|green}
 
-## Covered Requirements
+## Directly Tested Requirements
 - [{REQ_ID_1}], [{REQ_ID_2}]
+
+## Contributes To
+- [{REQ_ID_3}], [{REQ_ID_4}]
 
 ## Feature Gates
 - {`features/{gate_name}` — created by this task (green) or tested against by this task (red)}
@@ -102,5 +111,11 @@ Each task `.md` file must use this structure:
 
 ## 4. Verification
 - [ ] {Instructions to run tests and validate}
+
+## 5. Architectural Constraints (Green tasks only)
+- [ ] {Must use/import specific trait, module, or type from a specific crate — not create a local copy}
+- [ ] {Must respect specific shared component contract from e2e_interfaces.md}
 ```
+
+For Green tasks, the Architectural Constraints section MUST list which shared components (from the epic's `shared_components.consumes` list in `epic_mappings.json`) the implementation must use. Reference the owning phase and the contract definition. This prevents agents from creating conflicting local implementations of shared concerns. Omit this section for Red tasks.
 </output>

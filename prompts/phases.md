@@ -54,13 +54,36 @@ This is the machine-readable output consumed by downstream phases. It MUST be va
           "name": "string — feature name",
           "requirement_ids": ["REQ-ID-1"]
         }
-      ]
+      ],
+      "shared_components": {
+        "owns": [
+          {
+            "name": "string — component name (e.g. CommandBus, PlatformApi)",
+            "contract": "string — canonical crate path or trait (e.g. dreamer-core::command::CommandBus)"
+          }
+        ],
+        "consumes": [
+          {
+            "name": "string — component name consumed from another phase",
+            "from_epic": "string — epic_id that owns this component (e.g. EPIC-000)"
+          }
+        ]
+      }
     }
   ]
 }
 ```
 
-Required fields per epic: `epic_id`, `name`, `phase_number` (integer >= 0), `requirement_ids` (array of all requirement IDs covered), `features` (array of feature objects, each with `name` and `requirement_ids`). No additional properties are allowed.
+Required fields per epic: `epic_id`, `name`, `phase_number` (integer >= 0), `requirement_ids` (array of all requirement IDs covered), `features` (array of feature objects, each with `name` and `requirement_ids`), `shared_components` (object with `owns` and `consumes` arrays — use empty arrays if the phase has none).
+
+### Shared Components Guidelines
+
+Shared components are cross-cutting architectural concerns (e.g., CommandBus, PlatformApi, RenderEngine, DocumentStore, LayerTree) that are defined in one phase but used by multiple phases.
+
+- **`owns`**: List components whose canonical trait/API/module is first defined in this phase. Include the crate path or trait name in `contract` so downstream phases know exactly what to import.
+- **`consumes`**: List components this phase depends on from earlier phases. Reference the owning epic's `epic_id` in `from_epic`.
+- A component MUST be owned by exactly one epic. Multiple epics may consume it.
+- A consumed component's `from_epic` MUST reference an epic with a lower `phase_number`.
 
 ## Secondary output: `docs/plan/phases/phase_N.md`
 
@@ -86,8 +109,16 @@ One Markdown document per phase, providing human-readable detail. You MUST struc
 - {Detailed implementation plan}
 - {Expected behavior}
 
+## Shared Components
+### Owns
+- **{ComponentName}** — `{crate::path::TraitOrModule}`: {Brief description of what this component provides}
+
+### Consumes (from earlier phases)
+- **{ComponentName}** from Phase {N} (`{EPIC-ID}`): {How this phase uses the component}
+
 ## Technical Considerations
 - {Potential hurdles, design patterns, or specific technologies to use}
 ```
 
 The requirement IDs listed in each phase Markdown MUST exactly match those in the corresponding epic in `epic_mappings.json`.
+The shared components listed in each phase Markdown MUST exactly match those in the corresponding epic's `shared_components` field in `epic_mappings.json`.

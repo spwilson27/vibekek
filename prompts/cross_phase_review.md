@@ -17,6 +17,7 @@ You are a Lead AI Architect and Project Manager. Your job is to review all the g
 7. **Refine and Reorganize**: Ensure the tasks are atomic, actionable, and collectively fulfill all requirements without duplicating architectural setup or core logic implementation across phases.
 8. **CONSTRAINT — Subtractive Only**: This review phase may ONLY merge, delete, consolidate, or simplify tasks. The total number of task files after review must be less than or equal to the number before review. If you find gaps, document them in the review summary but do not create new tasks to fill them.
 8. Write a summary of your review and any changes made to `docs/plan/tasks/{summary_filename}`.
+9. **Traceability Audit**: Read `docs/plan/requirements.json` and collect all requirement IDs. For each requirement, verify it appears in at least one task sidecar's `requirement_mappings` (not just `contributes_to`). List any uncovered requirements in the review summary as **GAPS**. These gaps indicate requirements that no task directly tests — they need either a new test assertion added to an existing task, or a new task created in a subsequent pass.
 
 # CHAIN OF THOUGHT
 1. Analyze the tasks across all phases.
