@@ -159,7 +159,7 @@ def step_python_tests() -> None:
     print("[HARNESS] python-tests: pytest tests/")
     # Run from the workspace root with the pinned config file
     _run(
-        f"{sys.executable} -m pytest --config-file=.tools/pytest.ini",
+        f"{sys.executable} -m pytest --config-file=.tools/harness/pytest.ini",
         check=True,
     )
     _run_hook("test")
