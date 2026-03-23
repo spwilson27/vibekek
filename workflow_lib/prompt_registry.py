@@ -28,9 +28,9 @@ PROMPT_PLACEHOLDERS = {
     "summarize_doc.md": {"document_name", "document_content", "summary_path"},
 
     # Phase 4-6: Reviews
-    "final_review.md": {"description_ctx", "source_doc"},
-    "conflict_resolution_review.md": {"description_ctx", "target_path"},
-    "adversarial_review.md": {"description_ctx", "target_path"},
+    "final_review.md": {"description_ctx", "accumulated_context", "source_doc"},
+    "conflict_resolution_review.md": {"description_ctx", "accumulated_context", "target_path"},
+    "adversarial_review.md": {"description_ctx", "accumulated_context", "target_path"},
 
     # Phase 7-12: Requirements pipeline (JSON)
     "extract_requirements.md": {"description_ctx", "document_name", "document_path", "target_path"},
