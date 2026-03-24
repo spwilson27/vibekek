@@ -769,6 +769,9 @@ def run_ai_command(
         # Treat this as a quota failure so run_agent can rotate to a different agent.
         if quota_seen_transient[0] and result.returncode != 0:
             return QUOTA_RETURN_CODE, "quota exceeded (CLI retries exhausted)"
+        # Codex: any nonzero exit is assumed to be quota exhaustion — rotate to another agent.
+        if backend == "codex" and result.returncode != 0:
+            return QUOTA_RETURN_CODE, f"codex exited with status {result.returncode} (quota exhausted)"
         return result.returncode, stderr_text
     except subprocess.TimeoutExpired:
         if quota_detected[0] or quota_seen_transient[0]:
