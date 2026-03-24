@@ -393,10 +393,14 @@ def _start_task_container(
     harness_tmp.close()
     shutil.copy2(harness_src, harness_tmp.name)
     os.chmod(harness_tmp.name, 0o444)
-    volume_flags += ["-v", f"{harness_tmp.name}:/harness.py:ro"]
+    harness_mount_src = os.path.realpath(harness_tmp.name)
+    volume_flags += ["--mount", f"type=bind,src={harness_mount_src},target=/harness.py,readonly"]
     with _harness_tmpfiles_lock:
         _harness_tmpfiles[container_name] = harness_tmp.name
-    log(f"      [docker] harness.py staged to {harness_tmp.name!r} and bind-mounted read-only at /harness.py")
+    log(
+        f"      [docker] harness.py staged to {harness_tmp.name!r} "
+        f"(mount src {harness_mount_src!r}) and bind-mounted read-only at /harness.py"
+    )
 
     # Build docker run command
     docker_cmd = [
@@ -470,6 +474,27 @@ def _start_task_container(
             _active_containers.discard(container_name)
         raise RuntimeError(f"Container {container_name} is not running after creation")
     log(f"      [docker] Container {container_name} verified as running")
+
+    # Fail fast if Docker materialized /harness.py as a directory or otherwise
+    # mis-mounted the bind source. This preserves the immutable verifier contract.
+    harness_check_res = subprocess.run(
+        ["docker", "exec", "-i", container_name, "sh", "-lc", "test -f /harness.py"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if harness_check_res.returncode != 0:
+        log(
+            f"      [!] Container {container_name} has invalid harness mount at /harness.py: "
+            "expected a regular file"
+        )
+        with _active_containers_lock:
+            _active_containers.discard(container_name)
+        raise RuntimeError(
+            f"Container {container_name} has invalid harness mount at /harness.py; "
+            "expected a regular file"
+        )
+    log(f"      [docker] Container {container_name} verified harness mount at /harness.py")
 
     # Copy files into the container after it starts to avoid permission issues
     # with bind-mounted files (e.g. .git-credentials with mode 0600)
@@ -2858,4 +2883,3 @@ def _execute_dag_inner(root_dir: str, master_dag: Dict[str, List[str]], state: D
         notify_failure("Run workflow halted due to task failures.",
                        context="\n".join(failed_tasks))
         sys.exit(1)
-

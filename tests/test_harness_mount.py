@@ -35,6 +35,15 @@ def _docker_cfg(image="test-image:latest", volumes=None):
     return DockerConfig(image=image, volumes=volumes or [], copy_files=[])
 
 
+def _write_harness(tools_dir, content="# harness stub"):
+    harness_dir = os.path.join(str(tools_dir), "harness")
+    os.makedirs(harness_dir, exist_ok=True)
+    harness_path = os.path.join(harness_dir, "harness.py")
+    with open(harness_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return harness_path
+
+
 def _make_fake_run(inspect_stdout="true\n", ps_stdout="abc123\n"):
     """Return a fake subprocess.run that satisfies all docker lifecycle checks."""
     def fake_run(cmd, **kwargs):
@@ -53,10 +62,9 @@ def _make_fake_run(inspect_stdout="true\n", ps_stdout="abc123\n"):
 # ---------------------------------------------------------------------------
 
 class TestHarnessMountPresence:
-    def test_harness_mounted_as_ro_volume(self, tmp_path):
-        """harness.py must appear as a -v …:/harness.py:ro flag in docker run."""
-        harness = tmp_path / "harness.py"
-        harness.write_text("# harness stub")
+    def test_harness_mounted_as_ro_bind(self, tmp_path):
+        """harness.py must appear as a readonly bind mount at /harness.py."""
+        _write_harness(tmp_path)
         env_file = str(tmp_path / "container.env")
         open(env_file, "w").close()
 
@@ -67,16 +75,17 @@ class TestHarnessMountPresence:
             return _make_fake_run()(cmd, **kwargs)
 
         with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
              patch("subprocess.run", side_effect=fake_run):
             _start_task_container("ctr_ro", _docker_cfg(), env_file, print)
 
         docker_run_cmd = run_calls[0]
-        v_args = [docker_run_cmd[i + 1] for i in range(len(docker_run_cmd))
-                  if docker_run_cmd[i] == "-v"]
-        harness_mounts = [v for v in v_args if ":/harness.py" in v]
-        assert harness_mounts, "No -v mount for /harness.py found in docker run command"
-        assert all(v.endswith(":ro") for v in harness_mounts), (
-            f"harness.py mount must use :ro flag, got: {harness_mounts}"
+        mount_args = [docker_run_cmd[i + 1] for i in range(len(docker_run_cmd))
+                      if docker_run_cmd[i] == "--mount"]
+        harness_mounts = [v for v in mount_args if "target=/harness.py" in v]
+        assert harness_mounts, "No --mount entry for /harness.py found in docker run command"
+        assert all("readonly" in v for v in harness_mounts), (
+            f"harness.py mount must be readonly, got: {harness_mounts}"
         )
 
     def test_host_harness_py_not_directly_mounted(self, tmp_path):
@@ -84,8 +93,7 @@ class TestHarnessMountPresence:
 
         A tmpfile copy must be used so the host checkout is not locked open.
         """
-        harness = tmp_path / "harness.py"
-        harness.write_text("# harness stub")
+        harness = _write_harness(tmp_path)
         env_file = str(tmp_path / "container.env")
         open(env_file, "w").close()
 
@@ -96,19 +104,97 @@ class TestHarnessMountPresence:
             return _make_fake_run()(cmd, **kwargs)
 
         with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
              patch("subprocess.run", side_effect=fake_run):
             _start_task_container("ctr_notdirect", _docker_cfg(), env_file, print)
 
         docker_run_cmd = run_calls[0]
-        v_args = [docker_run_cmd[i + 1] for i in range(len(docker_run_cmd))
-                  if docker_run_cmd[i] == "-v"]
-        harness_mounts = [v for v in v_args if ":/harness.py" in v]
+        mount_args = [docker_run_cmd[i + 1] for i in range(len(docker_run_cmd))
+                      if docker_run_cmd[i] == "--mount"]
+        harness_mounts = [v for v in mount_args if "target=/harness.py" in v]
         host_path = str(harness)
-        direct_mounts = [v for v in harness_mounts if v.startswith(host_path + ":")]
+        direct_mounts = [v for v in harness_mounts if f"src={host_path}" in v]
         assert not direct_mounts, (
             f"Host harness.py was mounted directly (locks checkout): {direct_mounts}. "
             "A tmpfile copy must be used instead."
         )
+
+    def test_harness_mount_uses_realpath_source(self, tmp_path):
+        """The bind mount should use the canonical temp path as its source."""
+        _write_harness(tmp_path)
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd)
+            return _make_fake_run()(cmd, **kwargs)
+
+        fake_tmp_path = str(tmp_path / "tmp" / "harness.py")
+        real_tmp_path = str(tmp_path / "canonical" / "harness.py")
+        os.makedirs(os.path.dirname(fake_tmp_path), exist_ok=True)
+        os.makedirs(os.path.dirname(real_tmp_path), exist_ok=True)
+        realpath_orig = os.path.realpath
+
+        with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
+             patch("tempfile.NamedTemporaryFile") as mock_tmp, \
+             patch("workflow_lib.executor.os.path.realpath", side_effect=lambda p: real_tmp_path if p == fake_tmp_path else realpath_orig(p)), \
+             patch("subprocess.run", side_effect=fake_run):
+            mock_tmp.return_value.name = fake_tmp_path
+            mock_tmp.return_value.close.return_value = None
+            _start_task_container("ctr_realpath", _docker_cfg(), env_file, print)
+
+        docker_run_cmd = run_calls[0]
+        mount_args = [docker_run_cmd[i + 1] for i in range(len(docker_run_cmd))
+                      if docker_run_cmd[i] == "--mount"]
+        harness_mounts = [v for v in mount_args if "target=/harness.py" in v]
+        assert harness_mounts, "No harness bind mount found"
+        assert any(f"src={real_tmp_path}" in v for v in harness_mounts), (
+            f"harness.py mount must use canonical realpath source, got: {harness_mounts}"
+        )
+        assert all(f"src={fake_tmp_path}" not in v for v in harness_mounts), (
+            f"harness.py mount should not use raw temp path, got: {harness_mounts}"
+        )
+
+    def test_container_verifies_harness_mount_is_regular_file(self, tmp_path):
+        """Container startup should check that /harness.py is a regular file."""
+        _write_harness(tmp_path)
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd)
+            if cmd[:6] == ["docker", "exec", "-i", "ctr_filecheck", "sh", "-lc"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return _make_fake_run()(cmd, **kwargs)
+
+        with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
+             patch("subprocess.run", side_effect=fake_run):
+            _start_task_container("ctr_filecheck", _docker_cfg(), env_file, print)
+
+        assert ["docker", "exec", "-i", "ctr_filecheck", "sh", "-lc", "test -f /harness.py"] in run_calls
+
+    def test_raises_if_harness_mount_is_not_regular_file(self, tmp_path):
+        """Container startup must fail if /harness.py is not mounted as a file."""
+        _write_harness(tmp_path)
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:6] == ["docker", "exec", "-i", "ctr_badmount", "sh", "-lc"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            return _make_fake_run()(cmd, **kwargs)
+
+        with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
+             patch("subprocess.run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="invalid harness mount"):
+                _start_task_container("ctr_badmount", _docker_cfg(), env_file, print)
 
 
 # ---------------------------------------------------------------------------
@@ -124,12 +210,12 @@ class TestHarnessTmpfile:
         os.chmod (via copystat) to preserve source permissions — checking only
         that os.chmod was called would conflate the two calls.
         """
-        harness = tmp_path / "harness.py"
-        harness.write_text("# harness stub")
+        _write_harness(tmp_path)
         env_file = str(tmp_path / "container.env")
         open(env_file, "w").close()
 
         with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
              patch("subprocess.run", side_effect=_make_fake_run()):
             _start_task_container("ctr_chmod", _docker_cfg(), env_file, print)
 
@@ -150,12 +236,12 @@ class TestHarnessTmpfile:
 
     def test_tmpfile_registered_in_harness_tmpfiles(self, tmp_path):
         """After container start the tmpfile path must be in _harness_tmpfiles."""
-        harness = tmp_path / "harness.py"
-        harness.write_text("# harness stub")
+        _write_harness(tmp_path)
         env_file = str(tmp_path / "container.env")
         open(env_file, "w").close()
 
         with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
              patch("subprocess.run", side_effect=_make_fake_run()):
             _start_task_container("ctr_reg", _docker_cfg(), env_file, print)
 
@@ -173,8 +259,7 @@ class TestHarnessTmpfile:
 
     def test_each_container_gets_distinct_tmpfile(self, tmp_path):
         """Two concurrent containers must receive independent tmpfile copies."""
-        harness = tmp_path / "harness.py"
-        harness.write_text("# harness stub")
+        _write_harness(tmp_path)
 
         tmpfiles = {}
 
@@ -182,6 +267,7 @@ class TestHarnessTmpfile:
             env_file = str(tmp_path / f"{ctr}.env")
             open(env_file, "w").close()
             with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+                 patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
                  patch("subprocess.run", side_effect=_make_fake_run()):
                 _start_task_container(ctr, _docker_cfg(), env_file, print)
 
@@ -202,12 +288,12 @@ class TestHarnessTmpfile:
     def test_tmpfile_content_matches_harness(self, tmp_path):
         """The staged tmpfile content must be identical to harness.py."""
         sentinel = "# SENTINEL_CONTENT_12345"
-        harness = tmp_path / "harness.py"
-        harness.write_text(sentinel)
+        _write_harness(tmp_path, sentinel)
         env_file = str(tmp_path / "container.env")
         open(env_file, "w").close()
 
         with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
              patch("subprocess.run", side_effect=_make_fake_run()):
             _start_task_container("ctr_content", _docker_cfg(), env_file, print)
 
@@ -236,7 +322,7 @@ class TestHarnessTmpfile:
 class TestHarnessMissing:
     def test_raises_if_harness_missing(self, tmp_path):
         """FileNotFoundError must be raised before docker run if harness.py is absent."""
-        # tmp_path has no harness.py
+        # tmp_path has no harness.py in TOOLS_DIR/harness/
         env_file = str(tmp_path / "container.env")
         open(env_file, "w").close()
 
@@ -247,6 +333,7 @@ class TestHarnessMissing:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
              patch("subprocess.run", side_effect=fake_run):
             with pytest.raises(FileNotFoundError, match="harness.py"):
                 _start_task_container("ctr_missing", _docker_cfg(), env_file, print)
@@ -263,6 +350,7 @@ class TestHarnessMissing:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
              patch("subprocess.run", side_effect=fake_run):
             with pytest.raises(FileNotFoundError):
                 _start_task_container("ctr_no_docker_run", _docker_cfg(), env_file, print)
@@ -281,12 +369,12 @@ class TestHarnessMissing:
 class TestHarnessTmpfileCleanup:
     def test_tmpfile_deleted_on_container_stop(self, tmp_path):
         """_stop_task_container must delete the tmpfile after removing the container."""
-        harness = tmp_path / "harness.py"
-        harness.write_text("# harness stub")
+        _write_harness(tmp_path)
         env_file = str(tmp_path / "container.env")
         open(env_file, "w").close()
 
         with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
              patch("subprocess.run", side_effect=_make_fake_run()):
             _start_task_container("ctr_cleanup", _docker_cfg(), env_file, print)
 
@@ -309,12 +397,12 @@ class TestHarnessTmpfileCleanup:
 
     def test_tmpfile_deleted_even_if_docker_rm_fails(self, tmp_path):
         """Tmpfile cleanup must happen even when docker rm fails."""
-        harness = tmp_path / "harness.py"
-        harness.write_text("# harness stub")
+        _write_harness(tmp_path)
         env_file = str(tmp_path / "container.env")
         open(env_file, "w").close()
 
         with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
              patch("subprocess.run", side_effect=_make_fake_run()):
             _start_task_container("ctr_rmfail", _docker_cfg(), env_file, print)
 
