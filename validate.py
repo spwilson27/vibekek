@@ -341,6 +341,22 @@ def validate_phase_16(state: Dict) -> List[str]:
                 errors.extend(errs)
                 sidecar_count += 1
 
+                # Enforce task_id has phase prefix (e.g. "phase_1/task_name")
+                tid = data.get("task_id", "")
+                if tid and "/" not in tid:
+                    errors.append(
+                        f"{rel}: task_id {tid!r} is missing phase prefix "
+                        f"(expected 'phase_N/task_name')"
+                    )
+
+                # Enforce depends_on entries have phase prefix
+                for dep in data.get("depends_on", []):
+                    if dep and "/" not in dep:
+                        errors.append(
+                            f"{rel}: depends_on entry {dep!r} is missing phase "
+                            f"prefix (expected 'phase_N/task_name')"
+                        )
+
                 # Enforce requirement_mappings cap
                 req_count = len(data.get("requirement_mappings", []))
                 if req_count > max_req_mappings:

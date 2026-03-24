@@ -38,6 +38,7 @@ You are a Senior Technical Reviewer specializing in TDD workflow integrity. Your
 - [ ] Green task sidecar `depends_on` includes all relevant Red task IDs
 
 ## Cross-Cutting Review
+- [ ] Every `task_id` and `depends_on` entry includes the phase prefix (e.g. `phase_1/red_01_foo`, NOT just `red_01_foo`)
 - [ ] No requirement is left uncovered between Red and Green tasks
 - [ ] No work is duplicated — Red defines contracts, Green fulfills them
 - [ ] Dependency graph has no circular dependencies

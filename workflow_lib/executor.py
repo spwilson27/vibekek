@@ -210,7 +210,13 @@ def get_gitlab_remote_url(root_dir: str, remote_name: str = "origin") -> str:
 # Host-identity env vars that must not be forwarded into Docker containers.
 # Each AI CLI resolves its config directory from HOME; forwarding a host-side
 # HOME that doesn't exist inside the container causes an immediate ENOENT crash.
-_DOCKER_ENV_SKIP = frozenset({"HOME", "USER", "LOGNAME", "SHELL", "PWD", "OLDPWD", "PATH"})
+# TMPDIR/TEMP/TMP: macOS sets TMPDIR to /var/folders/…/T/ which doesn't exist
+# inside Linux containers, breaking rustdoc, Playwright, and Claude CLI cwd
+# tracking.  Unsetting lets the container fall back to /tmp.
+_DOCKER_ENV_SKIP = frozenset({
+    "HOME", "USER", "LOGNAME", "SHELL", "PWD", "OLDPWD", "PATH",
+    "TMPDIR", "TEMP", "TMP",
+})
 
 
 def _write_container_env_file(tmpdir: str) -> str:
@@ -2396,6 +2402,12 @@ def _get_resumable_tasks(master_dag: Dict[str, List[str]], remote_url: Optional[
 
     resumable: set = set()
     for task_id in master_dag:
+        if "/" not in task_id:
+            raise ValueError(
+                f"Task ID {task_id!r} is missing a phase prefix "
+                f"(expected format 'phase_N/task_name'). "
+                f"Fix the 'task_id' field in the corresponding sidecar JSON."
+            )
         _, task_part = task_id.split("/", 1)
         safe_task_id = task_part.replace("/", "_").replace(".md", "")
         if f"ai-phase-{safe_task_id}" in existing_branches:

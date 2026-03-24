@@ -480,6 +480,9 @@ class TestWriteContainerEnvFile:
             "PWD": "/home/mrwilson/projects",
             "OLDPWD": "/tmp",
             "PATH": "/home/mrwilson/.cargo/bin:/usr/bin:/bin",
+            "TMPDIR": "/var/folders/lq/abc123/T/",
+            "TEMP": "C:\\Users\\user\\AppData\\Local\\Temp",
+            "TMP": "/tmp",
         }, clear=False):
             path = _write_container_env_file(str(tmp_path))
         with open(path) as f:

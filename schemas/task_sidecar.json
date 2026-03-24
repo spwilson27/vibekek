@@ -6,7 +6,8 @@
   "properties": {
     "task_id": {
       "type": "string",
-      "description": "Fully qualified task ID (e.g. 'phase_1/epic_name/01_task_name')"
+      "pattern": "^phase_[0-9]+/.+",
+      "description": "Fully qualified task ID with phase prefix (e.g. 'phase_1/red_01_task_name'). MUST start with 'phase_N/'."
     },
     "phase": {
       "type": "string",

@@ -33,7 +33,7 @@ Every `.md` task file MUST have a corresponding `.json` sidecar with the same ba
 
 ```json
 {
-  "task_id": "{unique_task_id}",
+  "task_id": "phase_{N}/{unique_task_id}",
   "phase": {phase_number},
   "type": "red|green",
   "depends_on": ["{task_id_1}", "{task_id_2}"],
