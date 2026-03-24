@@ -983,7 +983,7 @@ class Phase16RedGreenTasks(BasePhase):
             os.makedirs(phase_dir, exist_ok=True)
 
             epic_json = json.dumps(phase_epics, indent=2)
-            target_dir = f"docs/plan/tasks/{phase_id}"
+            target_dir = phase_id
 
             prompt_tmpl = ctx.load_prompt("red_green_tasks.md")
             prompt = ctx.format_prompt(prompt_tmpl,
