@@ -136,14 +136,21 @@ class TestHarnessMountPresence:
         os.makedirs(os.path.dirname(fake_tmp_path), exist_ok=True)
         os.makedirs(os.path.dirname(real_tmp_path), exist_ok=True)
         realpath_orig = os.path.realpath
+        named_tmp_kwargs = {}
 
         with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
              patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
              patch("tempfile.NamedTemporaryFile") as mock_tmp, \
              patch("workflow_lib.executor.os.path.realpath", side_effect=lambda p: real_tmp_path if p == fake_tmp_path else realpath_orig(p)), \
              patch("subprocess.run", side_effect=fake_run):
-            mock_tmp.return_value.name = fake_tmp_path
-            mock_tmp.return_value.close.return_value = None
+            def _capture_named_tmp(*args, **kwargs):
+                named_tmp_kwargs.update(kwargs)
+                handle = MagicMock()
+                handle.name = fake_tmp_path
+                handle.close.return_value = None
+                return handle
+
+            mock_tmp.side_effect = _capture_named_tmp
             _start_task_container("ctr_realpath", _docker_cfg(), env_file, print)
 
         docker_run_cmd = run_calls[0]
@@ -156,6 +163,11 @@ class TestHarnessMountPresence:
         )
         assert all(f"src={fake_tmp_path}" not in v for v in harness_mounts), (
             f"harness.py mount should not use raw temp path, got: {harness_mounts}"
+        )
+        expected_dir = os.path.join(str(tmp_path), ".workflow_tmp", "harness_mounts")
+        assert named_tmp_kwargs.get("dir") == expected_dir, (
+            f"NamedTemporaryFile should stage harness under {expected_dir!r}, "
+            f"got kwargs {named_tmp_kwargs!r}"
         )
 
     def test_container_verifies_harness_mount_is_regular_file(self, tmp_path):
@@ -202,6 +214,33 @@ class TestHarnessMountPresence:
 # ---------------------------------------------------------------------------
 
 class TestHarnessTmpfile:
+    def test_tmpfile_staged_under_root_workflow_tmp_dir(self, tmp_path):
+        """The staged harness file must live under ROOT_DIR/.workflow_tmp/harness_mounts.
+
+        This avoids temp paths that Docker Desktop may not expose for bind mounts.
+        """
+        _write_harness(tmp_path)
+        env_file = str(tmp_path / "container.env")
+        open(env_file, "w").close()
+
+        with patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
+             patch("workflow_lib.executor.TOOLS_DIR", str(tmp_path)), \
+             patch("subprocess.run", side_effect=_make_fake_run()):
+            _start_task_container("ctr_stage_dir", _docker_cfg(), env_file, print)
+
+        with _harness_tmpfiles_lock:
+            tmp = _harness_tmpfiles.get("ctr_stage_dir")
+
+        assert tmp is not None, "No tmpfile registered"
+        expected_dir = os.path.join(str(tmp_path), ".workflow_tmp", "harness_mounts")
+        assert os.path.dirname(tmp) == expected_dir, (
+            f"Harness tmpfile must be staged under {expected_dir!r}, got {tmp!r}"
+        )
+
+        with _harness_tmpfiles_lock:
+            _harness_tmpfiles.pop("ctr_stage_dir", None)
+        os.unlink(tmp)
+
     def test_tmpfile_is_chmod_444(self, tmp_path):
         """The staged tmpfile must have mode 0o444 (read-only for all) on the host.
 

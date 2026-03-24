@@ -387,8 +387,13 @@ def _start_task_container(
             "ensure harness.py exists at the project root before running the workflow"
         )
     import tempfile
+    harness_stage_dir = os.path.join(ROOT_DIR, ".workflow_tmp", "harness_mounts")
+    os.makedirs(harness_stage_dir, exist_ok=True)
     harness_tmp = tempfile.NamedTemporaryFile(
-        prefix=f"harness_{container_name}_", suffix=".py", delete=False
+        dir=harness_stage_dir,
+        prefix=f"harness_{container_name}_",
+        suffix=".py",
+        delete=False,
     )
     harness_tmp.close()
     shutil.copy2(harness_src, harness_tmp.name)
