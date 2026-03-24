@@ -79,6 +79,7 @@ Before generating the final documents, silently plan your approach:
 - Each task gets BOTH a `.md` file AND a `.json` sidecar file.
 - Red tasks define contracts; Green tasks fulfill them. There must be zero overlap in what they produce.
 - You MUST run `python .tools/validate.py --phase 16` after generating all files and fix any issues.
+- The validator checks that **every requirement** in `requirements.json` appears in at least one task's `requirement_mappings`. If it reports uncovered requirements, you MUST add them to existing tasks' `requirement_mappings` (splitting tasks if the 5-entry limit would be exceeded) or create new tasks to cover them. Do not consider a phase complete until the validator passes with zero errors.
 - Do NOT add scope beyond the original project description.
 - End your turn immediately once all files are written and validation passes.
 

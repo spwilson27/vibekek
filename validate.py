@@ -353,6 +353,35 @@ def validate_phase_16(state: Dict) -> List[str]:
 
     if sidecar_count == 0:
         errors.append("No task sidecar .json files found in tasks/")
+
+    # Traceability: check every requirement is covered by at least one task
+    merged_path = os.path.join(PLAN_DIR, "requirements.json")
+    if os.path.exists(merged_path) and sidecar_count > 0:
+        try:
+            merged = _load_json(merged_path)
+            all_req_ids = {r["id"] for r in merged.get("requirements", [])}
+
+            tested_req_ids: Set[str] = set()
+            for root, dirs, files in os.walk(tasks_dir):
+                for fname in files:
+                    if not fname.endswith(".json") or fname.startswith("dag"):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    try:
+                        data = _load_json(fpath)
+                        tested_req_ids.update(data.get("requirement_mappings", []))
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+            untested = all_req_ids - tested_req_ids
+            if untested:
+                errors.append(
+                    f"{len(untested)} requirement(s) not covered by any task's "
+                    f"requirement_mappings: {sorted(untested)[:10]}..."
+                )
+        except (json.JSONDecodeError, KeyError):
+            pass
+
     return errors
 
 

@@ -63,6 +63,7 @@ Before making changes, silently plan your approach:
 - You MAY create new task files if a gap is found.
 - You MUST NOT delete task files without replacing their coverage.
 - You MUST run `python .tools/validate.py --phase 17` after all edits and fix any issues.
+- The validator checks that **every requirement** in `requirements.json` appears in at least one task's `requirement_mappings`. If it reports uncovered requirements, you MUST add them to existing tasks' `requirement_mappings` (splitting tasks if the 5-entry limit would be exceeded) or create new tasks to cover them. Do not consider the review complete until the validator passes with zero errors.
 - Do NOT add scope beyond the original project description.
 - End your turn immediately once validation passes.
 
