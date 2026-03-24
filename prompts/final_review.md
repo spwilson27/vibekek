@@ -8,7 +8,7 @@ You are the Principal Systems Architect. Your job is to review the completely ge
 {accumulated_context}
 
 # TASK
-Review all documents in the `docs/plan/specs/` and `docs/plan/research/` directories.
+Review all documents in the `docs/plan/specs/` directory.
 Fix any conflicting requirements, duplicate information, or structural issues.
 Ensure that the final output functions as a cohesive, single source of truth.
 
@@ -20,7 +20,6 @@ When you find conflicting information between documents, resolve using this prio
 2. **PRD** (docs/plan/specs/1_prd.md) — Product requirements take priority over technical choices.
 3. **TAS** (docs/plan/specs/2_tas.md) — Architecture decisions take priority over design details.
 4. **Other Spec Documents** — Resolve by numeric prefix order (lower number wins).
-5. **Research Documents** — Lowest priority. Research informs but does not override specs.
 
 ## Resolution Steps
 
@@ -36,15 +35,13 @@ For each conflict found:
 | Conflict Type | Resolution |
 |---|---|
 | Feature scope differs between PRD and TAS | PRD scope wins; update TAS to match |
-| Technology choice in TAS contradicts research recommendation | TAS wins (research is advisory) |
 | Security requirement in security_design conflicts with PRD | PRD wins unless security is explicitly required by original description |
 | UI/UX design contradicts user_features spec | user_features wins (it has lower numeric prefix) |
 | Multiple documents define same data model differently | Use the definition from the lowest-numbered spec |
-| Research makes market claims that conflict with original description | Original description wins; flag research claim as needing verification |
 
 # CHAIN OF THOUGHT
 Before making any edits, silently plan your approach:
-1. Use your tools to read and analyze all files in the `docs/plan/specs/` and `docs/plan/research/` directories.
+1. Use your tools to read and analyze all files in the `docs/plan/specs/` directory.
 2. Cross-reference technical requirements (e.g., ensure the architecture described in TAS matches the features in the PRD).
 3. Identify any contradictory statements, missing technical specs, or overlapping responsibilities between documents.
 4. For each conflict, apply the decision tree above to determine the correct resolution.

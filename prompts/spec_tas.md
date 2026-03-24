@@ -11,7 +11,7 @@ You must actively synthesize any provided previous project context to ensure thi
 # CHAIN OF THOUGHT
 Before generating the final document, plan your approach:
 1. Review the generated PRD in the `<previous_document>` tags to understand the features to be built.
-2. Select the optimal technology stack considering the market and user research context.
+2. Select the optimal technology stack based on the project requirements and constraints in the available context.
 3. Design the database schema and system architecture to fulfill the requirements.
 4. Identify any technical bottlenecks or specific integrations.
 5. Structure the final document according to the required `OUTPUT FORMAT`.
