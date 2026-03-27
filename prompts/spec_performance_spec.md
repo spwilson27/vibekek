@@ -20,7 +20,7 @@ Before generating the final document, plan your approach:
 - You may use a `<thinking>...</thinking>` block at the very beginning of your response to plan your approach. After the thinking block, output ONLY the raw Markdown document. Do not include any conversational filler.
 - All targets must be measurable and testable — no vague goals like "the system should be fast."
 - Whenever you define a specific performance target or SLO, you MUST prefix it with a unique identifier in bold (e.g., **[PERF-001]**).
-- You MUST save the generated document exactly to `{target_path}` using your file editing tools.
+- CRITICAL: You MUST use the `write_file` tool to save the document exactly to `{target_path}`. Do NOT output the document content as plain text - you must call the `write_file` tool with the file path and content.
 
 # ERROR HANDLING
 - If a required input file is missing, print the exact path that was expected, then exit with a non-zero status. Do NOT create placeholder files or guess at content.

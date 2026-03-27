@@ -19,7 +19,7 @@ Before generating the final document, plan your approach:
 - You may use a `<thinking>...</thinking>` block at the very beginning of your response to plan your approach. After the thinking block, output ONLY the raw Markdown document. Do not include any conversational filler.
 - For the high-level roadmap, use code blocks with Mermaid markup (`mermaid`) (like a Gantt chart or flowchart) exclusively.
 - Whenever you define a project phase, milestone, or strict dependency, you MUST prefix it with a unique identifier in bold (e.g., **[ROAD-001]**, **[ROAD-042]**).
-- You MUST save the generated document exactly to `{target_path}` using your file editing tools.
+- CRITICAL: You MUST use the `write_file` tool to save the document exactly to `{target_path}`. Do NOT output the document content as plain text - you must call the `write_file` tool with the file path and content.
 
 
 # ERROR HANDLING

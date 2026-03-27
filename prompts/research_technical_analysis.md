@@ -36,7 +36,7 @@ Before generating the final document, plan your approach:
 - You MUST provide and verify citations/references for all claims, statistics, and technical data.
 - Provide authoritative, pragmatic recommendations that will serve as the primary guide for developer agents.
 - For any architectural diagrams, use code blocks with Mermaid markup (`mermaid`) exclusively.
-- You MUST save the generated document exactly to `{target_path}` using your file editing tools.
+- CRITICAL: You MUST use the `write_file` tool to save the document exactly to `{target_path}`. Do NOT output the document content as plain text - you must call the `write_file` tool with the file path and content.
 
 
 # ERROR HANDLING

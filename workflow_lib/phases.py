@@ -201,8 +201,8 @@ class Phase1GenerateDoc(BasePhase):
             f"1. Read the Original Project Description above as your primary source of truth.\n"
             f"2. Execute the Task as described in the Persona section.\n"
             f"3. Do NOT add scope, features, or complexity beyond what the original description requests.\n"
-            f"4. Ensure the document is written to '{target_path}'.\n"
-            f"5. You MUST end your turn immediately after writing the file.\n"
+            f"4. CRITICAL: You MUST use the `write_file` tool to save the document to '{target_path}'. Do NOT just output the content as text.\n"
+            f"5. After calling `write_file`, end your turn immediately. Do not add any additional commentary.\n"
         )
         
         print(f"\n=> [Phase 1: Generate] {self.doc['name']} into docs/plan/{out_folder}/{self.doc['id']}.md ...")

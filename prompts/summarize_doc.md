@@ -12,7 +12,7 @@ Summarize the document '{document_name}' so that it can be used as compact conte
 - Omit verbose explanations, examples, and filler prose — keep only the decision and its justification
 - Keep Mermaid diagrams if they convey architectural structure; omit decorative diagrams
 - Target approximately 15-25% of the original document length
-- You MUST save the summary to `{summary_path}` using your file editing tools
+- CRITICAL: You MUST use the `write_file` tool to save the summary to `{summary_path}`. Do NOT output the content as plain text - you must call the `write_file` tool with the file path and content
 
 # INPUT DOCUMENT
 <document name="{document_name}">

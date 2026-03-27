@@ -21,7 +21,7 @@ Before generating the final document, plan your approach:
 - Ensure the document is self-contained and provides enough detail for an AI developer agent to understand the architectural and functional requirements.
 - For any diagrams, use code blocks with Mermaid markup (`mermaid`) exclusively.
 - Whenever you define a distinct functional requirement, security rule, or architectural constraint, you MUST prefix it with a unique identifier in bold using the format **[1_PRD-REQ-001]**, **[1_PRD-REQ-002]**, etc. The prefix `1_PRD` matches this document's ID. This ensures down-stream agents can build a traceability matrix without ID collisions across documents.
-- You MUST save the generated document exactly to `{target_path}` using your file editing tools.
+- CRITICAL: You MUST use the `write_file` tool to save the document exactly to `{target_path}`. Do NOT output the document content as plain text - you must call the `write_file` tool with the file path and content.
 
 
 # ERROR HANDLING

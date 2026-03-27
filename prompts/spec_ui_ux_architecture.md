@@ -20,7 +20,7 @@ Before generating the final document, plan your approach:
 - Be highly specific about file directory structures and naming conventions.
 - For component hierarchies or routing maps, use code blocks with Mermaid markup (`mermaid`) exclusively.
 - Whenever you define an architectural rule, component standard, or state constraint, you MUST prefix it with a unique identifier in bold (e.g., **[UI-ARCH-001]**).
-- You MUST save the generated document exactly to `{target_path}` using your file editing tools.
+- CRITICAL: You MUST use the `write_file` tool to save the document exactly to `{target_path}`. Do NOT output the document content as plain text - you must call the `write_file` tool with the file path and content.
 
 
 # ERROR HANDLING

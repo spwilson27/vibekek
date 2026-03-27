@@ -32,7 +32,7 @@ Before generating the final document, plan your approach:
 - You MUST provide and verify citations/references for all claims, statistics, and competitor data.
 - Use Markdown tables for feature comparisons.
 - Ensure the analysis gives the product team a clear, actionable picture of how to outcompete alternatives.
-- You MUST save the generated document exactly to `{target_path}` using your file editing tools.
+- CRITICAL: You MUST use the `write_file` tool to save the document exactly to `{target_path}`. Do NOT output the document content as plain text - you must call the `write_file` tool with the file path and content.
 
 
 # ERROR HANDLING

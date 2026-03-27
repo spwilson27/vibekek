@@ -29,7 +29,7 @@ Before generating the final document, plan your approach:
 - You MUST use search to ground your document in real-world facts and data.
 - You MUST provide and verify citations/references for all claims, statistics, and market data.
 - Ensure all claims or projections sound highly realistic and logically derived from the project description.
-- You MUST save the generated document exactly to `{target_path}` using your file editing tools.
+- CRITICAL: You MUST use the `write_file` tool to save the document exactly to `{target_path}`. Do NOT output the document content as plain text - you must call the `write_file` tool with the file path and content.
 
 
 # ERROR HANDLING
