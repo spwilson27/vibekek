@@ -68,20 +68,6 @@ def get_serena_enabled() -> bool:
         return False
 
 
-def get_rag_enabled() -> bool:
-    """Return whether the RAG MCP server integration is enabled.
-
-    Reads the ``"rag"`` key from ``.workflow.jsonc``.  Defaults to
-    ``True`` when the key is absent (RAG is enabled by default for
-    backward compatibility) or the config file cannot be loaded.
-
-    :returns: ``True`` if RAG is enabled, ``False`` otherwise.
-    :rtype: bool
-    """
-    # Default to True for backward compatibility
-    return bool(load_config().get("rag", True))
-
-
 def get_dev_branch() -> str:
     """Return the configured dev branch name.
 

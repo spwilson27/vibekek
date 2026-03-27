@@ -185,7 +185,6 @@ class TestPlanningE2E:
              patch("workflow_lib.phases.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.executor.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.executor.ROOT_DIR", str(tmp_path)), \
-             patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
              patch("workflow_lib.context.ProjectContext.run_gemini", agent), \
              patch("workflow_lib.context.ProjectContext.stage_changes"), \
              patch("subprocess.run", return_value=MagicMock(returncode=0,

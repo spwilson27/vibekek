@@ -301,15 +301,13 @@ class TestHelpers:
 class TestRunAgent:
     def test_success(self):
         with patch("builtins.open", mock_open(read_data="Hello {task_name}")), \
-             patch("workflow_lib.executor.run_ai_command", return_value=(0, "")), \
-             patch("workflow_lib.executor.get_rag_enabled", return_value=False):
+             patch("workflow_lib.executor.run_ai_command", return_value=(0, "")):
             result = run_agent("Impl", "implement_task.md", {"task_name": "my_task"}, "/tmp")
         assert result is True
 
     def test_failure(self):
         with patch("builtins.open", mock_open(read_data="template")), \
-             patch("workflow_lib.executor.run_ai_command", return_value=(1, "")), \
-             patch("workflow_lib.executor.get_rag_enabled", return_value=False):
+             patch("workflow_lib.executor.run_ai_command", return_value=(1, "")):
             result = run_agent("Impl", "implement_task.md", {}, "/tmp")
         assert result is False
 
@@ -744,8 +742,7 @@ class TestRunAgentWithDashboard:
         dash = MagicMock()
         with patch("builtins.open", mock_open(read_data="Hello {task_name}")), \
              patch("workflow_lib.executor.run_ai_command", return_value=(0, "")), \
-             patch("workflow_lib.executor.get_project_images", return_value=[]), \
-             patch("workflow_lib.executor.get_rag_enabled", return_value=False):
+             patch("workflow_lib.executor.get_project_images", return_value=[]):
             result = run_agent("Impl", "implement_task.md", {"task_name": "t"}, "/tmp",
                                dashboard=dash, task_id="phase_1/t.md")
         assert result is True
@@ -755,8 +752,7 @@ class TestRunAgentWithDashboard:
         dash = MagicMock()
         with patch("builtins.open", mock_open(read_data="template")), \
              patch("workflow_lib.executor.run_ai_command", return_value=(1, "")), \
-             patch("workflow_lib.executor.get_project_images", return_value=[]), \
-             patch("workflow_lib.executor.get_rag_enabled", return_value=False):
+             patch("workflow_lib.executor.get_project_images", return_value=[]):
             result = run_agent("Impl", "implement_task.md", {}, "/tmp",
                                dashboard=dash, task_id="phase_1/t.md")
         assert result is False
@@ -767,8 +763,7 @@ class TestRunAgentWithDashboard:
         dash = MagicMock()
         with patch("builtins.open", mock_open(read_data="tpl")), \
              patch("workflow_lib.executor.run_ai_command", return_value=(0, "")) as mock_cmd, \
-             patch("workflow_lib.executor.get_project_images", return_value=[]), \
-             patch("workflow_lib.executor.get_rag_enabled", return_value=False):
+             patch("workflow_lib.executor.get_project_images", return_value=[]):
             run_agent("Impl", "impl.md", {"task_name": "t", "phase_filename": "p"}, "/tmp",
                       dashboard=dash, task_id="phase_1/t.md")
         # Verify on_line callback was passed to run_ai_command
@@ -4225,8 +4220,6 @@ class TestSoftInterrupt:
         stack.enter_context(patch('workflow_lib.executor.get_task_details', return_value="# Task: test"))
         stack.enter_context(patch('workflow_lib.executor.get_project_context', return_value="ctx"))
         stack.enter_context(patch('workflow_lib.executor.get_memory_context', return_value="mem"))
-        stack.enter_context(patch('workflow_lib.executor.get_rag_enabled', return_value=False))
-        stack.enter_context(patch('workflow_lib.executor.start_rag_server'))
         stack.enter_context(patch('subprocess.run', return_value=MagicMock(returncode=0, stdout="", stderr="")))
         stack.enter_context(patch('tempfile.mkdtemp', return_value="/tmp/fake"))
         stack.enter_context(patch('os.chmod'))
@@ -4242,7 +4235,6 @@ class TestSoftInterrupt:
         self._mod.shutdown_requested = True
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
-             patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt")):
             result = self._mod.run_agent(
                 "Implementation", "implement_task.md", {}, "/tmp",
@@ -4255,7 +4247,6 @@ class TestSoftInterrupt:
         self._mod.shutdown_requested = True
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
-             patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt")):
             result = self._mod.run_agent("Review", "review_task.md", {}, "/tmp")
         assert result is False
@@ -4266,7 +4257,6 @@ class TestSoftInterrupt:
         self._mod.shutdown_requested = True
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
-             patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt")):
             result = self._mod.run_agent("Review (Retry)", "review_task.md", {}, "/tmp")
         assert result is False
@@ -4277,7 +4267,6 @@ class TestSoftInterrupt:
         self._mod.shutdown_requested = True
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
-             patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt")):
             result = self._mod.run_agent("Merge", "merge_task.md", {}, "/tmp")
         assert result is False
@@ -4287,7 +4276,6 @@ class TestSoftInterrupt:
         self._mod.shutdown_requested = False
         with patch('workflow_lib.executor.run_ai_command', return_value=(0, "")) as mock_ai, \
              patch('workflow_lib.executor.get_project_images', return_value=[]), \
-             patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt {task_name}")):
             result = self._mod.run_agent(
                 "Implementation", "implement_task.md",
@@ -4433,7 +4421,6 @@ class TestSoftInterrupt:
              patch('tempfile.mkdtemp', return_value="/tmp/fake"), \
              patch('os.chmod'), \
              patch('shutil.rmtree'), \
-             patch('workflow_lib.executor.get_rag_enabled', return_value=False), \
              patch('builtins.open', mock_open(read_data="prompt {task_name}")):
             result = self._mod.process_task(
                 "/root", "phase_1/task", "./presubmit",

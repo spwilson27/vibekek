@@ -166,7 +166,6 @@ class TestRunAgentShutdown:
                  patch("workflow_lib.executor.get_context_limit", return_value=100000), \
                  patch("workflow_lib.executor.truncate_task_context", side_effect=lambda ctx, *a, **kw: ctx), \
                  patch("workflow_lib.executor.get_project_images", return_value=[]), \
-                 patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
                  patch("workflow_lib.executor.set_agent_context_limit"), \
                  patch("builtins.open", MagicMock(return_value=MagicMock(
                      __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value="{phase_filename} {task_name}"))),

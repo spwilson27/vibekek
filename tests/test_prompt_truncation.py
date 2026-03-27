@@ -147,10 +147,9 @@ class TestRunAgentTruncation:
 
     @patch("workflow_lib.executor.run_ai_command", return_value=(0, ""))
     @patch("workflow_lib.executor.get_project_images", return_value=[])
-    @patch("workflow_lib.executor.get_rag_enabled", return_value=False)
     @patch("workflow_lib.executor.get_context_limit", return_value=200)
     def test_run_agent_truncates_large_prompt(
-        self, mock_limit, mock_rag, mock_images, mock_run_ai,
+        self, mock_limit, mock_images, mock_run_ai,
         tmp_path,
     ):
         """run_agent should truncate context when it exceeds context_limit."""
@@ -182,10 +181,9 @@ class TestRunAgentTruncation:
 
     @patch("workflow_lib.executor.run_ai_command", return_value=(0, ""))
     @patch("workflow_lib.executor.get_project_images", return_value=[])
-    @patch("workflow_lib.executor.get_rag_enabled", return_value=False)
     @patch("workflow_lib.executor.get_context_limit", return_value=100000)
     def test_run_agent_no_truncation_within_limit(
-        self, mock_limit, mock_rag, mock_images, mock_run_ai,
+        self, mock_limit, mock_images, mock_run_ai,
         tmp_path,
     ):
         """run_agent should not truncate when content fits within limit."""
@@ -214,10 +212,9 @@ class TestRunAgentTruncation:
 
     @patch("workflow_lib.executor.run_ai_command", return_value=(0, ""))
     @patch("workflow_lib.executor.get_project_images", return_value=[])
-    @patch("workflow_lib.executor.get_rag_enabled", return_value=False)
     @patch("workflow_lib.executor.set_agent_context_limit")
     def test_run_agent_sets_agent_context_limit_from_pool(
-        self, mock_set_limit, mock_rag, mock_images, mock_run_ai,
+        self, mock_set_limit, mock_images, mock_run_ai,
         tmp_path,
     ):
         """run_agent should call set_agent_context_limit with the agent's configured limit."""

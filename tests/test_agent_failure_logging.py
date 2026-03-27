@@ -57,7 +57,6 @@ def _run_agent_with_pool(agent_name, returncode=1, stderr="", dashboard=None):
     with patch("workflow_lib.executor.make_runner", return_value=runner), \
          patch("workflow_lib.executor.TOOLS_DIR", os.path.dirname(__file__)), \
          patch("workflow_lib.executor.get_project_images", return_value=[]), \
-         patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
          patch("workflow_lib.config.get_config_defaults", return_value={}), \
          patch("builtins.open", MagicMock(return_value=MagicMock(
              __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=_PROMPT_TEMPLATE))),
@@ -84,7 +83,6 @@ def _run_agent_no_pool(backend="gemini", returncode=1, stderr="", dashboard=None
     with patch("workflow_lib.executor.make_runner", return_value=runner), \
          patch("workflow_lib.executor.TOOLS_DIR", os.path.dirname(__file__)), \
          patch("workflow_lib.executor.get_project_images", return_value=[]), \
-         patch("workflow_lib.executor.get_rag_enabled", return_value=False), \
          patch("workflow_lib.config.get_config_defaults", return_value={}), \
          patch("builtins.open", MagicMock(return_value=MagicMock(
              __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=_PROMPT_TEMPLATE))),

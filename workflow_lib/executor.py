@@ -44,11 +44,10 @@ from .constants import TOOLS_DIR, ROOT_DIR, INPUT_DIR, REPLAN_STATE_FILE, STATE_
 from .context import ProjectContext, fit_lines_to_budget, _count_tokens
 from .runners import IMAGE_EXTENSIONS, make_runner
 from .state import save_workflow_state, load_dags, get_tasks_dir
-from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config, get_rag_enabled, get_sccache_config, get_sccache_dist_config, get_context_limit, set_agent_context_limit
+from .config import get_serena_enabled, get_dev_branch, get_pivot_remote, get_docker_config, get_sccache_config, get_sccache_dist_config, get_context_limit, set_agent_context_limit
 from .discord import notify_failure
 from .dashboard import make_dashboard
 from .agent_pool import AgentPoolManager, QUOTA_RETURN_CODE, QUOTA_PATTERNS, QUOTA_TRANSIENT_PATTERNS, parse_quota_reset_seconds
-from .rag_integration import get_rag_help_text, start_rag_server
 
 shutdown_requested = False
 _active_dashboard: Any = None
@@ -1183,11 +1182,6 @@ def run_agent(agent_type: str, prompt_file: str, task_context: Dict[str, Any], c
         for k, v in effective_ctx.items():
             prompt = prompt.replace(f"{{{k}}}", str(v))
 
-        # Inject RAG MCP tool help text into every agent prompt (if enabled)
-        if get_rag_enabled():
-            rag_help = get_rag_help_text()
-            prompt = f"{prompt}\n\n{rag_help}"
-
         returncode = 1
         stderr_text = ""
         try:
@@ -1446,9 +1440,6 @@ def _stage_clone(
         
         _log(f"      [{stage_label}] Stage clone completed in {_time.time() - _stage_start:.2f}s: container={_container_name}")
         
-        # Start RAG MCP server in the container workspace (if enabled)
-        if get_rag_enabled():
-            start_rag_server("/workspace", verbose=True, container_name=_container_name)
     else:
         _log(f"      [{stage_label}] Cloning repository to {tmpdir} on {branch_name}...")
         if dashboard:
@@ -1467,10 +1458,6 @@ def _stage_clone(
             raise RuntimeError(f"Clone/checkout failed: {err}") from e
         cwd = tmpdir
         
-        # Start RAG MCP server in the cloned repository (if enabled)
-        if get_rag_enabled():
-            start_rag_server(tmpdir, verbose=True)
-
     return tmpdir, _container_name, env_file, cwd
 
 
