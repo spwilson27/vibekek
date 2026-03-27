@@ -359,9 +359,9 @@ class Orchestrator:
             expected = self.ctx.get_document_path(doc)
             self._validate_artifacts([expected], f"Phase1/{doc['id']}")
 
-        # Phase 2: Flesh out each document (parallel, research + specs)
+        # Phase 2: Flesh out each spec document (parallel, specs only)
         self._run_parallel_phases(
-            [Phase2FleshOutDoc(doc) for doc in DOCS], "Phase 2: Flesh Out"
+            [Phase2FleshOutDoc(doc) for doc in spec_docs], "Phase 2: Flesh Out"
         )
 
         # Phase 3: Summarize each spec document (parallel, specs only — skip research)
