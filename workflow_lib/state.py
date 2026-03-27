@@ -120,12 +120,14 @@ def log_action(
 
 
 def load_dags(tasks_dir: str) -> Dict[str, List[str]]:
-    """Load and merge all per-phase DAG files into a single master DAG.
+    """Load and merge all per-task JSON files into a single master DAG.
 
-    For each ``phase_*/`` subdirectory of *tasks_dir*, the function prefers
-    ``dag_reviewed.json`` (human-reviewed) over ``dag.json`` (AI-generated).
+    For each ``phase_*/`` subdirectory of *tasks_dir*, the function reads
+    individual task ``.json`` sidecar files (which contain a ``depends_on``
+    list) and also scans subdirectories for legacy task structures.
+
     Task IDs in the returned dict are fully-qualified with the phase prefix,
-    e.g. ``"phase_1/sub/01_task.md"``.
+    e.g. ``"phase_1/red_01_session_lifecycle"``.
 
     :param tasks_dir: Absolute path to the ``docs/plan/tasks/`` directory.
     :type tasks_dir: str
@@ -136,22 +138,56 @@ def load_dags(tasks_dir: str) -> Dict[str, List[str]]:
     master_dag: Dict[str, List[str]] = {}
     if not os.path.exists(tasks_dir):
         return master_dag
+
+    # Files that are not tasks and should be skipped
+    _NON_TASK_BASENAMES = {
+        "dag.json", "dag_reviewed.json",
+    }
+
     for phase_dir in sorted(os.listdir(tasks_dir)):
         phase_path = os.path.join(tasks_dir, phase_dir)
         if not os.path.isdir(phase_path) or not phase_dir.startswith("phase_"):
             continue
-        dag_file = os.path.join(phase_path, "dag_reviewed.json")
-        if not os.path.exists(dag_file):
-            dag_file = os.path.join(phase_path, "dag.json")
-        if os.path.exists(dag_file):
-            with open(dag_file, "r", encoding="utf-8") as f:
+
+        # Scan for task JSON sidecar files directly in the phase directory
+        for fname in sorted(os.listdir(phase_path)):
+            fpath = os.path.join(phase_path, fname)
+
+            if fname in _NON_TASK_BASENAMES:
+                continue
+
+            # Handle per-task .json sidecar files (e.g. green_01_foo.json)
+            if fname.endswith(".json") and os.path.isfile(fpath):
                 try:
-                    phase_dag = json.load(f)
-                    for task_id, prereqs in phase_dag.items():
-                        full_id = f"{phase_dir}/{task_id}"
-                        master_dag[full_id] = [f"{phase_dir}/{p}" for p in prereqs]
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        task_meta = json.load(f)
                 except json.JSONDecodeError as exc:
-                    print(f"[!] WARNING: Skipping corrupt DAG file {dag_file}: {exc}", file=sys.stderr)
+                    print(f"[!] WARNING: Skipping corrupt task file {fpath}: {exc}", file=sys.stderr)
+                    continue
+                # Use task_id from the JSON if present, otherwise derive from filename
+                task_id = task_meta.get("task_id", f"{phase_dir}/{fname[:-5]}")
+                prereqs = task_meta.get("depends_on", [])
+                master_dag[task_id] = list(prereqs)
+
+            # Handle legacy subdirectory structure (e.g. 00_pre_init/)
+            elif os.path.isdir(fpath):
+                for sub_fname in sorted(os.listdir(fpath)):
+                    sub_fpath = os.path.join(fpath, sub_fname)
+                    if sub_fname.endswith(".json") and os.path.isfile(sub_fpath):
+                        try:
+                            with open(sub_fpath, "r", encoding="utf-8") as f:
+                                task_meta = json.load(f)
+                        except json.JSONDecodeError as exc:
+                            print(f"[!] WARNING: Skipping corrupt task file {sub_fpath}: {exc}", file=sys.stderr)
+                            continue
+                        fallback_id = f"{phase_dir}/{fname}/{sub_fname[:-5]}"
+                        task_id = task_meta.get("task_id", fallback_id)
+                        # Normalize: ensure task_id has phase prefix
+                        if not task_id.startswith("phase_"):
+                            task_id = f"{phase_dir}/{fname}/{task_id}"
+                        prereqs = task_meta.get("depends_on", [])
+                        master_dag[task_id] = list(prereqs)
+
     return master_dag
 
 

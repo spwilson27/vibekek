@@ -3,10 +3,13 @@
 import json
 import os
 import re
+import sys
 import tempfile
 import types
 import unittest
 from unittest.mock import MagicMock, patch, ANY
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from workflow_lib.replan import (
     cmd_fixup, _fix_task_mappings, _fix_phase_mappings,
@@ -38,7 +41,7 @@ def _setup_dirs(tmp, phases_content, tasks_content, grouping_jsons=None, req_con
                 json.dump(data, f)
 
     if req_content:
-        with open(os.path.join(tmp, "requirements.md"), "w") as f:
+        with open(os.path.join(tmp, "requirements.json"), "w") as f:
             f.write(req_content)
 
     return tasks_dir
@@ -91,30 +94,25 @@ def _generation_patches(tmp, tasks_dir, mock_ctx):
 
 class TestRunAllChecks(unittest.TestCase):
 
-    def test_returns_all_pass_when_no_artifacts(self):
+    def test_returns_all_pass_when_validate_passes(self):
         from workflow_lib.replan import _run_all_checks
-        with patch("os.path.exists", return_value=False), \
-             patch("os.path.isdir", return_value=False):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = types.SimpleNamespace(
+                returncode=0, stdout="[PASS] All checks\n", stderr=""
+            )
             results = _run_all_checks(quiet=True)
         self.assertTrue(results["all_pass"])
-        self.assertEqual(results["checks"], {})
 
-    def test_parses_missing_reqs_from_output(self):
+    def test_returns_fail_when_validate_fails(self):
         from workflow_lib.replan import _run_all_checks
-        with patch("os.path.exists", return_value=True), \
-             patch("os.path.isdir", return_value=True), \
-             patch("subprocess.run") as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = types.SimpleNamespace(
                 returncode=1,
-                stdout="FAILED:\n  - [REQ-001]\n  - [REQ-002]\n",
+                stdout="[FAIL] Phase 13: Generate Epics\n  - epic_mappings.json does not exist\n",
+                stderr=""
             )
             results = _run_all_checks(quiet=True)
         self.assertFalse(results["all_pass"])
-        # At least one check should have parsed reqs
-        has_reqs = any(
-            c.get("missing_reqs") for c in results["checks"].values()
-        )
-        self.assertTrue(has_reqs)
 
 
 # ── _fix_task_mappings detection tests (dry-run only, no AI) ─────────────
@@ -233,7 +231,7 @@ class TestFixTaskMappingsGeneration(unittest.TestCase):
 
             ctx = _mock_ctx()
 
-            def fake_run_ai(prompt, allowed_files=None, sandbox=False):
+            def fake_run_ai(prompt, allowed_files=None):
                 with open(os.path.join(se_dir, "02_fix.md"), "w") as f:
                     f.write("# Task\n## Covered Requirements\n- [Z-REQ-002]\n")
                 return types.SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -377,50 +375,6 @@ class TestFixPhaseMappings(unittest.TestCase):
             self.assertFalse(result)
 
 
-# ── Phase6AFixupValidation tests ─────────────────────────────────────────
-
-
-class TestPhase6AFixupValidation(unittest.TestCase):
-
-    def test_skips_when_already_completed(self):
-        from workflow_lib.phases import Phase6AFixupValidation
-        ctx = MagicMock()
-        ctx.state = {"fixup_validation_completed": True}
-        phase = Phase6AFixupValidation()
-        # Should not raise
-        phase.execute(ctx)
-
-    def test_passes_when_all_checks_ok(self):
-        from workflow_lib.phases import Phase6AFixupValidation
-        ctx = MagicMock()
-        ctx.state = {}
-
-        with patch("workflow_lib.replan._run_all_checks", return_value={"all_pass": True, "checks": {}}):
-            phase = Phase6AFixupValidation()
-            phase.execute(ctx)
-
-        self.assertTrue(ctx.state["fixup_validation_completed"])
-
-    def test_exits_when_no_fixes_available(self):
-        from workflow_lib.phases import Phase6AFixupValidation
-        ctx = MagicMock()
-        ctx.state = {}
-
-        results = {
-            "all_pass": False,
-            "checks": {
-                "verify-dags": {"passed": False, "missing_reqs": []},
-            },
-        }
-
-        with patch("workflow_lib.replan._run_all_checks", return_value=results), \
-             patch("workflow_lib.replan._fix_phase_mappings", return_value=False), \
-             patch("workflow_lib.replan._fix_task_mappings", return_value=False):
-            phase = Phase6AFixupValidation()
-            with self.assertRaises(SystemExit):
-                phase.execute(ctx)
-
-
 # ── cmd_fixup tests ──────────────────────────────────────────────────────
 
 
@@ -428,22 +382,16 @@ class TestCmdFixup(unittest.TestCase):
 
     def test_all_pass_nothing_to_fix(self):
         with patch("workflow_lib.replan._run_all_checks") as mock_checks:
-            mock_checks.return_value = {"all_pass": True, "checks": {}}
+            mock_checks.return_value = {"all_pass": True, "output": ""}
             cmd_fixup(_make_args(dry_run=False))
 
-    def test_fixup_calls_fix_phases_then_tasks(self):
-        results = {
-            "all_pass": False,
-            "checks": {
-                "verify-phases": {"passed": False, "missing_reqs": ["R-001"]},
-                "verify-tasks": {"passed": False, "missing_reqs": ["R-002"]},
-            },
-        }
-        final_results = {"all_pass": True, "checks": {}}
+    def test_fixup_attempts_desc_length_fix(self):
+        fail_results = {"all_pass": False, "output": "[FAIL] Phase 9"}
+        pass_results = {"all_pass": True, "output": "[PASS]"}
 
-        with patch("workflow_lib.replan._run_all_checks", side_effect=[results, final_results]), \
-             patch("workflow_lib.replan._fix_phase_mappings", return_value=True) as mock_phases, \
-             patch("workflow_lib.replan._fix_task_mappings", return_value=True) as mock_tasks, \
+        with patch("workflow_lib.replan._run_all_checks", side_effect=[fail_results, pass_results]), \
+             patch("workflow_lib.replan._fix_description_length", return_value=True) as mock_desc, \
+             patch("workflow_lib.replan._fix_dag_references", return_value=0), \
              patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
              patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()), \
              patch("workflow_lib.replan.load_replan_state", return_value={}), \
@@ -451,34 +399,13 @@ class TestCmdFixup(unittest.TestCase):
              patch("workflow_lib.replan.log_action"):
             cmd_fixup(_make_args(dry_run=False))
 
-        mock_phases.assert_called_once_with(["R-001"], ANY, dry_run=False)
-        mock_tasks.assert_called_once_with(["R-002"], ANY, dry_run=False)
-
-    def test_fixup_dry_run_no_ai(self):
-        results = {
-            "all_pass": False,
-            "checks": {
-                "verify-tasks": {"passed": False, "missing_reqs": ["R-001"]},
-            },
-        }
-
-        with patch("workflow_lib.replan._run_all_checks", return_value=results), \
-             patch("workflow_lib.replan._fix_task_mappings", return_value=True) as mock_tasks, \
-             patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
-             patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()):
-            cmd_fixup(_make_args(dry_run=True))
-
-        mock_tasks.assert_called_once_with(["R-001"], ANY, dry_run=True)
+        mock_desc.assert_called_once()
 
     def test_fixup_exits_when_no_fixes_available(self):
-        results = {
-            "all_pass": False,
-            "checks": {
-                "verify-dags": {"passed": False, "missing_reqs": []},
-            },
-        }
+        results = {"all_pass": False, "output": "[FAIL]"}
 
         with patch("workflow_lib.replan._run_all_checks", return_value=results), \
+             patch("workflow_lib.replan._fix_description_length", return_value=False), \
              patch("workflow_lib.replan._fix_dag_references", return_value=0), \
              patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
              patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()):
@@ -487,21 +414,11 @@ class TestCmdFixup(unittest.TestCase):
             self.assertEqual(cm.exception.code, 1)
 
     def test_fixup_exits_when_still_failing_after_fix(self):
-        results = {
-            "all_pass": False,
-            "checks": {
-                "verify-tasks": {"passed": False, "missing_reqs": ["R-001"]},
-            },
-        }
-        final_results = {
-            "all_pass": False,
-            "checks": {
-                "verify-tasks": {"passed": False, "missing_reqs": ["R-001"]},
-            },
-        }
+        fail_results = {"all_pass": False, "output": "[FAIL]"}
 
-        with patch("workflow_lib.replan._run_all_checks", side_effect=[results, final_results]), \
-             patch("workflow_lib.replan._fix_task_mappings", return_value=True), \
+        with patch("workflow_lib.replan._run_all_checks", side_effect=[fail_results, fail_results]), \
+             patch("workflow_lib.replan._fix_description_length", return_value=True), \
+             patch("workflow_lib.replan._fix_dag_references", return_value=0), \
              patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
              patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()), \
              patch("workflow_lib.replan.load_replan_state", return_value={}), \
@@ -712,16 +629,12 @@ class TestFixDagReferences(unittest.TestCase):
 
 class TestCmdFixupDags(unittest.TestCase):
 
-    def test_fixup_calls_fix_dag_references_on_dag_failure(self):
-        results = {
-            "all_pass": False,
-            "checks": {
-                "verify-dags": {"passed": False, "output": "FAILED", "missing_reqs": []},
-            },
-        }
-        final_results = {"all_pass": True, "checks": {}}
+    def test_fixup_calls_fix_dag_references(self):
+        fail_results = {"all_pass": False, "output": "[FAIL]"}
+        pass_results = {"all_pass": True, "output": "[PASS]"}
 
-        with patch("workflow_lib.replan._run_all_checks", side_effect=[results, final_results]), \
+        with patch("workflow_lib.replan._run_all_checks", side_effect=[fail_results, pass_results]), \
+             patch("workflow_lib.replan._fix_description_length", return_value=False), \
              patch("workflow_lib.replan._fix_dag_references", return_value=3) as mock_fix_dags, \
              patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
              patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()), \
@@ -732,37 +645,11 @@ class TestCmdFixupDags(unittest.TestCase):
 
         mock_fix_dags.assert_called_once_with(dry_run=False, ctx=ANY)
 
-    def test_fixup_skips_dags_when_dags_pass(self):
-        results = {
-            "all_pass": False,
-            "checks": {
-                "verify-dags": {"passed": True, "output": "", "missing_reqs": []},
-                "verify-tasks": {"passed": False, "missing_reqs": ["R-001"]},
-            },
-        }
-        final_results = {"all_pass": True, "checks": {}}
-
-        with patch("workflow_lib.replan._run_all_checks", side_effect=[results, final_results]), \
-             patch("workflow_lib.replan._fix_dag_references") as mock_fix_dags, \
-             patch("workflow_lib.replan._fix_task_mappings", return_value=True), \
-             patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
-             patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()), \
-             patch("workflow_lib.replan.load_replan_state", return_value={}), \
-             patch("workflow_lib.replan.save_replan_state"), \
-             patch("workflow_lib.replan.log_action"):
-            cmd_fixup(_make_args(dry_run=False))
-
-        mock_fix_dags.assert_not_called()
-
     def test_fixup_exits_when_dag_fix_returns_zero(self):
-        results = {
-            "all_pass": False,
-            "checks": {
-                "verify-dags": {"passed": False, "output": "FAILED", "missing_reqs": []},
-            },
-        }
+        results = {"all_pass": False, "output": "[FAIL]"}
 
         with patch("workflow_lib.replan._run_all_checks", return_value=results), \
+             patch("workflow_lib.replan._fix_description_length", return_value=False), \
              patch("workflow_lib.replan._fix_dag_references", return_value=0), \
              patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
              patch("workflow_lib.replan.ProjectContext", return_value=MagicMock()):
@@ -1003,6 +890,7 @@ class TestCmdFixupPhaseRemovedRegression(unittest.TestCase):
                 mock_sp.return_value = types.SimpleNamespace(
                     returncode=0,
                     stdout="Success: All requirements mapped.\n",
+                    stderr="",
                 )
                 cmd_fixup(args)
                 # The fixer must not be invoked for removed reqs
@@ -1031,6 +919,7 @@ class TestCmdFixupPhaseRemovedRegression(unittest.TestCase):
                 mock_sp.return_value = types.SimpleNamespace(
                     returncode=0,
                     stdout="Success: All requirements mapped.\n",
+                    stderr="",
                 )
                 cmd_fixup(args)
 

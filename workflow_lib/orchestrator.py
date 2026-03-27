@@ -11,16 +11,20 @@ Typical usage::
     Orchestrator(ctx).run()
 """
 
+import concurrent.futures
 import os
 import signal
 import subprocess
 import sys
-from typing import Any, Callable, Optional, Union
+import threading
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from .constants import DOCS
 from .context import ProjectContext
+from .config import set_agent_context_limit
 from .discord import notify_failure
 from .prompt_registry import validate_all_prompts_exist
+from .runners import make_runner
 from .phases import *
 
 
@@ -33,28 +37,21 @@ class Orchestrator:
     :param dashboard: Optional dashboard instance for routing output and
         displaying per-phase status.  When ``None`` all output goes to
         ``sys.stdout`` via ``print``.
+    :param agent_pool: Optional :class:`~workflow_lib.agent_pool.AgentPoolManager`
+        for distributing parallel phases across configured agents.
     """
 
     def __init__(self, ctx: ProjectContext, dashboard: Optional[Any] = None,
                  max_retries: int = 3, timeout: int = 600,
-                 auto_retries: Optional[int] = None) -> None:
-        """Initialise the orchestrator with a project context.
-
-        :param ctx: The :class:`~workflow_lib.context.ProjectContext` instance
-            that phases will read and mutate.
-        :type ctx: ProjectContext
-        :param dashboard: Optional dashboard.
-        :param max_retries: Maximum retry attempts per phase (0 = no retries).
-        :param timeout: Timeout in seconds per AI agent invocation.
-        :param auto_retries: Number of automatic retries before prompting
-            the user.  ``None`` means always prompt immediately.
-        """
+                 auto_retries: Optional[int] = None,
+                 agent_pool: Optional[Any] = None) -> None:
         self.ctx = ctx
         self.dashboard = dashboard
         self.max_retries = max(max_retries, 1)  # At least 1 attempt
         self.auto_retries = auto_retries or 0
         self.ctx.agent_timeout = timeout if timeout > 0 else None
         self.shutdown_requested = False
+        self.agent_pool = agent_pool
         self._prev_sigint_handler: Optional[Union[Callable, int, signal.Handlers]] = None
 
     def _log(self, message: str) -> None:
@@ -212,31 +209,9 @@ class Orchestrator:
     def run(self) -> None:
         """Run the full planning workflow from start to finish.
 
-        Phases are executed in the following order:
-
-        1. **Phase 1** — Generate each planning document (research + specs).
-        2. **Phase 2** — Flesh out each spec document section by section.
-        2b. **Phase 2B** — Summarize each document for compact context carriage.
-        3. **Phase 3** — Final holistic review of all documents.
-        4. **Phase 3A** — Conflict resolution between documents.
-        5. **Phase 3B** — Adversarial review to stress-test the plan.
-        6. **Phase 4A** — Extract requirements from each document.
-        7. **Phase 4B** — Merge requirements into a master list, then scope gate.
-        8. **Phase 4C** — Order requirements by priority/dependency.
-        9. **Phase 5** — Generate implementation epics.
-        10. **Phase 5B** — Identify and document shared components.
-        11. **Phase 5C** — Define interface contracts for shared components.
-        12. **Phase 6** — Break epics into concrete tasks.
-        13. **Phase 6B** — Review tasks for completeness.
-        14. **Phase 6C** × 2 — Cross-phase review (two passes).
-        15. **Phase 6D** × 2 — Validate task ordering (two passes).
-        16. **Phase 6E** — Validate depends_on metadata for DAG generation.
-        17. **Phase 6F** — Generate integration test plan.
-        18. **Phase 7A** — Generate per-phase dependency DAGs.
-
-        The AI runner ignore file is backed up before the run and restored in a
-        ``finally`` block so that the workspace is always returned to a clean
-        state regardless of errors.
+        Phases 1-20 are executed in sequence (see :meth:`_run_phases` for
+        the complete ordering).  Signal handlers are installed for graceful
+        Ctrl-C handling.
 
         :raises SystemExit: Propagated from :meth:`run_phase_with_retry` if any
             phase exhausts its retry budget.
@@ -247,8 +222,125 @@ class Orchestrator:
         finally:
             self.restore_signal_handler()
 
+    def _run_parallel_phases(self, phases: List[Any], label: str = "") -> None:
+        """Run a batch of phases in parallel, optionally using the agent pool.
+
+        When ``ctx.jobs > 1``, phases are submitted to a
+        :class:`~concurrent.futures.ThreadPoolExecutor`.  Each worker sets
+        thread-local overrides on the shared :class:`ProjectContext` so that
+        ``run_ai()`` uses the correct runner and dashboard identity without
+        mutating shared state.
+
+        When an agent pool is configured, each worker acquires an agent from
+        the pool.  Without a pool, the default runner is used for all workers.
+
+        Falls back to sequential execution when ``ctx.jobs <= 1``.
+
+        :param phases: List of phase objects to execute.
+        :param label: Human-readable label for logging (e.g. "Phase 2").
+        """
+        if self.ctx.jobs <= 1 or len(phases) <= 1:
+            self._log(f"[{label}] Running {len(phases)} phase(s) sequentially "
+                      f"(jobs={self.ctx.jobs}, pool={'yes' if self.agent_pool else 'no'}).")
+            for phase in phases:
+                self.run_phase_with_retry(phase)
+            return
+
+        self._log(f"[{label}] Running {len(phases)} phases in parallel "
+                  f"(jobs={self.ctx.jobs}, pool={'yes' if self.agent_pool else 'no'})...")
+        errors: List[str] = []
+        lock = threading.Lock()
+
+        def _run_one(phase: Any) -> None:
+            if self.shutdown_requested:
+                return
+            name = phase.display_name
+            stage = phase.operation
+            agent_cfg = None
+            agent_name = ""
+
+            # Acquire from pool if available; otherwise use default runner
+            if self.agent_pool is not None:
+                self._log(f"[{label}] Acquiring agent for {name}...")
+                agent_cfg = self.agent_pool.acquire(timeout=300.0, step=None)
+                if agent_cfg is None:
+                    self._log(f"[{label}] TIMEOUT acquiring agent for {name}")
+                    with lock:
+                        errors.append(f"Timeout acquiring agent for {name}")
+                    return
+                agent_name = agent_cfg.name
+                self._log(f"[{label}] Acquired {agent_name} for {name}")
+
+            try:
+                # Build a per-thread runner from pool config or use default
+                if agent_cfg is not None:
+                    thread_runner = make_runner(
+                        agent_cfg.backend,
+                        model=agent_cfg.model,
+                        user=agent_cfg.user,
+                        env=agent_cfg.env,
+                    )
+                    if agent_cfg.context_limit is not None:
+                        set_agent_context_limit(agent_cfg.context_limit)
+                else:
+                    thread_runner = self.ctx.runner
+
+                # Set thread-local overrides so run_ai() picks them up
+                self.ctx._tls.runner = thread_runner
+                self.ctx._tls.phase = name
+
+                # Register on dashboard
+                task_key = f"plan/{name}"
+                self._log(f"[{label}] Dashboard: set_agent({task_key!r}, {stage!r}, 'running', agent_name={agent_name!r})")
+                if self.dashboard:
+                    self.dashboard.set_agent(
+                        task_key, stage, "running",
+                        agent_name=agent_name,
+                    )
+
+                phase.execute(self.ctx)
+
+                self._log(f"-> Phase {name} completed" +
+                          (f" ({agent_name})." if agent_name else "."))
+                if self.dashboard:
+                    self.dashboard.set_agent(
+                        task_key, stage, "done",
+                        agent_name=agent_name,
+                    )
+            except (SystemExit, Exception) as exc:
+                if isinstance(exc, SystemExit) and exc.code == 0:
+                    if self.dashboard:
+                        self.dashboard.set_agent(f"plan/{name}", stage, "done",
+                                                 agent_name=agent_name)
+                    return
+                self._log(f"[!] Phase {name} failed" +
+                          (f" ({agent_name}): {exc}" if agent_name else f": {exc}"))
+                if self.dashboard:
+                    self.dashboard.set_agent(f"plan/{name}", stage, "failed",
+                                             agent_name=agent_name)
+                with lock:
+                    errors.append(f"{name}: {exc}")
+            finally:
+                # Clean up thread-local overrides
+                self.ctx._tls.runner = None
+                self.ctx._tls.phase = None
+                if agent_cfg is not None and self.agent_pool is not None:
+                    self.agent_pool.release(agent_cfg)
+                    if agent_cfg.context_limit is not None:
+                        set_agent_context_limit(None)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.ctx.jobs) as executor:
+            futures = [executor.submit(_run_one, p) for p in phases]
+            concurrent.futures.wait(futures)
+
+        if errors:
+            for err in errors:
+                self._log(f"[!] {err}")
+            notify_failure(f"Plan parallel phase '{label}' had {len(errors)} failure(s).")
+            sys.exit(1)
+
     def _run_phases(self) -> None:
-        """Internal method that runs all planning phases sequentially."""
+        """Internal method that runs all planning phases."""
         self._log("Beginning multi-phase document generation and lifecycle orchestration...")
 
         # Startup validation: ensure all prompt files exist before running any phase
@@ -259,74 +351,152 @@ class Orchestrator:
             self._log(f"[!] {len(missing)} prompt file(s) missing from {self.ctx.prompts_dir}. Aborting.")
             sys.exit(1)
 
-        # Phase 1, 2, and 2B for each document
+        spec_docs = [doc for doc in DOCS if doc["type"] == "spec"]
+
+        # Phase 1: Generate each document sequentially (research + specs, each gets prior docs as context)
         for doc in DOCS:
             self.run_phase_with_retry(Phase1GenerateDoc(doc))
             expected = self.ctx.get_document_path(doc)
             self._validate_artifacts([expected], f"Phase1/{doc['id']}")
 
-            self.run_phase_with_retry(Phase2FleshOutDoc(doc))
-            self.run_phase_with_retry(Phase2BSummarizeDoc(doc))
+        # Phase 2: Flesh out each document (parallel, research + specs)
+        self._run_parallel_phases(
+            [Phase2FleshOutDoc(doc) for doc in DOCS], "Phase 2: Flesh Out"
+        )
 
+        # Phase 3: Summarize each spec document (parallel, specs only — skip research)
+        self._run_parallel_phases(
+            [Phase2BSummarizeDoc(doc) for doc in spec_docs], "Phase 3: Summarize"
+        )
+        for doc in spec_docs:
+            self._validate_artifacts(
+                [self.ctx.get_summary_path(doc)], f"Phase3/Summarize/{doc['id']}"
+            )
+
+        # Phase 4: Final holistic review
         self.run_phase_with_retry(Phase3FinalReview())
+
+        # Phase 5: Conflict resolution
         self.run_phase_with_retry(Phase3AConflictResolution())
         self._validate_artifacts(
             [os.path.join(self.ctx.plan_dir, "conflict_resolution.md")],
-            "Phase3A"
+            "Phase5"
         )
+
+        # Phase 6: Adversarial review
         self.run_phase_with_retry(Phase3BAdversarialReview())
         self._validate_artifacts(
             [os.path.join(self.ctx.plan_dir, "adversarial_review.md")],
-            "Phase3B"
+            "Phase6"
         )
 
+        # Phase 7: Extract requirements from each spec (parallel, JSON output, specs only)
         if not self.ctx.state.get("requirements_extracted", False):
-            for doc in DOCS:
-                self.run_phase_with_retry(Phase4AExtractRequirements(doc))
+            self._run_parallel_phases(
+                [Phase7ExtractRequirements(doc) for doc in spec_docs],
+                "Phase 7: Extract Requirements"
+            )
             self.ctx.state["requirements_extracted"] = True
             self.ctx.save_state()
 
-        self.run_phase_with_retry(Phase4BMergeRequirements())
+        # Phase 8: Filter meta requirements (parallel per spec doc)
+        if not self.ctx.state.get("meta_requirements_filtered", False):
+            self._run_parallel_phases(
+                [Phase8FilterMetaRequirements(doc) for doc in spec_docs],
+                "Phase 8: Filter Meta Requirements"
+            )
+            self.ctx.state["meta_requirements_filtered"] = True
+            self.ctx.save_state()
+
+        # Phase 9: Merge requirements into requirements.json
+        self.run_phase_with_retry(Phase9MergeRequirements())
         self._validate_artifacts(
-            [os.path.join(self.ctx.root_dir, "docs/plan/requirements.md")],
-            "Phase4B"
-        )
-        self.run_phase_with_retry(Phase4BScopeGate())
-        self.run_phase_with_retry(Phase4COrderRequirements())
-        self.run_phase_with_retry(Phase5GenerateEpics())
-        self._validate_artifacts(
-            [os.path.join(self.ctx.plan_dir, "phases")],
-            "Phase5"
-        )
-        self.run_phase_with_retry(Phase5BSharedComponents())
-        self._validate_artifacts(
-            [os.path.join(self.ctx.plan_dir, "shared_components.md")],
-            "Phase5B"
-        )
-        self.run_phase_with_retry(Phase5CInterfaceContracts())
-        self._validate_artifacts(
-            [os.path.join(self.ctx.plan_dir, "interface_contracts.md")],
-            "Phase5C"
-        )
-        self.run_phase_with_retry(Phase6BreakDownTasks())
-        self._validate_artifacts(
-            [os.path.join(self.ctx.plan_dir, "tasks")],
-            "Phase6"
-        )
-        self.run_phase_with_retry(Phase6AFixupValidation())
-        self.run_phase_with_retry(Phase6BReviewTasks())
-        self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=1))
-        self.run_phase_with_retry(Phase6DReorderTasks(pass_num=1))
-        self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=2))
-        self.run_phase_with_retry(Phase6DReorderTasks(pass_num=2))
-        self.run_phase_with_retry(Phase6EDependsOnValidation())
-        self.run_phase_with_retry(Phase6EIntegrationTestPlan())
-        self._validate_artifacts(
-            [os.path.join(self.ctx.plan_dir, "integration_test_plan.md")],
-            "Phase6E"
+            [os.path.join(self.ctx.plan_dir, "requirements.json")],
+            "Phase9"
         )
 
-        # DAG Generation
+        # Phase 10: Deduplicate requirements
+        self.run_phase_with_retry(Phase10DeduplicateRequirements())
+
+        # Phase 11: Order requirements (E2E-first)
+        self.run_phase_with_retry(Phase12OrderRequirements())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "requirements_ordered.json")],
+            "Phase11"
+        )
+
+        # Phase 12: Generate epic/requirement mappings (JSON)
+        self.run_phase_with_retry(Phase13GenerateEpics())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "epic_mappings.json")],
+            "Phase12"
+        )
+
+        # Phase 13: E2E interface definitions (single agent)
+        self.run_phase_with_retry(Phase14E2EInterfaces())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "e2e_interfaces.md")],
+            "Phase13"
+        )
+
+        # Phase 14: Feature gates (single agent)
+        self.run_phase_with_retry(Phase15FeatureGates())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "feature_gates.md")],
+            "Phase14"
+        )
+
+        # Phase 15: Holistic task breakdown (parallel per phase)
+        self.run_phase_with_retry(Phase15HolisticTasks())
+        self._validate_artifacts(
+            [os.path.join(self.ctx.plan_dir, "tasks")],
+            "Phase15"
+        )
+
+        # Phase 16: Review holistic tasks (parallel per phase)
+        if not self.ctx.state.get("tasks_reviewed", False):
+            tasks_dir = os.path.join(self.ctx.plan_dir, "tasks")
+            if os.path.isdir(tasks_dir):
+                phase_dirs = sorted([
+                    d for d in os.listdir(tasks_dir)
+                    if os.path.isdir(os.path.join(tasks_dir, d)) and d.startswith("phase_")
+                ])
+                self._run_parallel_phases(
+                    [Phase16ReviewHolisticTasks(pid) for pid in phase_dirs],
+                    "Phase 16: Review Tasks"
+                )
+            self.ctx.state["tasks_reviewed"] = True
+            self.ctx.save_state()
+
+        # Phase 17: Cross-phase review (single pass)
+        if not self.ctx.state.get("cross_phase_reviewed", False):
+            self.run_phase_with_retry(Phase6CCrossPhaseReview(pass_num=1))
+            self.ctx.state["cross_phase_reviewed"] = True
+            self.ctx.save_state()
+
+        # Phase 18: Pre-Init task generation
+        self.run_phase_with_retry(Phase19PreInitTask())
+
+        # Phase 19: DAG generation
         self.run_phase_with_retry(Phase7ADAGGeneration())
+
+        # Final validation: run validate.py --all to catch any cross-artifact
+        # inconsistencies that per-phase validators may have missed.
+        self._log("\n=> [Final Validation] Running full plan validation...")
+        from .constants import TOOLS_DIR
+        validate_script = os.path.join(TOOLS_DIR, "validate.py")
+        validate_res = subprocess.run(
+            [sys.executable, validate_script, "--all"],
+            capture_output=True, text=True, cwd=self.ctx.root_dir
+        )
+        if validate_res.returncode != 0:
+            self._log("[!] Final validation failed:")
+            self._log(validate_res.stdout)
+            if validate_res.stderr:
+                self._log(validate_res.stderr)
+            notify_failure("Plan final validation failed.")
+            sys.exit(1)
+        self._log(validate_res.stdout.strip() if validate_res.stdout.strip() else "All checks passed.")
+
         self._log("Project generation orchestration complete.")
 

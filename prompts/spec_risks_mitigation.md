@@ -11,7 +11,7 @@ You must actively synthesize any provided previous project context to ensure thi
 # CHAIN OF THOUGHT
 Before generating the final document, plan your approach:
 1. Analyze the PRD and TAS in the `<previous_document>` tags to locate dependencies or complex features that carry high technical risk.
-2. Analyze the Market Research to identify go-to-market or adoption risks.
+2. Analyze the original project description and prior specs to identify product, rollout, or adoption risks.
 3. Categorize risks by impact and probability.
 4. Develop concrete, actionable mitigation strategies.
 5. Structure the final document according to the required `OUTPUT FORMAT`.

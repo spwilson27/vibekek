@@ -5,7 +5,7 @@ You are a Lead Product Manager. Your job is to review requirements with descript
 {description_ctx}
 
 # REQUIREMENTS WITH SHORT DESCRIPTIONS
-The following requirements in `docs/plan/requirements.md` have descriptions shorter than 10 words:
+The following requirements in `docs/plan/requirements.json` have descriptions shorter than 10 words:
 {short_reqs_list}
 
 # CURRENT REQUIREMENT CONTEXT
@@ -18,7 +18,7 @@ The following requirements in `docs/plan/requirements.md` have descriptions shor
    - Making the description clear, specific, and actionable
    - Adding necessary context about what the requirement entails
    - Ensuring the description is self-contained (agents may not have source documents)
-3. Edit `docs/plan/requirements.md` to update the short descriptions with your expanded versions.
+3. Edit `docs/plan/requirements.json` to update the short descriptions with your expanded versions.
 4. Do NOT modify any other part of the requirements (Type, Source, Dependencies, titles, IDs).
 
 # CONSTRAINTS
@@ -40,7 +40,7 @@ The following requirements in `docs/plan/requirements.md` have descriptions shor
 - Do NOT change the fundamental meaning or scope of the requirement.
 
 # OUTPUT FORMAT
-- Edit the existing `docs/plan/requirements.md` file directly.
+- Edit the existing `docs/plan/requirements.json` file directly.
 - Preserve the exact structure and formatting of the document.
 - Only modify the **Description:** field for requirements with short descriptions.
 
@@ -50,7 +50,7 @@ After updating the descriptions, you MUST verify your work is complete:
 
 **Step 1: Run the description length verification script**
 ```bash
-python .tools/verify.py req-desc-length docs/plan/requirements.md
+python .tools/validate.py --phase 9
 ```
 
 **Step 2: Check the output**
@@ -58,7 +58,7 @@ python .tools/verify.py req-desc-length docs/plan/requirements.md
 - If the script lists requirements with short descriptions, you must fix them.
 
 **Step 3: Fix any remaining issues**
-- Re-read the failed requirement's full context in `docs/plan/requirements.md`
+- Re-read the failed requirement's full context in `docs/plan/requirements.json`
 - Expand the description further until it has at least 10 words
 - Re-run the verification script
 
@@ -67,7 +67,7 @@ python .tools/verify.py req-desc-length docs/plan/requirements.md
 - The script must exit with code 0
 
 **Step 5: Final checklist before ending your turn**
-- [ ] Verification script passes: `python .tools/verify.py req-desc-length docs/plan/requirements.md`
+- [ ] Verification script passes: `python .tools/validate.py --phase 9`
 - [ ] All requirements listed in the original input now have 10+ word descriptions
 - [ ] No new validation errors were introduced
 - [ ] Original requirement intent preserved (no scope changes)

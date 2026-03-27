@@ -12,7 +12,7 @@ You must actively synthesize any provided previous project context to ensure thi
 Before generating the final document, plan your approach:
 1. Identify the core purpose and non-goals of this product based on its Description.
 2. Outline the major sections required for a comprehensive Product Requirements Document.
-3. Cross-reference your outline against provided `<previous_document>` tags (e.g., ensure it includes the features mentioned in User Research and market gaps from Competitive Analysis).
+3. Cross-reference your outline against provided `<previous_document>` tags to ensure it incorporates relevant requirements and constraints from earlier specs.
 4. Identify any ambiguities or edge cases that need to be explicitly addressed or documented as open questions.
 5. Structure the final document according to the required `OUTPUT FORMAT`.
 

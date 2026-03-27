@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task Sidecar",
+  "description": "Structured metadata for a task definition, stored alongside the .md file",
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^phase_[0-9]+/.+",
+      "description": "Fully qualified task ID with phase prefix (e.g. 'phase_1/red_01_task_name'). MUST start with 'phase_N/'."
+    },
+    "phase": {
+      "type": "string",
+      "description": "Phase directory name (e.g. 'phase_1')"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["task"],
+      "description": "Task type (always 'task' for holistic tasks)"
+    },
+    "depends_on": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Task IDs that must complete before this task"
+    },
+    "feature_gates": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Feature gate file paths this task creates or tests against"
+    },
+    "requirement_mappings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z0-9_]+-REQ-[0-9]+$"
+      },
+      "description": "Requirement IDs directly tested by assertions in this task"
+    },
+    "contributes_to": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z0-9_]+-REQ-[0-9]+$"
+      },
+      "description": "Requirement IDs partially advanced but not directly tested by this task"
+    },
+    "epic_id": {
+      "type": "string",
+      "description": "ID of the parent epic"
+    }
+  },
+  "required": ["task_id", "phase", "type", "depends_on", "feature_gates", "requirement_mappings"],
+  "additionalProperties": false
+}

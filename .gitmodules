@@ -1,4 +1,0 @@
-[submodule "rag-tool"]
-	path = rag-tool
-	url = https://github.com/spwilson27/vibekek
-	branch = mcp

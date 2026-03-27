@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Epic/Requirement Mappings",
+  "description": "Epic definitions mapping features to requirements (Phase 13)",
+  "type": "object",
+  "properties": {
+    "epics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "epic_id": {
+            "type": "string",
+            "description": "Unique identifier for the epic"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "phase_number": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "requirement_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "All requirement IDs covered by this epic"
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "requirement_ids": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["name", "requirement_ids"],
+              "additionalProperties": false
+            }
+          },
+          "shared_components": {
+            "type": "object",
+            "properties": {
+              "owns": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "contract": { "type": "string", "description": "Canonical crate path or trait that defines this component's API" }
+                  },
+                  "required": ["name", "contract"],
+                  "additionalProperties": false
+                },
+                "description": "Components whose canonical implementation is defined in this phase"
+              },
+              "consumes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "from_epic": { "type": "string", "description": "Epic ID that owns this component" }
+                  },
+                  "required": ["name", "from_epic"],
+                  "additionalProperties": false
+                },
+                "description": "Components owned by earlier phases that this phase depends on"
+              }
+            },
+            "required": ["owns", "consumes"],
+            "additionalProperties": false,
+            "description": "Cross-cutting components this phase owns or consumes from other phases"
+          }
+        },
+        "required": ["epic_id", "name", "phase_number", "requirement_ids", "features", "shared_components"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["epics"],
+  "additionalProperties": false
+}

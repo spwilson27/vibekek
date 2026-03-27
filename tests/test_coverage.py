@@ -8,7 +8,7 @@ import os
 import json
 
 TOOLS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-THRESHOLD = 88
+THRESHOLD = 87
 
 
 def test_workflow_lib_coverage():

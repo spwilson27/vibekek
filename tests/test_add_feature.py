@@ -145,7 +145,7 @@ def _setup_project(tmp_path: Path) -> Path:
             (tools / "prompts" / name).write_text(f"# stub for {name}\n{{description_ctx}}")
 
     # Requirements
-    (tmp_path / "requirements.md").write_text(
+    (tmp_path / "requirements.json").write_text(
         "# Requirements\n## Active\n### **[REQ-001]** Core feature\n"
     )
 
@@ -266,7 +266,7 @@ class TestAddFeatureDiscuss:
                 args=[], returncode=0, stdout=response, stderr="",
             )
 
-        def _run_ai(full_prompt, allowed_files=None, sandbox=True, timeout=None):
+        def _run_ai(full_prompt, allowed_files=None, timeout=None):
             """Simulates ctx.run_ai() for spec generation."""
             call_count[0] += 1
             if allowed_files:
@@ -306,7 +306,6 @@ class TestAddFeatureDiscuss:
         ).read_text() if (Path(__file__).parent.parent / "prompts" / name).exists() else f"# {name}"
         mock_ctx.format_prompt.side_effect = lambda tmpl, **kw: tmpl
         mock_ctx.run_ai.side_effect = run_ai_fn
-        mock_ctx.get_workspace_snapshot.return_value = {}
 
         patches = _patch_constants(root)
         patches.append(patch("workflow_lib.replan._make_runner", return_value=MagicMock()))
@@ -353,7 +352,6 @@ class TestAddFeatureDiscuss:
         mock_ctx.load_shared_components.return_value = ""
         mock_ctx.load_prompt.return_value = "# stub"
         mock_ctx.format_prompt.side_effect = lambda tmpl, **kw: tmpl
-        mock_ctx.get_workspace_snapshot.return_value = {}
 
         patches = _patch_constants(root)
         patches.append(patch("workflow_lib.replan._make_runner", return_value=MagicMock()))
@@ -397,7 +395,6 @@ class TestAddFeatureDiscuss:
         mock_ctx.load_prompt.return_value = "# stub"
         mock_ctx.format_prompt.side_effect = lambda tmpl, **kw: tmpl
         mock_ctx.run_ai.side_effect = run_ai_fn
-        mock_ctx.get_workspace_snapshot.return_value = {}
 
         patches = _patch_constants(root)
         patches.append(patch("workflow_lib.replan._make_runner", return_value=MagicMock()))
@@ -449,7 +446,6 @@ class TestAddFeatureDiscuss:
         mock_ctx.load_shared_components.return_value = ""
         mock_ctx.load_prompt.return_value = "# stub"
         mock_ctx.format_prompt.side_effect = lambda tmpl, **kw: tmpl
-        mock_ctx.get_workspace_snapshot.return_value = {}
 
         patches = _patch_constants(root)
         patches.append(patch("workflow_lib.replan._make_runner", return_value=MagicMock()))
@@ -508,7 +504,6 @@ class TestAddFeatureDiscuss:
         mock_ctx.load_shared_components.return_value = ""
         mock_ctx.load_prompt.return_value = "# stub"
         mock_ctx.format_prompt.side_effect = lambda tmpl, **kw: tmpl
-        mock_ctx.get_workspace_snapshot.return_value = {}
 
         patches = _patch_constants(root)
         patches.append(patch("workflow_lib.replan._make_runner", return_value=MagicMock()))
@@ -540,7 +535,7 @@ class TestAddFeatureExecute:
     def _make_execute_agent(self, se_dir: Path, task_content: str = TASK_CONTENT):
         """Return a run_ai replacement that creates task files and updates requirements."""
 
-        def _run_ai(full_prompt, allowed_files=None, sandbox=True, timeout=None):
+        def _run_ai(full_prompt, allowed_files=None, timeout=None):
             if allowed_files:
                 for f in allowed_files:
                     if isinstance(f, str) and f.endswith(os.sep):
@@ -817,7 +812,7 @@ class TestAddFeatureExecute:
             - shared_components: []
         """)
 
-        def _run_ai(full_prompt, allowed_files=None, sandbox=True, timeout=None):
+        def _run_ai(full_prompt, allowed_files=None, timeout=None):
             if allowed_files:
                 for f in allowed_files:
                     if isinstance(f, str) and f.endswith(os.sep):
@@ -908,7 +903,9 @@ class TestHelpers:
 
     def test_load_requirements_ctx_reads_file(self, tmp_path):
         req_content = "# Requirements\n- [REQ-001] Test\n"
-        (tmp_path / "requirements.md").write_text(req_content)
+        req_dir = tmp_path / "docs" / "plan"
+        req_dir.mkdir(parents=True, exist_ok=True)
+        (req_dir / "requirements.json").write_text(req_content)
         with patch("workflow_lib.replan.ROOT_DIR", str(tmp_path)):
             result = _load_requirements_ctx()
         assert "REQ-001" in result
@@ -916,7 +913,7 @@ class TestHelpers:
     def test_load_requirements_ctx_missing_file(self, tmp_path):
         with patch("workflow_lib.replan.ROOT_DIR", str(tmp_path)):
             result = _load_requirements_ctx()
-        assert "no requirements.md" in result
+        assert "no docs/plan/requirements.json" in result
 
     def test_load_phases_ctx_reads_files(self, tmp_path):
         phases_dir = tmp_path / "docs" / "plan" / "phases"

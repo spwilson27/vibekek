@@ -118,6 +118,12 @@ class TestDockerfileTemplate:
 # Root Dockerfile tests
 # ---------------------------------------------------------------------------
 
+_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+
+@pytest.mark.skipif(
+    not os.path.exists(os.path.join(_ROOT_DIR, 'Dockerfile')),
+    reason="Dockerfile not yet generated"
+)
 class TestRootDockerfile:
     """Tests for the root Dockerfile matching template configuration."""
 
@@ -474,12 +480,16 @@ class TestWriteContainerEnvFile:
             "PWD": "/home/mrwilson/projects",
             "OLDPWD": "/tmp",
             "PATH": "/home/mrwilson/.cargo/bin:/usr/bin:/bin",
+            "TMPDIR": "/var/folders/lq/abc123/T/",
+            "TEMP": "C:\\Users\\user\\AppData\\Local\\Temp",
+            "TMP": "/tmp",
         }, clear=False):
             path = _write_container_env_file(str(tmp_path))
         with open(path) as f:
-            content = f.read()
+            lines = f.readlines()
         for var in _DOCKER_ENV_SKIP:
-            assert f"{var}=" not in content, f"{var} must not appear in container env-file"
+            assert not any(line.startswith(f"{var}=") for line in lines), \
+                f"{var} must not appear in container env-file"
 
     def test_skips_vars_with_newlines_in_value(self, tmp_path):
         with patch.dict(os.environ, {"BAD_VAR": "line1\nline2"}, clear=False):
@@ -494,6 +504,13 @@ class TestWriteContainerEnvFile:
 # ---------------------------------------------------------------------------
 
 class TestStartTaskContainer:
+    @pytest.fixture(autouse=True)
+    def _mock_harness(self):
+        """Mock harness.py existence check and copy for all container tests."""
+        with patch("os.path.exists", return_value=True), \
+             patch("shutil.copy2"):
+            yield
+
     def test_calls_docker_run_d(self, tmp_path):
         dc = _docker_cfg(image="test-img:latest")
         env_file = str(tmp_path / "container.env")

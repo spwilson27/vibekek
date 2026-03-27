@@ -15,15 +15,14 @@ from workflow import (
     ProjectContext, BasePhase,
     Phase1GenerateDoc, Phase2FleshOutDoc, Phase2BSummarizeDoc,
     Phase3FinalReview, Phase3BAdversarialReview,
-    Phase4AExtractRequirements, Phase4BMergeRequirements,
-    Phase4BScopeGate, Phase4COrderRequirements,
-    Phase5GenerateEpics, Phase5BSharedComponents,
-    Phase6BreakDownTasks, Phase6BReviewTasks,
-    Phase6CCrossPhaseReview, Phase6DReorderTasks,
+    Phase7ExtractRequirements, Phase9MergeRequirements,
+    Phase11ScopeGate, Phase12OrderRequirements,
+    Phase13GenerateEpics,
+    Phase6CCrossPhaseReview,
     Phase7ADAGGeneration,
     Logger, run_ai_command,
     get_task_details, get_memory_context, get_project_context,
-    run_agent, rebuild_serena_cache,
+    run_agent,
     process_task, merge_task, execute_dag,
     load_blocked_tasks, get_ready_tasks,
     load_replan_state, save_replan_state,
@@ -316,34 +315,6 @@ class TestRunAgent:
 
 
 # ---------------------------------------------------------------------------
-# executor.py – rebuild_serena_cache
-# ---------------------------------------------------------------------------
-
-class TestRebuildSerenaCache:
-    def test_timeout_then_missing_cache(self):
-        """TimeoutExpired → terminate, cache missing → warning + return."""
-        proc = MagicMock()
-        # First call (with timeout) raises, second call (no timeout) returns normally
-        proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 120), None]
-        lock = threading.Lock()
-        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc), \
-             patch("os.path.isdir", return_value=False):
-            rebuild_serena_cache("/src", "/root", lock)
-        proc.terminate.assert_called_once()
-
-    def test_success_copy(self):
-        proc = MagicMock()
-        proc.wait.return_value = None
-        lock = threading.Lock()
-        with patch("workflow_lib.executor.subprocess.Popen", return_value=proc), \
-             patch("os.path.isdir", return_value=True), \
-             patch("shutil.rmtree"), \
-             patch("shutil.copytree"), \
-             patch("os.rename"):
-            rebuild_serena_cache("/src", "/root", lock)
-
-
-# ---------------------------------------------------------------------------
 # executor.py – load_blocked_tasks
 # ---------------------------------------------------------------------------
 
@@ -382,7 +353,7 @@ class TestProcessTask:
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("os.chmod"), \
              patch("subprocess.run", side_effect=_fake_run):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit")
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         assert result is False
 
     def test_success(self):
@@ -397,7 +368,7 @@ class TestProcessTask:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit")
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         assert result is True
 
     def test_submodule_init_after_clone(self):
@@ -413,7 +384,7 @@ class TestProcessTask:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            process_task("/root", "phase_1/task.md", "./do presubmit")
+            process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         # Find the clone call and verify submodule init follows it
         calls = [c[0][0] for c in mock_run.call_args_list if isinstance(c[0][0], list)]
         clone_idx = next(i for i, c in enumerate(calls) if "clone" in c)
@@ -431,14 +402,14 @@ class TestProcessTask:
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit")
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         assert result is False
 
     def test_presubmit_fail_then_retry_success(self):
         presubmit_calls = [0]
         def mock_run_side_effect(*args, **kwargs):
             cmd = args[0] if args else []
-            if isinstance(cmd, list) and cmd[0] == "./do":
+            if isinstance(cmd, list) and "/harness.py" in cmd:
                 presubmit_calls[0] += 1
                 if presubmit_calls[0] == 1:
                     return MagicMock(returncode=1, stdout="fail", stderr="")
@@ -455,27 +426,8 @@ class TestProcessTask:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", max_retries=2)
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit", max_retries=2)
         assert result is True
-
-    def test_serena_seeding(self):
-        """With serena=True: cache is copied and .mcp.json is copied."""
-        mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="M f", stderr=""))
-        with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
-             patch("os.chmod"), \
-             patch("subprocess.run", mock_run), \
-             patch("workflow_lib.executor.run_agent", return_value=True), \
-             patch("workflow_lib.executor.get_task_details", return_value=""), \
-             patch("workflow_lib.executor.get_project_context", return_value=""), \
-             patch("workflow_lib.executor.get_memory_context", return_value=""), \
-             patch("os.path.isdir", side_effect=lambda p: ".serena" in p and "/tmp/wt" not in p), \
-             patch("os.path.exists", side_effect=lambda p: ".mcp.json" in p and "/tmp/wt" not in p), \
-             patch("workflow_lib.executor.shutil.copytree") as mock_copytree, \
-             patch("workflow_lib.executor.shutil.copy2") as mock_copy2, \
-             patch("workflow_lib.executor.shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", serena=True)
-        mock_copytree.assert_called_once()
-        mock_copy2.assert_called_once()
 
     def test_reclaim_ownership_called_before_presubmit(self):
         """_reclaim_dir_ownership must be called before the presubmit subprocess.
@@ -492,7 +444,7 @@ class TestProcessTask:
 
         def mock_run_side_effect(*args, **kwargs):
             cmd = args[0] if args else []
-            if isinstance(cmd, list) and cmd and cmd[0] == "./do":
+            if isinstance(cmd, list) and cmd and "/harness.py" in cmd:
                 call_order.append("presubmit")
             return MagicMock(returncode=0, stdout="M file.py", stderr="")
 
@@ -507,7 +459,7 @@ class TestProcessTask:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit")
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
 
         assert result is True
         assert "reclaim" in call_order, "_reclaim_dir_ownership was never called"
@@ -527,7 +479,7 @@ class TestProcessTask:
         presubmit_calls = []
         def mock_run_side_effect(*args, **kwargs):
             cmd = args[0] if args else []
-            if isinstance(cmd, list) and cmd and cmd[0] == "./do":
+            if isinstance(cmd, list) and cmd and "/harness.py" in cmd:
                 presubmit_calls.append(kwargs)
                 return MagicMock(returncode=0, stdout="M file.py", stderr="")
             return MagicMock(returncode=0, stdout="M file.py", stderr="")
@@ -542,7 +494,7 @@ class TestProcessTask:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            process_task("/root", "phase_1/task.md", "./do presubmit")
+            process_task("/root", "phase_1/task.md", "python /harness.py presubmit")
 
         assert presubmit_calls, "presubmit subprocess.run was never called"
         for call_kwargs in presubmit_calls:
@@ -624,7 +576,7 @@ class TestMergeTask:
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("shutil.rmtree"):
-            result = merge_task("/root", "phase_1/task.md", "./do presubmit")
+            result = merge_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         assert result is True
 
     def test_squash_fails_rebase_succeeds(self):
@@ -646,7 +598,7 @@ class TestMergeTask:
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("shutil.rmtree"):
-            result = merge_task("/root", "phase_1/task.md", "./do presubmit")
+            result = merge_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         assert result is True
 
     def test_all_attempts_fail(self):
@@ -656,7 +608,7 @@ class TestMergeTask:
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("shutil.rmtree"):
-            result = merge_task("/root", "phase_1/task.md", "./do presubmit", max_retries=2)
+            result = merge_task("/root", "phase_1/task.md", "python /harness.py presubmit", max_retries=2)
         assert result is False
 
     def test_submodule_init_after_clone(self):
@@ -668,26 +620,12 @@ class TestMergeTask:
              patch("workflow_lib.executor.get_project_context", return_value=""), \
              patch("workflow_lib.executor.run_agent", return_value=True), \
              patch("shutil.rmtree"):
-            merge_task("/root", "phase_1/task.md", "./do presubmit")
+            merge_task("/root", "phase_1/task.md", "python /harness.py presubmit")
         calls = [c[0][0] for c in mock_run.call_args_list if isinstance(c[0][0], list)]
         clone_idx = next(i for i, c in enumerate(calls) if "clone" in c)
         submod = calls[clone_idx + 1]
         assert submod == ["git", "submodule", "update", "--init", "--recursive"]
 
-    def test_serena_rebuild_on_success(self):
-        """With serena=True and cache_lock, rebuild_serena_cache is called after push."""
-        with patch("subprocess.run", return_value=self._ok_run()), \
-             patch("workflow_lib.executor.get_gitlab_remote_url", return_value="http://example.com/repo.git"), \
-             patch("workflow_lib.executor.get_task_details", return_value="# Task: T"), \
-             patch("workflow_lib.executor.get_project_context", return_value=""), \
-             patch("workflow_lib.executor.run_agent", return_value=True), \
-             patch("workflow_lib.executor.rebuild_serena_cache") as mock_rebuild, \
-             patch("shutil.rmtree"):
-            lock = threading.Lock()
-            result = merge_task("/root", "phase_1/task.md", "./do presubmit",
-                                cache_lock=lock, serena=True)
-        assert result is True
-        mock_rebuild.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -698,19 +636,17 @@ class TestExecuteDag:
     def test_empty_dag(self):
         state = {"completed_tasks": [], "merged_tasks": []}
         with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", {}, state, 1, "./do presubmit")
+            execute_dag("/root", {}, state, 1, "python /harness.py presubmit")
 
     def test_all_tasks_completed(self):
         dag = {"phase_1/task.md": []}
         state = {"completed_tasks": ["phase_1/task.md"], "merged_tasks": ["phase_1/task.md"]}
         with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
 
     def test_dev_branch_created(self):
         """When dev branch check fails, create it from main."""
@@ -720,44 +656,20 @@ class TestExecuteDag:
         ]
         state = {"completed_tasks": [], "merged_tasks": []}
         with patch("subprocess.run", side_effect=run_results + [MagicMock(returncode=0)] * 100), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.get_ready_tasks", return_value=[]), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", {}, state, 1, "./do presubmit")
-
-    def test_serena_bootstrap_mcp_copy(self):
-        """With serena=True and no .mcp.json, template is copied."""
-        state = {"completed_tasks": [], "merged_tasks": []}
-        def exists_side(path):
-            if ".serena/cache" in path:
-                return True  # cache exists, no bootstrap needed
-            if ".mcp.json" in path and "/root" in path:
-                return False  # no mcp.json at root
-            if "templates/.mcp.json" in path:
-                return True
-            return True
-
-        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=True), \
-             patch("os.path.exists", side_effect=exists_side), \
-             patch("os.path.isdir", return_value=True), \
-             patch("workflow_lib.executor.shutil.copy2") as mock_copy, \
-             patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
-             patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", {}, state, 1, "./do presubmit")
-        mock_copy.assert_called_once()
+            execute_dag("/root", {}, state, 1, "python /harness.py presubmit")
 
     def test_task_success_end_to_end(self):
         dag = {"phase_1/task.md": []}
         state = {"completed_tasks": [], "merged_tasks": []}
-        with patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
              patch("workflow_lib.executor.process_task", return_value=True), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
         assert "phase_1/task.md" in state["completed_tasks"]
 
     def test_task_failure_exits(self):
@@ -770,15 +682,14 @@ class TestExecuteDag:
                 return ["phase_1/task.md"]
             return []
 
-        with patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
              patch("workflow_lib.executor.process_task", return_value=False), \
              patch("workflow_lib.executor.get_ready_tasks", side_effect=ready_side), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
              patch("workflow_lib.executor.os._exit", side_effect=SystemExit(1)), \
              pytest.raises(SystemExit):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
 
 
 # ---------------------------------------------------------------------------
@@ -894,7 +805,7 @@ class TestProcessTaskWithDashboard:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit", dashboard=dash)
         assert result is True
         dash.set_agent.assert_called()
         dash.remove_agent.assert_called_with("phase_1/task.md")
@@ -910,7 +821,7 @@ class TestProcessTaskWithDashboard:
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
              patch("os.chmod"), \
              patch("subprocess.run", side_effect=_fake_run):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit", dashboard=dash)
         assert result is False
         dash.set_agent.assert_any_call("phase_1/task.md", "Impl", "failed", "Clone/checkout failed: error")
 
@@ -925,7 +836,7 @@ class TestProcessTaskWithDashboard:
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit", dashboard=dash)
         assert result is False
         dash.set_agent.assert_any_call("phase_1/task.md", "Impl", "failed", "Implementation agent failed")
 
@@ -944,14 +855,14 @@ class TestProcessTaskWithDashboard:
              patch("workflow_lib.executor.get_memory_context", return_value=""), \
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit", dashboard=dash)
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit", dashboard=dash)
         assert result is False
         dash.set_agent.assert_any_call("phase_1/task.md", "Review", "failed", "Review agent failed")
 
     def test_presubmit_fail_all_retries_with_dashboard(self):
         dash = MagicMock()
         def _only_fail_presubmit(cmd, **kwargs):
-            if isinstance(cmd, list) and "./do" in cmd:
+            if isinstance(cmd, list) and "/harness.py" in cmd:
                 return MagicMock(returncode=1, stdout="fail", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
         with patch("tempfile.mkdtemp", return_value="/tmp/wt"), \
@@ -964,7 +875,7 @@ class TestProcessTaskWithDashboard:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit",
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit",
                                   max_retries=1, dashboard=dash)
         assert result is False
         dash.set_agent.assert_any_call("phase_1/task.md", "Verify", "failed", "Failed after 1 attempts", agent_name=None)
@@ -975,7 +886,7 @@ class TestProcessTaskWithDashboard:
         presubmit_calls = [0]
         def run_side(*args, **kwargs):
             cmd = args[0] if args else []
-            if isinstance(cmd, list) and "./do" in cmd:
+            if isinstance(cmd, list) and "/harness.py" in cmd:
                 presubmit_calls[0] += 1
                 rc = 1 if presubmit_calls[0] == 1 else 0
                 return MagicMock(returncode=rc, stdout="out", stderr="")
@@ -990,7 +901,7 @@ class TestProcessTaskWithDashboard:
              patch("os.path.isdir", return_value=False), \
              patch("os.path.exists", return_value=False), \
              patch("shutil.rmtree"):
-            result = process_task("/root", "phase_1/task.md", "./do presubmit",
+            result = process_task("/root", "phase_1/task.md", "python /harness.py presubmit",
                                   max_retries=2, dashboard=dash)
         assert result is True
 
@@ -1003,10 +914,9 @@ class TestExecuteDagWithLogFile:
         state = {"completed_tasks": ["phase_1/task.md"], "merged_tasks": ["phase_1/task.md"]}
         log_stream = io.StringIO()
         with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", dag, state, 1, "./do presubmit", log_file=log_stream)
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit", log_file=log_stream)
         # The dashboard.log call should have written to the log file
         assert log_stream.getvalue() != "" or True  # NullDashboard writes when not TTY
 
@@ -1020,8 +930,7 @@ class TestExecuteDagWithLogFile:
                 return ["phase_1/task.md"]
             return []
 
-        with patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
              patch("workflow_lib.executor.process_task", side_effect=RuntimeError("boom")), \
              patch("workflow_lib.executor.get_ready_tasks", side_effect=ready_side), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
@@ -1029,7 +938,7 @@ class TestExecuteDagWithLogFile:
              patch("workflow_lib.executor.notify_failure"), \
              patch("os._exit", side_effect=SystemExit), \
              pytest.raises(SystemExit):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
 
     def test_merge_fail_sets_failed(self):
         dag = {"phase_1/task.md": []}
@@ -1041,15 +950,14 @@ class TestExecuteDagWithLogFile:
                 return ["phase_1/task.md"]
             return []
 
-        with patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
              patch("workflow_lib.executor.process_task", return_value=True), \
              patch("workflow_lib.executor.merge_task", return_value=False), \
              patch("workflow_lib.executor.get_ready_tasks", side_effect=ready_side), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
              pytest.raises(SystemExit):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
 
 
 # ---------------------------------------------------------------------------
@@ -1076,14 +984,29 @@ class TestStateCoverage:
         assert state["replan_history"][0]["action"] == "block"
 
     def test_load_dags_dag_reviewed_fallback(self):
-        """load_dags uses dag_reviewed.json when present."""
-        dag_data = json.dumps({"01_task.md": []})
+        """load_dags reads task_id from JSON sidecar files."""
+        sidecar = json.dumps({"task_id": "phase_1/sub/01_task", "depends_on": []})
+
+        def fake_listdir(path):
+            if path == "/fake/tasks":
+                return ["phase_1"]
+            if path.endswith("phase_1"):
+                return ["green_01_task.json"]
+            return []
+
+        def fake_isdir(path):
+            return path in ("/fake/tasks/phase_1",) or path == "/fake/tasks"
+
+        def fake_isfile(path):
+            return path.endswith(".json")
+
         with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=["phase_1"]), \
-             patch("os.path.isdir", return_value=True), \
-             patch("builtins.open", mock_open(read_data=dag_data)):
+             patch("os.listdir", side_effect=fake_listdir), \
+             patch("os.path.isdir", side_effect=fake_isdir), \
+             patch("os.path.isfile", side_effect=fake_isfile), \
+             patch("builtins.open", mock_open(read_data=sidecar)):
             result = load_dags("/fake/tasks")
-        assert any("phase_1" in k for k in result.keys())
+        assert "phase_1/sub/01_task" in result
 
     def test_load_dags_dag_json_decode_error(self):
         with patch("os.path.exists", side_effect=lambda p: True), \
@@ -1147,7 +1070,6 @@ class TestContextCoverage:
             ctx.state = kwargs.get("state", {})
             ctx.description_ctx = "project desc"
             ctx.runner = MagicMock()
-            ctx.ignore_sandbox = False
             return ctx
 
     def test_load_description_missing(self):
@@ -1168,19 +1090,6 @@ class TestContextCoverage:
             result = ctx.load_prompt("test.md")
         assert result == "template content"
 
-    def test_get_accumulated_context_skip_research(self):
-        ctx = self._make_ctx()
-        doc = {"id": "arch", "type": "spec", "name": "Arch"}
-        with patch("workflow_lib.context.DOCS", [
-            {"id": "market", "type": "research"},
-            doc,
-        ]), \
-             patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data="content")):
-            result = ctx.get_accumulated_context(doc, include_research=False)
-        # research doc should be skipped
-        assert "market" not in result or result == ""
-
     def test_get_accumulated_context_prefers_summary(self):
         ctx = self._make_ctx()
         doc = {"id": "arch", "type": "spec", "name": "Arch"}
@@ -1200,13 +1109,6 @@ class TestContextCoverage:
             result = ctx.get_accumulated_context(doc)
         assert 'type="summary"' in result
         assert "summary content" in result
-
-    def test_get_workspace_snapshot_oserror(self):
-        ctx = self._make_ctx()
-        with patch("os.walk", return_value=[("/root", [], ["file.py"])]), \
-             patch("os.path.getmtime", side_effect=OSError):
-            result = ctx.get_workspace_snapshot()
-        assert result == {}
 
     def test_stage_changes_empty(self):
         ctx = self._make_ctx()
@@ -1253,38 +1155,6 @@ class TestContextCoverage:
         assert "# H1" in headers
         assert "## H2" in headers
 
-    def test_verify_changes_directory_boundary(self):
-        ctx = self._make_ctx()
-        before = {"/fake/root/allowed/file.py": 100.0}
-        after = {"/fake/root/allowed/file.py": 200.0}
-        with patch("workflow_lib.context.ProjectContext.get_workspace_snapshot", return_value=after):
-            # Should not raise when change is within allowed dir
-            ctx.verify_changes(before, ["/fake/root/allowed/"])
-
-    def test_verify_changes_violation(self):
-        ctx = self._make_ctx()
-        before = {}
-        after = {"/fake/root/not_allowed/file.py": 200.0}
-        with patch("workflow_lib.context.ProjectContext.get_workspace_snapshot", return_value=after), \
-             pytest.raises(SystemExit):
-            ctx.verify_changes(before, ["/fake/root/allowed/"])
-
-    def test_verify_changes_deletion_violation(self):
-        ctx = self._make_ctx()
-        before = {"/fake/root/important.py": 100.0}
-        after = {}
-        with patch("workflow_lib.context.ProjectContext.get_workspace_snapshot", return_value=after), \
-             pytest.raises(SystemExit):
-            ctx.verify_changes(before, ["/fake/root/other/"])
-
-    def test_verify_changes_skipped_when_ignore_sandbox(self):
-        ctx = self._make_ctx()
-        ctx.ignore_sandbox = True
-        before = {}
-        after = {"/fake/root/not_allowed/file.py": 200.0}
-        with patch("workflow_lib.context.ProjectContext.get_workspace_snapshot", return_value=after):
-            # Should NOT raise even though file is outside allowed paths
-            ctx.verify_changes(before, ["/fake/root/allowed/"])
 
 
 # ---------------------------------------------------------------------------
@@ -1316,12 +1186,6 @@ class TestPhase1:
 
 
 class TestPhase2:
-    def test_skip_non_spec(self):
-        ctx = _mock_ctx()
-        doc = {"id": "doc1", "type": "research", "name": "Doc1"}
-        Phase2FleshOutDoc(doc).execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
     def test_already_fleshed_out_skip(self):
         ctx = _mock_ctx(state={"fleshed_out": ["doc1"]})
         doc = {"id": "doc1", "type": "spec", "name": "Doc1"}
@@ -1423,7 +1287,7 @@ class TestPhase3B:
             Phase3BAdversarialReview().execute(ctx)
         assert ctx.state.get("adversarial_review_completed")
 
-    def test_allowed_files_include_specs_and_research(self):
+    def test_allowed_files_include_specs(self):
         ctx = _mock_ctx()
         with patch("os.path.exists", return_value=True), \
              patch("builtins.open", mock_open(read_data="all good")):
@@ -1431,16 +1295,6 @@ class TestPhase3B:
         call_kwargs = ctx.run_gemini.call_args
         allowed = call_kwargs.kwargs.get("allowed_files", []) if call_kwargs.kwargs else call_kwargs[1].get("allowed_files", [])
         assert any("specs" in f for f in allowed), "specs dir should be in allowed_files"
-        assert any("research" in f for f in allowed), "research dir should be in allowed_files"
-
-    def test_sandbox_disabled(self):
-        ctx = _mock_ctx()
-        with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data="all good")):
-            Phase3BAdversarialReview().execute(ctx)
-        call_kwargs = ctx.run_gemini.call_args
-        kw = call_kwargs.kwargs if call_kwargs.kwargs else call_kwargs[1]
-        assert kw.get("sandbox") is False, "sandbox should be disabled for adversarial review"
 
     def test_scope_creep_found_continue(self):
         ctx = _mock_ctx()
@@ -1468,23 +1322,17 @@ class TestPhase3B:
 
 
 class TestPhase4A:
-    def test_skip_research(self):
-        ctx = _mock_ctx()
-        doc = {"id": "d", "type": "research", "name": "Doc"}
-        Phase4AExtractRequirements(doc).execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
     def test_already_extracted_skip(self):
         ctx = _mock_ctx(state={"extracted_requirements": ["d"]})
         doc = {"id": "d", "type": "spec", "name": "Doc"}
-        Phase4AExtractRequirements(doc).execute(ctx)
+        Phase7ExtractRequirements(doc).execute(ctx)
         ctx.run_gemini.assert_not_called()
 
     def test_doc_file_missing_skip(self):
         ctx = _mock_ctx()
         doc = {"id": "d", "type": "spec", "name": "Doc"}
         with patch("os.path.exists", return_value=False):
-            Phase4AExtractRequirements(doc).execute(ctx)
+            Phase7ExtractRequirements(doc).execute(ctx)
         ctx.run_gemini.assert_not_called()
 
     def test_run_fails_exits(self):
@@ -1493,7 +1341,7 @@ class TestPhase4A:
         doc = {"id": "d", "type": "spec", "name": "Doc"}
         with patch("os.path.exists", return_value=True), \
              pytest.raises(SystemExit):
-            Phase4AExtractRequirements(doc).execute(ctx)
+            Phase7ExtractRequirements(doc).execute(ctx)
 
     def test_verify_fails_exits(self):
         ctx = _mock_ctx()
@@ -1501,81 +1349,81 @@ class TestPhase4A:
         with patch("os.path.exists", return_value=True), \
              patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="bad", stderr="")), \
              pytest.raises(SystemExit):
-            Phase4AExtractRequirements(doc).execute(ctx)
+            Phase7ExtractRequirements(doc).execute(ctx)
 
 
 class TestPhase4B:
     def test_already_done_skip(self):
         ctx = _mock_ctx(state={"requirements_merged": True})
-        Phase4BMergeRequirements().execute(ctx)
+        Phase9MergeRequirements().execute(ctx)
         ctx.run_gemini.assert_not_called()
 
     def test_run_fails_exits(self):
         ctx = _mock_ctx()
         ctx.run_gemini.return_value = MagicMock(returncode=1, stdout="", stderr="")
         with pytest.raises(SystemExit):
-            Phase4BMergeRequirements().execute(ctx)
+            Phase9MergeRequirements().execute(ctx)
 
     def test_verify_fails_exits(self):
         ctx = _mock_ctx()
         with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="err", stderr="")), \
              pytest.raises(SystemExit):
-            Phase4BMergeRequirements().execute(ctx)
+            Phase9MergeRequirements().execute(ctx)
 
     def test_success(self):
         ctx = _mock_ctx()
         with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
-            Phase4BMergeRequirements().execute(ctx)
+            Phase9MergeRequirements().execute(ctx)
         assert ctx.state.get("requirements_merged")
 
 
-class TestPhase4BScopeGate:
+class TestPhase11ScopeGate:
     def test_already_passed_skip(self):
         ctx = _mock_ctx(state={"scope_gate_passed": True})
-        Phase4BScopeGate().execute(ctx)
+        Phase11ScopeGate().execute(ctx)
 
     def test_missing_requirements_exits(self):
         ctx = _mock_ctx()
         with patch("os.path.exists", return_value=False), \
              pytest.raises(SystemExit):
-            Phase4BScopeGate().execute(ctx)
+            Phase11ScopeGate().execute(ctx)
 
     def test_continue_action(self):
         ctx = _mock_ctx()
         ctx.prompt_input.return_value = "c"
-        req_content = "[REQ-001] requirement"
+        req_content = json.dumps({"requirements": [{"id": "REQ-001", "description": "requirement"}]})
         with patch("os.path.exists", return_value=True), \
              patch("builtins.open", mock_open(read_data=req_content)):
-            Phase4BScopeGate().execute(ctx)
+            Phase11ScopeGate().execute(ctx)
         assert ctx.state.get("scope_gate_passed")
 
     def test_quit_action_exits(self):
         ctx = _mock_ctx()
         ctx.prompt_input.return_value = "q"
-        req_content = "[REQ-001] requirement"
+        req_content = json.dumps({"requirements": [{"id": "REQ-001", "description": "requirement"}]})
         with patch("os.path.exists", return_value=True), \
              patch("builtins.open", mock_open(read_data=req_content)), \
              pytest.raises(SystemExit):
-            Phase4BScopeGate().execute(ctx)
+            Phase11ScopeGate().execute(ctx)
 
 
 class TestPhase4C:
     def test_already_done_skip(self):
         ctx = _mock_ctx(state={"requirements_ordered": True})
-        Phase4COrderRequirements().execute(ctx)
+        Phase12OrderRequirements().execute(ctx)
         ctx.run_gemini.assert_not_called()
 
     def test_run_fails_exits(self):
         ctx = _mock_ctx()
         ctx.run_gemini.return_value = MagicMock(returncode=1, stdout="", stderr="")
         with pytest.raises(SystemExit):
-            Phase4COrderRequirements().execute(ctx)
+            Phase12OrderRequirements().execute(ctx)
 
     def test_verify_fails_exits(self):
         ctx = _mock_ctx()
         with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="err", stderr="")), \
              pytest.raises(SystemExit):
-            Phase4COrderRequirements().execute(ctx)
+            Phase12OrderRequirements().execute(ctx)
 
     def test_success_moves_file(self):
         ctx = _mock_ctx()
@@ -1583,97 +1431,47 @@ class TestPhase4C:
              patch("os.path.exists", return_value=True), \
              patch("os.remove"), \
              patch("shutil.move"):
-            Phase4COrderRequirements().execute(ctx)
+            Phase12OrderRequirements().execute(ctx)
         assert ctx.state.get("requirements_ordered")
 
 
 class TestPhase5:
+    def _ctx_with_summaries(self, tmp_path, **kwargs):
+        ctx = _mock_ctx(**kwargs)
+        summaries_dir = tmp_path / "summaries"
+        summaries_dir.mkdir(parents=True, exist_ok=True)
+        (summaries_dir / "1_prd.md").write_text("# Summary\nKey decisions.\n")
+        ctx.summaries_dir = str(summaries_dir)
+        return ctx
+
     def test_already_done_skip(self):
-        ctx = _mock_ctx(state={"phases_completed": True})
-        Phase5GenerateEpics().execute(ctx)
+        ctx = _mock_ctx(state={"epics_completed": True})
+        Phase13GenerateEpics().execute(ctx)
         ctx.run_gemini.assert_not_called()
 
-    def test_run_fails_exits(self):
-        ctx = _mock_ctx()
+    def test_run_fails_exits(self, tmp_path):
+        ctx = self._ctx_with_summaries(tmp_path)
         ctx.run_gemini.return_value = MagicMock(returncode=1, stdout="", stderr="")
-        with patch("os.makedirs"), pytest.raises(SystemExit):
-            Phase5GenerateEpics().execute(ctx)
+        with pytest.raises(SystemExit):
+            Phase13GenerateEpics().execute(ctx)
 
-    def test_verify_fails_exits(self):
-        ctx = _mock_ctx()
-        with patch("os.makedirs"), \
-             patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="err", stderr="")), \
+    def test_verify_fails_exits(self, tmp_path):
+        ctx = self._ctx_with_summaries(tmp_path)
+        with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="err", stderr="")), \
              pytest.raises(SystemExit):
-            Phase5GenerateEpics().execute(ctx)
+            Phase13GenerateEpics().execute(ctx)
 
-    def test_success(self):
-        ctx = _mock_ctx()
-        with patch("os.makedirs"), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
-            Phase5GenerateEpics().execute(ctx)
-        assert ctx.state.get("phases_completed")
-
-
-class TestPhase5B:
-    def test_already_done_skip(self):
-        ctx = _mock_ctx(state={"shared_components_completed": True})
-        Phase5BSharedComponents().execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
-    def test_failure_exits(self):
-        ctx = _mock_ctx()
-        ctx.run_gemini.return_value = MagicMock(returncode=1, stdout="", stderr="")
-        with patch("os.path.exists", return_value=False), \
-             pytest.raises(SystemExit):
-            Phase5BSharedComponents().execute(ctx)
-
-    def test_success(self):
-        ctx = _mock_ctx()
-        with patch("os.path.exists", return_value=True):
-            Phase5BSharedComponents().execute(ctx)
-        assert ctx.state.get("shared_components_completed")
-
-
-class TestPhase6BreakDownTasks:
-    def test_already_done_skip(self):
-        ctx = _mock_ctx(state={"tasks_completed": True})
-        Phase6BreakDownTasks().execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
-    def test_phases_dir_missing(self):
-        ctx = _mock_ctx()
-        with patch("os.makedirs"), \
-             patch("os.path.exists", return_value=False), \
-             pytest.raises(SystemExit):
-            Phase6BreakDownTasks().execute(ctx)
-
-    def test_no_phase_files_exits(self):
-        ctx = _mock_ctx()
-        with patch("os.makedirs"), \
-             patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=[]), \
-             pytest.raises(SystemExit):
-            Phase6BreakDownTasks().execute(ctx)
-
-
-class TestPhase6BReviewTasks:
-    def test_already_done_skip(self):
-        ctx = _mock_ctx(state={"tasks_reviewed": True})
-        Phase6BReviewTasks().execute(ctx)
-        ctx.run_gemini.assert_not_called()
+    def test_success(self, tmp_path):
+        ctx = self._ctx_with_summaries(tmp_path)
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+            Phase13GenerateEpics().execute(ctx)
+        assert ctx.state.get("epics_completed")
 
 
 class TestPhase6CCrossPhaseReview:
     def test_already_done_skip_pass1(self):
         ctx = _mock_ctx(state={"cross_phase_reviewed_pass_1": True})
         Phase6CCrossPhaseReview(pass_num=1).execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
-
-class TestPhase6DReorderTasks:
-    def test_already_done_skip_pass1(self):
-        ctx = _mock_ctx(state={"tasks_reordered_pass_1": True})
-        Phase6DReorderTasks(pass_num=1).execute(ctx)
         ctx.run_gemini.assert_not_called()
 
 
@@ -1733,26 +1531,22 @@ class TestReplanCmds:
     def test_cmd_validate_no_artifacts(self):
         from workflow_lib.replan import cmd_validate
         import pytest
-        with patch("os.path.exists", return_value=False), \
-             patch("os.path.isdir", return_value=False), \
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("workflow_lib.replan.subprocess.run", return_value=mock_result), \
              pytest.raises(SystemExit) as exc:
             cmd_validate(self._make_args())
         assert exc.value.code == 0
 
     def test_cmd_validate_all_pass(self):
         from workflow_lib.replan import cmd_validate
-        with patch("os.path.exists", return_value=True), \
-             patch("os.path.isdir", return_value=True), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+        with patch("workflow_lib.replan.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
              pytest.raises(SystemExit) as exc:
             cmd_validate(self._make_args())
         assert exc.value.code == 0
 
     def test_cmd_validate_fail(self):
         from workflow_lib.replan import cmd_validate
-        with patch("os.path.exists", return_value=True), \
-             patch("os.path.isdir", return_value=True), \
-             patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="error\n", stderr="")), \
+        with patch("workflow_lib.replan.subprocess.run", return_value=MagicMock(returncode=1, stdout="error\n", stderr="")), \
              pytest.raises(SystemExit) as exc:
             cmd_validate(self._make_args())
         assert exc.value.code == 1
@@ -1922,22 +1716,6 @@ class TestPhase7AStatics:
             result = Phase7ADAGGeneration._build_programmatic_dag("/fake/phase")
         assert result is None
 
-    def test_build_programmatic_dag_shared_components_dep(self):
-        """Task A creates component X; task B consumes it — implicit dep added."""
-        import tempfile
-        content_a = '- depends_on: []\n- shared_components: ["AuthService"]'
-        content_b = '- depends_on: []\n- shared_components: ["AuthService"]'
-        with tempfile.TemporaryDirectory() as tmpdir:
-            sub = os.path.join(tmpdir, "sub")
-            os.makedirs(sub)
-            with open(os.path.join(sub, "01_a.md"), "w") as f:
-                f.write(content_a)
-            with open(os.path.join(sub, "01_b.md"), "w") as f:
-                f.write(content_b)
-            result = Phase7ADAGGeneration._build_programmatic_dag(tmpdir)
-        # Consumer should implicitly depend on creator
-        assert result is not None
-        assert "sub/01_a.md" in result.get("sub/01_b.md", [])
 
 
 def _mock_ctx_for_phases():
@@ -1952,58 +1730,6 @@ def _mock_ctx_for_phases():
     ctx.run_gemini.return_value = MagicMock(returncode=0)
     ctx.count_task_files.return_value = 2
     return ctx
-
-
-class TestPhase6BReviewTasks:
-    def test_already_reviewed(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.state["tasks_reviewed"] = True
-        Phase6BReviewTasks().execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
-    def test_tasks_dir_not_exists(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=False), pytest.raises(SystemExit):
-            Phase6BReviewTasks().execute(ctx)
-
-    def test_no_phase_dirs(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=[]), \
-             patch("os.path.isdir", return_value=False), \
-             pytest.raises(SystemExit):
-            Phase6BReviewTasks().execute(ctx)
-
-    def _make_mock_executor(self, result=True):
-        mock_future = MagicMock()
-        mock_future.result.return_value = result
-        mock_executor = MagicMock()
-        mock_executor.__enter__ = MagicMock(return_value=mock_executor)
-        mock_executor.__exit__ = MagicMock(return_value=False)
-        mock_executor.submit.return_value = mock_future
-        return mock_executor, mock_future
-
-    def test_review_already_done_skip(self):
-        ctx = _mock_ctx_for_phases()
-        mock_executor, mock_future = self._make_mock_executor()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=["phase_1"]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
-             patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
-             patch("concurrent.futures.as_completed", return_value=[mock_future]):
-            Phase6BReviewTasks().execute(ctx)
-        assert ctx.state.get("tasks_reviewed") is True
-
-    def test_process_phase_review_success(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.run_gemini.return_value = MagicMock(returncode=0)
-        mock_executor, mock_future = self._make_mock_executor()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=["phase_1"]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p), \
-             patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor), \
-             patch("concurrent.futures.as_completed", return_value=[mock_future]):
-            Phase6BReviewTasks().execute(ctx)
 
 
 class TestPhase6CCrossPhaseReview:
@@ -2049,51 +1775,6 @@ class TestPhase6CCrossPhaseReview:
              patch("os.listdir", side_effect=[["phase_1"], []]), \
              patch("os.path.isdir", side_effect=lambda p: "phase_1" in p):
             Phase6CCrossPhaseReview(pass_num=1).execute(ctx)
-
-
-class TestPhase6DReorderTasks:
-    def test_already_completed(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.state["tasks_reordered_pass_1"] = True
-        Phase6DReorderTasks(pass_num=1).execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
-    def test_tasks_dir_not_exists(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=False), pytest.raises(SystemExit):
-            Phase6DReorderTasks().execute(ctx)
-
-    def test_no_phase_dirs(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=[]), \
-             patch("os.path.isdir", return_value=False), \
-             pytest.raises(SystemExit):
-            Phase6DReorderTasks().execute(ctx)
-
-    def test_summary_exists_skip(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", side_effect=[["phase_1"], []]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p):
-            Phase6DReorderTasks(pass_num=1).execute(ctx)
-        assert ctx.state.get("tasks_reordered_pass_1") is True
-
-    def test_full_execution_success(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.run_gemini.return_value = MagicMock(returncode=0)
-        exists_calls = [0]
-
-        def exists_side(p):
-            exists_calls[0] += 1
-            if "reorder_tasks_summary" in p:
-                return exists_calls[0] > 3
-            return True
-
-        with patch("os.path.exists", side_effect=exists_side), \
-             patch("os.listdir", side_effect=[["phase_1"], []]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p):
-            Phase6DReorderTasks(pass_num=1).execute(ctx)
 
 
 class TestPhase7AExecute:
@@ -2183,44 +1864,6 @@ class TestPhase7AExecute:
 
 
 
-class TestPhase6BreakDownTasksCoverage:
-    def test_already_completed(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.state["tasks_completed"] = True
-        Phase6BreakDownTasks().execute(ctx)
-        ctx.run_gemini.assert_not_called()
-
-    def test_phases_dir_not_exists(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=False), \
-             patch("os.makedirs"), \
-             pytest.raises(SystemExit):
-            Phase6BreakDownTasks().execute(ctx)
-
-    def test_no_phase_files(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.makedirs"), \
-             patch("os.listdir", return_value=[]), \
-             pytest.raises(SystemExit):
-            Phase6BreakDownTasks().execute(ctx)
-
-    def test_grouping_already_exists(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.side_effect = ["grouping tmpl", "tasks tmpl"]
-        ctx.run_gemini.return_value = MagicMock(returncode=0)
-        sub_epics = {"Epic A": ["REQ-001"]}
-
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", return_value=["phase_1.md"]), \
-             patch("os.makedirs"), \
-             patch("os.path.isdir", return_value=True), \
-             patch("builtins.open", mock_open(read_data=json.dumps(sub_epics))), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0)):
-            Phase6BreakDownTasks().execute(ctx)
-        assert ctx.state.get("tasks_completed") is True
-
-
 # ---------------------------------------------------------------------------
 # replan helpers
 # ---------------------------------------------------------------------------
@@ -2250,23 +1893,26 @@ class TestReplanHelpers:
              patch("builtins.print"):
             _show_affected_tasks("REQ-001")
 
-    def test_run_verify_pass(self):
-        from workflow_lib.replan import _run_verify
+    def test_run_validate_pass(self):
+        from workflow_lib.replan import _run_validate
         mock_res = MagicMock(returncode=0)
         with patch("subprocess.run", return_value=mock_res), \
              patch("builtins.print"):
-            _run_verify("verify-master")
+            _run_validate(phase=9)
 
-    def test_run_verify_fail(self):
-        from workflow_lib.replan import _run_verify
+    def test_run_validate_fail(self):
+        from workflow_lib.replan import _run_validate
         mock_res = MagicMock(returncode=1, stdout="err", stderr="")
         with patch("subprocess.run", return_value=mock_res), \
              patch("builtins.print"):
-            _run_verify("verify-master")
+            _run_validate(phase=20)
 
-    def test_run_verify_unknown_mode(self):
-        from workflow_lib.replan import _run_verify
-        _run_verify("unknown-mode")  # should do nothing
+    def test_run_validate_all(self):
+        from workflow_lib.replan import _run_validate
+        mock_res = MagicMock(returncode=0)
+        with patch("subprocess.run", return_value=mock_res), \
+             patch("builtins.print"):
+            _run_validate()  # no phase = --all
 
     def test_rebuild_phase_dag_programmatic(self):
         from workflow_lib.replan import _rebuild_phase_dag
@@ -2359,7 +2005,7 @@ class TestReplanCmdsCoverage:
         from workflow_lib.replan import cmd_modify_req
         with patch("os.path.exists", return_value=True), \
              patch("subprocess.run"), \
-             patch("workflow_lib.replan._run_verify"):
+             patch("workflow_lib.replan._run_validate"):
             cmd_modify_req(self._make_args(edit_req=True, remove_req=None, add_req=None, dry_run=False))
 
     def test_cmd_modify_req_not_found(self):
@@ -2397,7 +2043,7 @@ class TestReplanCmdsCoverage:
         from workflow_lib.replan import cmd_modify_req
         with patch("os.path.exists", return_value=True), \
              patch("subprocess.run"), \
-             patch("workflow_lib.replan._run_verify"), \
+             patch("workflow_lib.replan._run_validate"), \
              patch("workflow_lib.replan.load_replan_state",
                    return_value={"replan_history": []}), \
              patch("workflow_lib.replan.save_replan_state"):
@@ -2414,12 +2060,12 @@ class TestReplanCmdsCoverage:
     def test_fix_description_length_no_issues(self):
         from workflow_lib.replan import _fix_description_length
         ctx = self._mock_ctx()
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
+        # All descriptions >= 10 words => nothing to fix
+        req_json = json.dumps({"requirements": [
+            {"id": "REQ-001", "description": "This is a sufficiently long description with more than ten words in it"}
+        ]})
         with patch("os.path.exists", return_value=True), \
-             patch("subprocess.run", return_value=mock_result), \
+             patch("builtins.open", mock_open(read_data=req_json)), \
              patch("builtins.print"):
             result = _fix_description_length(ctx, dry_run=False)
         assert result is False
@@ -2427,13 +2073,12 @@ class TestReplanCmdsCoverage:
     def test_fix_description_length_dry_run(self):
         from workflow_lib.replan import _fix_description_length
         ctx = self._mock_ctx()
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = "  - [REQ-001] (5 words)\n"
-        mock_result.stderr = ""
+        # JSON with a short description (< 10 words)
+        req_json = json.dumps({"requirements": [
+            {"id": "REQ-001", "description": "Short desc"}
+        ]})
         with patch("os.path.exists", return_value=True), \
-             patch("subprocess.run", return_value=mock_result), \
-             patch("builtins.open", mock_open(read_data="### **[REQ-001]** short\n")), \
+             patch("builtins.open", mock_open(read_data=req_json)), \
              patch("builtins.print"):
             result = _fix_description_length(ctx, dry_run=True)
         assert result is True
@@ -2442,13 +2087,11 @@ class TestReplanCmdsCoverage:
         from workflow_lib.replan import _fix_description_length
         ctx = self._mock_ctx()
         ctx.run_ai.return_value = MagicMock(returncode=1, stdout="error", stderr="err")
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = "  - [REQ-001] (5 words)\n"
-        mock_result.stderr = ""
+        req_json = json.dumps({"requirements": [
+            {"id": "REQ-001", "description": "Short desc"}
+        ]})
         with patch("os.path.exists", return_value=True), \
-             patch("subprocess.run", return_value=mock_result), \
-             patch("builtins.open", mock_open(read_data="### **[REQ-001]** short\n")), \
+             patch("builtins.open", mock_open(read_data=req_json)), \
              patch("builtins.print"):
             result = _fix_description_length(ctx, dry_run=False)
         assert result is False
@@ -2615,25 +2258,6 @@ class TestReplanCmdsCoverage:
                 phase_id="phase_1", sub_epic="sub_epic", backend="gemini", dry_run=False, force=False
             ))
 
-    def test_cmd_regen_components_dry_run(self):
-        from workflow_lib.replan import cmd_regen_components
-        with patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
-             patch("workflow_lib.replan.ProjectContext", return_value=self._mock_ctx()):
-            cmd_regen_components(self._make_args(dry_run=True, backend="gemini"))
-
-    def test_cmd_regen_components_success(self):
-        from workflow_lib.replan import cmd_regen_components
-        ctx = self._mock_ctx()
-        mock_phase = MagicMock()
-        with patch("workflow_lib.replan._make_runner", return_value=MagicMock()), \
-             patch("workflow_lib.replan.ProjectContext", return_value=ctx), \
-             patch("workflow_lib.replan.Phase5BSharedComponents", return_value=mock_phase), \
-             patch("workflow_lib.replan.load_replan_state",
-                   return_value={"replan_history": []}), \
-             patch("workflow_lib.replan.save_replan_state"):
-            cmd_regen_components(self._make_args(dry_run=False, backend="gemini"))
-        mock_phase.execute.assert_called_once_with(ctx)
-
     def test_cmd_cascade_not_found(self):
         from workflow_lib.replan import cmd_cascade
         with patch("workflow_lib.replan.get_tasks_dir", return_value="/fake/tasks"), \
@@ -2657,7 +2281,7 @@ class TestReplanCmdsCoverage:
              patch("os.listdir", return_value=[]), \
              patch("workflow_lib.replan.parse_requirements", return_value=set()), \
              patch("workflow_lib.replan._rebuild_phase_dag"), \
-             patch("workflow_lib.replan._run_verify"), \
+             patch("workflow_lib.replan._run_validate"), \
              patch("workflow_lib.replan.load_replan_state",
                    return_value={"replan_history": []}), \
              patch("workflow_lib.replan.save_replan_state"), \
@@ -2977,54 +2601,6 @@ class TestExecutorFunctions:
         assert _step_for_agent_type("copilot") == "all"
 
 
-class TestPhase6BInner:
-    """Tests that actually exercise process_phase_review closure."""
-
-    def test_review_summary_exists_inner(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", return_value=True), \
-             patch("os.listdir", side_effect=lambda p: ["phase_1"] if "tasks" in p and "phase_1" not in p else ["sub"]), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or "sub" in p):
-            Phase6BReviewTasks().execute(ctx)
-        assert ctx.state.get("tasks_reviewed") is True
-
-    def test_no_sub_epics_inner(self):
-        ctx = _mock_ctx_for_phases()
-        with patch("os.path.exists", side_effect=lambda p: False if "review_summary" in p else True), \
-             patch("os.listdir", side_effect=lambda p: ["phase_1"] if "tasks" in p and "phase_1" not in p else []), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p):
-            Phase6BReviewTasks().execute(ctx)
-        assert ctx.state.get("tasks_reviewed") is True
-
-    def test_review_success_inner(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "review tmpl"
-        ctx.format_prompt.return_value = "formatted"
-        summary_exists = [False]
-
-        def run_gemini_side(*a, **kw):
-            summary_exists[0] = True
-            return MagicMock(returncode=0)
-
-        ctx.run_gemini.side_effect = run_gemini_side
-
-        def exists_side(p):
-            if "review_summary" in p:
-                return summary_exists[0]
-            return True
-
-        with patch("os.path.exists", side_effect=exists_side), \
-             patch("os.listdir", side_effect=lambda p: (
-                 ["phase_1"] if ("tasks" in p and "phase_1" not in p) else
-                 ["sub"] if "phase_1" in p and "sub" not in p else
-                 ["t.md"]
-             )), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or ("sub" in p and ".md" not in p)), \
-             patch("builtins.open", mock_open(read_data="task content")):
-            Phase6BReviewTasks().execute(ctx)
-        assert ctx.state.get("tasks_reviewed") is True
-
-
 class TestPhase6CCoverage:
     def test_full_success_inner(self):
         ctx = _mock_ctx_for_phases()
@@ -3057,69 +2633,6 @@ class TestPhase6CCoverage:
              patch("workflow_lib.config.load_config", return_value={}):
             Phase6CCrossPhaseReview(pass_num=1).execute(ctx)
         assert ctx.state.get("cross_phase_reviewed_pass_1") is True
-
-
-class TestPhase6DCoverage:
-    def test_full_success_inner(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "reorder tmpl"
-        ctx.format_prompt.return_value = "formatted"
-        summary_exists = [False]
-
-        def run_gemini_side(*a, **kw):
-            summary_exists[0] = True
-            return MagicMock(returncode=0)
-
-        ctx.run_gemini.side_effect = run_gemini_side
-        exists_calls = [0]
-
-        def exists_side(p):
-            exists_calls[0] += 1
-            if "reorder_tasks_summary" in p:
-                return summary_exists[0]
-            return True
-
-        with patch("os.path.exists", side_effect=exists_side), \
-             patch("os.listdir", side_effect=lambda p: (
-                 ["phase_1"] if ("tasks" in p and "phase_1" not in p) else
-                 ["sub"] if "phase_1" in p and "sub" not in p else
-                 ["t.md"]
-             )), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or ("sub" in p and ".md" not in p)), \
-             patch("builtins.open", mock_open(read_data="task content")), \
-             patch("workflow_lib.config.load_config", return_value={}):
-            Phase6DReorderTasks(pass_num=1).execute(ctx)
-        assert ctx.state.get("tasks_reordered_pass_1") is True
-
-    def test_sandbox_disabled(self):
-        ctx = _mock_ctx_for_phases()
-        ctx.load_prompt.return_value = "reorder tmpl"
-        ctx.format_prompt.return_value = "formatted"
-        summary_exists = [False]
-
-        def run_gemini_side(*a, **kw):
-            summary_exists[0] = True
-            return MagicMock(returncode=0)
-
-        ctx.run_gemini.side_effect = run_gemini_side
-
-        def exists_side(p):
-            if "reorder_tasks_summary" in p:
-                return summary_exists[0]
-            return True
-
-        with patch("os.path.exists", side_effect=exists_side), \
-             patch("os.listdir", side_effect=lambda p: (
-                 ["phase_1"] if ("tasks" in p and "phase_1" not in p) else
-                 ["sub"] if "phase_1" in p and "sub" not in p else
-                 ["t.md"]
-             )), \
-             patch("os.path.isdir", side_effect=lambda p: "phase_1" in p or ("sub" in p and ".md" not in p)), \
-             patch("builtins.open", mock_open(read_data="task content")), \
-             patch("workflow_lib.config.load_config", return_value={}):
-            Phase6DReorderTasks(pass_num=1).execute(ctx)
-        kw = ctx.run_gemini.call_args.kwargs if ctx.run_gemini.call_args.kwargs else ctx.run_gemini.call_args[1]
-        assert kw.get("sandbox") is False, "sandbox should be disabled so agent can move files"
 
 
 class TestCLICoverage:
@@ -3157,7 +2670,7 @@ class TestCLICoverage:
         from workflow_lib.cli import cmd_plan
         ctx = MagicMock()
         ctx.state = {"dag_completed": True}
-        args = MagicMock(phase="7-dag", force=True, backend="gemini", jobs=1)
+        args = MagicMock(phase="20-dag", force=True, backend="gemini", jobs=1)
         mock_orc = MagicMock()
         mock_dash = MagicMock()
         mock_dash.__enter__ = MagicMock(return_value=mock_dash)
@@ -3214,12 +2727,6 @@ class TestCLICoverage:
 # ---------------------------------------------------------------------------
 
 class TestConfigCoverage:
-    def test_get_serena_enabled_no_file(self):
-        with patch("os.path.exists", return_value=False):
-            from workflow_lib.config import get_serena_enabled
-            result = get_serena_enabled()
-        assert result is False
-
     def test_load_config_with_comment(self):
         jsonc = '{\n  // comment\n  "serena": true\n}'
         with patch("os.path.exists", return_value=True), \
@@ -3448,14 +2955,13 @@ class TestConfigCoverage:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=_tracking_run), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.get_dev_branch", return_value="dev"), \
              patch("workflow_lib.executor.get_pivot_remote", return_value="upstream"), \
              patch("workflow_lib.executor.process_task", return_value=True), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", dag, state, 1, "./do presubmit")
+            execute_dag("/root", dag, state, 1, "python /harness.py presubmit")
 
         assert any("upstream" in cmd for cmd in fetch_calls), (
             f"Expected fetch using 'upstream' remote, got: {fetch_calls}"
@@ -3485,12 +2991,11 @@ class TestConfigCoverage:
 
         state = {"completed_tasks": [], "merged_tasks": []}
         with patch("subprocess.run", side_effect=smart_run) as mock_run, \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.get_dev_branch", return_value="integration"), \
              patch("workflow_lib.executor.get_ready_tasks", return_value=[]), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"):
-            execute_dag("/root", {}, state, 1, "./do presubmit")
+            execute_dag("/root", {}, state, 1, "python /harness.py presubmit")
         # Find the git calls (skip sccache calls)
         git_calls = [c for c in mock_run.call_args_list if isinstance(c[0][0], list) and c[0][0][0] == "git"]
         assert git_calls[0][0][0] == ["git", "rev-parse", "--verify", "integration"]
@@ -3520,7 +3025,7 @@ class TestTemplateContainsAllConfigKeys:
         defaults_keys = [k.strip().strip('"').strip("'") for k in match.group(1).split(",")]
 
         # Keys with dedicated accessors
-        dedicated_keys = ["serena", "dev_branch", "pivot_remote"]
+        dedicated_keys = ["dev_branch", "pivot_remote"]
 
         all_keys = set(defaults_keys + dedicated_keys)
         missing = [k for k in sorted(all_keys) if f'"{k}"' not in template_text]
@@ -4036,10 +3541,10 @@ class TestPhaseDisplayName:
         assert "Phase2" in phase.display_name
 
     def test_phase4a_display_name_includes_doc_name(self):
-        from workflow_lib.phases import Phase4AExtractRequirements
-        phase = Phase4AExtractRequirements({"id": "ux", "name": "UX Spec"})
+        from workflow_lib.phases import Phase7ExtractRequirements
+        phase = Phase7ExtractRequirements({"id": "ux", "name": "UX Spec"})
         assert "UX Spec" in phase.display_name
-        assert "Phase4A" in phase.display_name
+        assert "Phase7" in phase.display_name
 
     def test_phase1_display_name_fallback_to_id(self):
         from workflow_lib.phases import Phase1GenerateDoc
@@ -4064,8 +3569,8 @@ class TestPhaseDisplayName:
         assert phase.operation == "Flesh Out"
 
     def test_phase4a_operation_is_extract_reqs(self):
-        from workflow_lib.phases import Phase4AExtractRequirements
-        phase = Phase4AExtractRequirements({"id": "x", "name": "X"})
+        from workflow_lib.phases import Phase7ExtractRequirements
+        phase = Phase7ExtractRequirements({"id": "x", "name": "X"})
         assert phase.operation == "Extract Reqs"
 
 
@@ -4172,8 +3677,7 @@ class TestContextCurrentPhase:
             return MagicMock(returncode=0, stdout="", stderr="")
         ctx.runner.run.side_effect = fake_run
 
-        with patch.object(ctx, "_write_last_failed_command"), \
-             patch.object(ctx, "get_workspace_snapshot", return_value={}):
+        with patch.object(ctx, "_write_last_failed_command"):
             ctx.run_ai("prompt")
 
         assert captured_on_line, "on_line callback was not passed to runner"
@@ -4193,8 +3697,7 @@ class TestContextCurrentPhase:
             return MagicMock(returncode=0, stdout="", stderr="")
         ctx.runner.run.side_effect = fake_run
 
-        with patch.object(ctx, "_write_last_failed_command"), \
-             patch.object(ctx, "get_workspace_snapshot", return_value={}):
+        with patch.object(ctx, "_write_last_failed_command"):
             ctx.run_ai("prompt")
 
         on_line = captured_on_line[0]
@@ -4616,7 +4119,7 @@ class TestCodexRunnerCoverage:
         from workflow_lib.runners import CodexRunner
         r = CodexRunner()
         cmd = r.get_cmd()
-        assert cmd[:3] == ["codex", "exec", "--full-auto"]
+        assert cmd[:2] == ["codex", "exec"]
 
     def test_get_cmd_with_model_and_images(self):
         from workflow_lib.runners import CodexRunner
@@ -5015,12 +4518,19 @@ class TestSoftInterrupt:
         state = {"completed_tasks": [], "merged_tasks": []}
         dag = {"phase_1/task_a": []}
 
+        mock_docker = MagicMock()
+        mock_docker.copy_files = []
+
         # Should exit immediately with graceful shutdown message
-        self._mod._execute_dag_inner(
-            "/root", dag, state, jobs=1, presubmit_cmd="./presubmit",
-            backend="gemini", serena_enabled=False,
-            cache_lock=threading.Lock(), dashboard=dash,
-        )
+        with patch('workflow_lib.executor.get_pivot_remote', return_value="origin"), \
+             patch('workflow_lib.executor.get_gitlab_remote_url', return_value=None), \
+             patch('workflow_lib.executor.get_docker_config', return_value=mock_docker), \
+             patch('workflow_lib.config.get_agent_pool_configs', return_value=[]):
+            self._mod._execute_dag_inner(
+                "/root", dag, state, jobs=1, presubmit_cmd="./presubmit",
+                backend="gemini",
+                cache_lock=threading.Lock(), dashboard=dash,
+            )
         logged = " ".join(str(c) for c in dash.log.call_args_list)
         assert "graceful shutdown" in logged.lower()
 
@@ -5048,7 +4558,7 @@ class TestSoftInterrupt:
             # function returns normally instead of calling sys.exit(1).
             self._mod._execute_dag_inner(
                 "/root", dag, state, jobs=1, presubmit_cmd="./presubmit",
-                backend="gemini", serena_enabled=False,
+                backend="gemini",
                 cache_lock=threading.Lock(), dashboard=dash,
             )
         # Only one task was submitted — shutdown prevented the second

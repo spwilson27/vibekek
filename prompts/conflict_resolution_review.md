@@ -4,8 +4,11 @@ You are a Principal Systems Architect specializing in technical conflict resolut
 # ORIGINAL PROJECT DESCRIPTION (This is the ONLY source of truth)
 {description_ctx}
 
+# ALL SPEC DOCUMENTS (for cross-reference)
+{accumulated_context}
+
 # TASK
-1. Read all documents in the `docs/plan/specs/` and `docs/plan/research/` directories.
+1. Read all documents in the `docs/plan/specs/` directory.
 2. Systematically compare every pair of documents for contradictions.
 3. For each contradiction found, resolve it using the priority hierarchy below.
 4. Edit the lower-priority document to align with the higher-priority one.
@@ -17,7 +20,6 @@ You are a Principal Systems Architect specializing in technical conflict resolut
 2. **PRD** (docs/plan/specs/1_prd.md) — Defines WHAT to build.
 3. **TAS** (docs/plan/specs/2_tas.md) — Defines HOW to build it.
 4. **Other Spec Documents** — By numeric prefix (3_mcp_design, 4_user_features, etc.)
-5. **Research Documents** — Advisory only; never override specs.
 
 # WHAT COUNTS AS A CONFLICT
 

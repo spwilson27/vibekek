@@ -15,6 +15,7 @@ import subprocess
 import sys
 import json
 import re
+import threading
 from typing import Any, Callable, List, Dict, Optional, Union
 
 from .constants import TOOLS_DIR, INPUT_DIR, GEN_STATE_FILE, DOCS
@@ -158,15 +159,21 @@ class ProjectContext:
         self.prompts_dir = os.path.join(TOOLS_DIR, "prompts")
         self.state_file = GEN_STATE_FILE
         self.input_dir = INPUT_DIR
-        
+
         self.requirements_dir = os.path.join(self.plan_dir, "requirements")
         self.summaries_dir = os.path.join(self.plan_dir, "summaries")
 
         self.runner = runner or GeminiRunner()
         self.dashboard = dashboard
-        self.ignore_sandbox = False
         self.current_phase: str = ""
         self.agent_timeout: Optional[int] = None
+        # Thread-local overrides for parallel phase execution.
+        # Parallel workers set _tls.runner and _tls.phase so each thread
+        # uses its own pool-acquired runner and dashboard identity.
+        self._tls = threading.local()
+        # Lock protecting self.state mutations and save_state() for
+        # thread-safe parallel phase execution.
+        self._state_lock = threading.Lock()
 
         # Ensures directories exist
         os.makedirs(self.specs_dir, exist_ok=True)
@@ -176,6 +183,7 @@ class ProjectContext:
 
         self.shared_components_file = os.path.join(self.plan_dir, "shared_components.md")
         self.state = self._load_state()
+        self.save_state()  # Pre-populate state file with all phase keys
         self.image_paths = self._load_images()
         self.description_ctx = self._load_description()
 
@@ -205,23 +213,34 @@ class ProjectContext:
         :rtype: dict
         """
         state: Dict[str, Any] = {
+            # Per-document tracking (lists)
             "generated": [],
             "fleshed_out": [],
             "fleshed_out_headers": {},
+            "summarized": [],
             "extracted_requirements": [],
+            "tasks_generated": [],
+
+            # Phase completion flags (all False initially)
             "final_review_completed": False,
+            "conflict_resolution_completed": False,
+            "adversarial_review_completed": False,
             "requirements_extracted": False,
+            "meta_requirements_filtered": False,
             "requirements_merged": False,
+            "requirements_deduplicated": False,
             "requirements_ordered": False,
-            "phases_completed": False,
+            "epics_completed": False,
+            "e2e_interfaces_completed": False,
+            "feature_gates_completed": False,
             "tasks_completed": False,
             "tasks_reviewed": False,
             "cross_phase_reviewed": False,
-            "tasks_generated": [],
+            "pre_init_task_completed": False,
             "dag_completed": False,
-            "dag_reviewed": False,
         }
-        if os.path.exists(self.state_file):
+        is_new = not os.path.exists(self.state_file)
+        if not is_new:
             with open(self.state_file, "r") as f:
                 try:
                     loaded = json.load(f)
@@ -231,9 +250,14 @@ class ProjectContext:
         return state
 
     def save_state(self) -> None:
-        """Persist the current :attr:`state` dict to :attr:`state_file`."""
-        with open(self.state_file, "w") as f:
-            json.dump(self.state, f, indent=4)
+        """Persist the current :attr:`state` dict to :attr:`state_file`.
+
+        Thread-safe: acquires ``_state_lock`` before writing so that
+        concurrent parallel phases don't corrupt the JSON file.
+        """
+        with self._state_lock:
+            with open(self.state_file, "w") as f:
+                json.dump(self.state, f, indent=4)
 
     def _load_images(self) -> List[str]:
         """Return absolute paths to all image files in the ``input/`` directory.
@@ -460,13 +484,18 @@ class ProjectContext:
 
     def get_accumulated_context(
         self,
-        current_doc: Dict[str, Any],
-        include_research: bool = True,
+        current_doc: Optional[Dict[str, Any]] = None,
         extra_tokens: int = 0,
+        include_all: bool = False,
     ) -> str:
-        """Build an XML-tagged context string from all documents preceding *current_doc*.
+        """Build an XML-tagged context string from other spec documents.
 
-        When a summary exists for a preceding document (in ``docs/plan/summaries/``),
+        By default only documents *preceding* ``current_doc`` in the canonical
+        :data:`~.constants.DOCS` order are included.  When ``include_all`` is
+        ``True``, **all** documents except ``current_doc`` are included so that
+        spec-editing phases have full cross-spec visibility.
+
+        When a summary exists for a document (in ``docs/plan/summaries/``),
         the summary is used instead of the full document to keep the prompt within
         model input limits.
 
@@ -474,28 +503,24 @@ class ProjectContext:
         so the total stays within ``context_limit``.  Truncated documents include
         a file-path hint so the agent can read the full content if needed.
 
-        Research documents can be excluded when generating spec documents to
-        prevent hallucinated market data from influencing architectural choices.
-
-        :param current_doc: The document currently being generated.  Documents
-            before this one in :data:`~.constants.DOCS` are included.
+        :param current_doc: The document currently being generated / edited.
         :type current_doc: dict
-        :param include_research: When ``False``, research-type documents are
-            skipped.
-        :type include_research: bool
         :param extra_tokens: Tokens reserved for the rest of the prompt (template,
             description context, etc.) so the accumulated context leaves room.
         :type extra_tokens: int
+        :param include_all: When ``True``, include all documents except
+            ``current_doc`` (not just preceding ones).
+        :type include_all: bool
         :returns: Concatenated ``<previous_document>`` XML blocks for each
-            existing preceding document.
+            existing document.
         :rtype: str
         """
         # Collect raw document entries: (doc, lines[], file_path, is_summary)
         entries: list = []
         for prev_doc in DOCS:
             if prev_doc == current_doc:
-                break
-            if not include_research and prev_doc["type"] == "research":
+                if not include_all:
+                    break
                 continue
             summary_file = self.get_summary_path(prev_doc)
             full_file = self.get_document_path(prev_doc)
@@ -549,28 +574,6 @@ class ProjectContext:
 
         return "".join(parts)
 
-    def get_workspace_snapshot(self) -> Dict[str, float]:
-        """Capture a modification-time snapshot of all workspace files.
-
-        Skips ``.git/`` trees and ``.DS_Store`` files.
-
-        :returns: Mapping of absolute file path to ``os.path.getmtime`` value.
-        :rtype: dict
-        """
-        snapshot: Dict[str, float] = {}
-        for root, dirs, files in os.walk(self.root_dir):
-            if ".git" in root:
-                continue
-            for file in files:
-                if file == ".DS_Store":
-                    continue
-                filepath = os.path.join(root, file)
-                try:
-                    snapshot[filepath] = os.path.getmtime(filepath)
-                except OSError:
-                    pass
-        return snapshot
-
     def stage_changes(self, file_paths: List[str]) -> None:
         """Stage the given paths with ``git add``.
 
@@ -582,69 +585,6 @@ class ProjectContext:
             return
         clean_paths = [os.path.abspath(p) for p in file_paths if p]
         subprocess.run(["git", "add"] + clean_paths, cwd=self.root_dir, check=False)
-
-    def verify_changes(self, before: Dict[str, float], allowed_files: List[str]) -> None:
-        """Enforce sandbox constraints after an AI invocation.
-
-        Compares the current workspace snapshot against *before* and calls
-        :func:`sys.exit(1) <sys.exit>` if any new, modified, or deleted file
-        is not in *allowed_files* (or under an allowed directory).
-
-        Internal files (state file, debug files) are always permitted.
-
-        :param before: Snapshot taken before the AI ran, as returned by
-            :meth:`get_workspace_snapshot`.
-        :type before: dict
-        :param allowed_files: Paths that the AI is permitted to create or
-            modify.  A path ending with :data:`os.sep` is treated as an
-            allowed directory.
-        :type allowed_files: list[str]
-        :raises SystemExit: On any sandbox violation.
-        """
-        if self.ignore_sandbox:
-            return
-        after = self.get_workspace_snapshot()
-        allowed_set = set(os.path.abspath(f) for f in allowed_files)
-        allowed_dirs = [
-            os.path.abspath(f)
-            for f in allowed_files
-            if os.path.isdir(f) or f.endswith(os.sep)
-        ]
-
-        for path in after:
-            if path not in before or after[path] > before.get(path, 0):
-                abs_path = os.path.abspath(path)
-                is_allowed = abs_path in allowed_set
-                if not is_allowed:
-                    for d in allowed_dirs:
-                        if abs_path.startswith(d if d.endswith(os.sep) else d + os.sep):
-                            is_allowed = True
-                            break
-                if not is_allowed:
-                    if abs_path in [
-                        os.path.abspath(self.state_file),
-                        os.path.abspath(os.path.join(self.root_dir, ".last_failed_command.sh")),
-                        os.path.abspath(os.path.join(self.root_dir, ".last_failed_prompt.txt")),
-                        os.path.abspath(os.path.join(self.root_dir, "plan_workflow.log")),
-                        os.path.abspath(os.path.join(self.root_dir, "run_workflow.log")),
-                    ]:
-                        continue
-                    print(f"\n[SANDBOX VIOLATION] Unauthorized change detected: {path}")
-                    print(f"The agent was only allowed to modify: {allowed_files}")
-                    sys.exit(1)
-
-        for path in before:
-            if path not in after:
-                abs_path = os.path.abspath(path)
-                is_allowed = abs_path in allowed_set
-                if not is_allowed:
-                    for d in allowed_dirs:
-                        if abs_path.startswith(d if d.endswith(os.sep) else d + os.sep):
-                            is_allowed = True
-                            break
-                if not is_allowed:
-                    print(f"\n[SANDBOX VIOLATION] Unauthorized deletion detected: {path}")
-                    sys.exit(1)
 
     def strip_thinking_tags(self, filepath: str) -> None:
         """Remove ``<thinking>…</thinking>`` blocks from a file or directory.
@@ -678,17 +618,15 @@ class ProjectContext:
         self,
         full_prompt: str,
         allowed_files: Optional[List[str]] = None,
-        sandbox: bool = True,
         timeout: Optional[int] = None,
         *,
         context_files: Optional[Dict[str, Union[str, List[str]]]] = None,
         params: Optional[Dict[str, Any]] = None,
+        runner: Optional["AIRunner"] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
-        """Invoke the configured AI runner and optionally enforce sandbox rules.
+        """Invoke the configured AI runner.
 
-        Takes a before-snapshot, runs the AI, then (when *allowed_files* is
-        provided) verifies that only the declared paths were touched and strips
-        any ``<thinking>`` tags from them.
+        Runs the AI and strips any ``<thinking>`` tags from allowed files.
 
         When *context_files* or *params* is provided, *full_prompt* is treated
         as a prompt **template filename** (loaded via :meth:`load_prompt`).
@@ -700,12 +638,8 @@ class ProjectContext:
             template filename when *context_files* / *params* are given.
         :type full_prompt: str
         :param allowed_files: Paths the AI is permitted to create or modify.
-            Pass ``None`` to skip both sandbox verification and tag stripping.
+            Pass ``None`` to skip tag stripping.
         :type allowed_files: list[str] or None
-        :param sandbox: When ``True`` (default), :meth:`verify_changes` is
-            called after the AI runs.  Set to ``False`` for phases that
-            intentionally write to many files.
-        :type sandbox: bool
         :param timeout: Maximum seconds to wait for the AI process.
             ``None`` means no limit.
         :type timeout: int or None
@@ -716,6 +650,10 @@ class ProjectContext:
         :param params: Small static template values (e.g. file paths, phase
             IDs) that do not require truncation.
         :type params: dict[str, Any] or None
+        :param runner: Optional override runner for this call.  When provided,
+            this runner is used instead of ``self.runner``.  Thread-safe:
+            each parallel phase can pass its own pool-acquired runner.
+        :type runner: AIRunner or None
         :returns: The completed process result from the underlying runner.
         :rtype: subprocess.CompletedProcess
         """
@@ -727,11 +665,18 @@ class ProjectContext:
             )
             ctx_strs = self.build_context_strings(context_files or {}, extra_tokens=extra)
             full_prompt = self.format_prompt(tmpl, **(params or {}), **ctx_strs)
-        before = self.get_workspace_snapshot()
+        # Resolve runner: explicit arg > thread-local override > instance default
+        tls_runner = getattr(self._tls, "runner", None)
+        active_runner = runner if runner is not None else (tls_runner or self.runner)
+
+        # Resolve phase name: thread-local override > instance attribute
+        tls_phase = getattr(self._tls, "phase", None)
+        effective_phase = tls_phase or self.current_phase
+
         on_line: Optional[Callable[[str], None]] = None
         if self.dashboard is not None:
             _dash = self.dashboard
-            _phase = self.current_phase
+            _phase = effective_phase
             _task_id = f"plan/{_phase}" if _phase else ""
             def on_line(line: str) -> None:
                 prefixed = f"[{_phase}] {line}" if _phase else line
@@ -739,13 +684,11 @@ class ProjectContext:
                 if _task_id:
                     _dash.update_last_line(_task_id, line)
         effective_timeout = timeout if timeout is not None else self.agent_timeout
-        result = self.runner.run(self.root_dir, full_prompt, self.image_paths, on_line=on_line, timeout=effective_timeout)
+        result = active_runner.run(self.root_dir, full_prompt, self.image_paths, on_line=on_line, timeout=effective_timeout)
         if result.returncode != 0:
             self._log_failure_summary(result)
             self._write_last_failed_command(full_prompt)
         if allowed_files is not None:
-            if sandbox:
-                self.verify_changes(before, allowed_files)
             for f in allowed_files:
                 self.strip_thinking_tags(os.path.abspath(f))
         return result
@@ -788,34 +731,26 @@ class ProjectContext:
         self,
         full_prompt: str,
         allowed_files: Optional[List[str]] = None,
-        sandbox: bool = True,
         timeout: Optional[int] = None,
         *,
         context_files: Optional[Dict[str, Union[str, List[str]]]] = None,
         params: Optional[Dict[str, Any]] = None,
+        runner: Optional["AIRunner"] = None,
     ) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
         """Alias for :meth:`run_ai` retained for backwards compatibility.
 
-        Accepts the same *context_files* and *params* keyword arguments as
-        :meth:`run_ai`.
-
         :param full_prompt: Fully rendered prompt string, or template filename
             when *context_files* / *params* are given.
-        :type full_prompt: str
         :param allowed_files: Paths the AI is permitted to touch.
-        :type allowed_files: list[str] or None
-        :param sandbox: Enforce sandbox rules when ``True``.
-        :type sandbox: bool
         :param timeout: Maximum seconds to wait for the AI process.
-        :type timeout: int or None
         :param context_files: See :meth:`run_ai`.
         :param params: See :meth:`run_ai`.
+        :param runner: Optional override runner for this call.
         :returns: The completed process result.
-        :rtype: subprocess.CompletedProcess
         """
         return self.run_ai(
-            full_prompt, allowed_files, sandbox, timeout=timeout,
-            context_files=context_files, params=params,
+            full_prompt, allowed_files, timeout=timeout,
+            context_files=context_files, params=params, runner=runner,
         )
 
     def count_task_files(self, directory: str) -> int:
@@ -843,8 +778,7 @@ class ProjectContext:
         :returns: Absolute path to the ``_headers.json`` file.
         :rtype: str
         """
-        out_folder = "specs" if doc["type"] == "spec" else "research"
-        return os.path.join(self.plan_dir, out_folder, f"{doc['id']}_headers.json")
+        return os.path.join(self.plan_dir, "specs", f"{doc['id']}_headers.json")
 
     def save_headers(self, doc: Dict[str, Any], filepath: str) -> List[str]:
         """Extract H1/H2 headers from a markdown file and save to a JSON sidecar.

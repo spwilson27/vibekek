@@ -17,7 +17,7 @@ from workflow_lib.cli import cmd_run
 
 
 def _make_args(**kwargs):
-    defaults = dict(jobs=1, presubmit_cmd="./do presubmit", backend="gemini", model=None, cleanup=False)
+    defaults = dict(jobs=1, presubmit_cmd="python /harness.py presubmit", backend="gemini", model=None, cleanup=False)
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
 
@@ -59,13 +59,12 @@ class TestCmdRunDevBranchGuard(unittest.TestCase):
     @patch("workflow_lib.cli.load_workflow_state", return_value={"completed_tasks": [], "merged_tasks": []})
     @patch("workflow_lib.cli.load_dags", return_value={})
     @patch("workflow_lib.cli.execute_dag")
-    @patch("workflow_lib.cli.get_serena_enabled", return_value=False)
     @patch("workflow_lib.cli.get_tasks_dir", return_value="/fake/tasks")
     @patch("workflow_lib.cli.get_dev_branch", return_value="dev-claude")
     @patch("workflow_lib.cli.subprocess.run")
     def test_does_not_exit_when_on_different_branch(
         self, mock_subproc, _mock_dev_branch, _mock_tasks_dir,
-        _mock_serena, mock_execute_dag, _mock_load_dags,
+        mock_execute_dag, _mock_load_dags,
         _mock_load_state, _mock_restore,
     ):
         """cmd_run should not exit early when on a branch other than dev_branch."""

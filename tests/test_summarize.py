@@ -65,7 +65,6 @@ def _real_ctx(**kwargs):
         ctx.state = kwargs.get("state", {})
         ctx.description_ctx = "project desc"
         ctx.runner = MagicMock()
-        ctx.ignore_sandbox = False
         return ctx
 
 
@@ -153,7 +152,7 @@ class TestPhase2BSummarizeDoc:
     def test_display_name_includes_doc_name(self):
         phase = Phase2BSummarizeDoc({"id": "x", "name": "My Document"})
         assert "My Document" in phase.display_name
-        assert "Phase2B" in phase.display_name
+        assert "Phase3" in phase.display_name
 
     def test_research_docs_are_also_summarized(self):
         """Summarization should work for research docs too, not just specs."""
@@ -282,20 +281,6 @@ class TestAccumulatedContextSummaryPreference:
         current = {"id": "first", "type": "spec", "name": "First"}
         with patch("workflow_lib.context.DOCS", [current]):
             result = ctx.get_accumulated_context(current)
-        assert result == ""
-
-    def test_research_excluded_even_with_summary(self):
-        """include_research=False should skip research summaries too."""
-        ctx = _real_ctx()
-        research = {"id": "market", "type": "research", "name": "Market"}
-        current = {"id": "prd", "type": "spec", "name": "PRD"}
-
-        with patch("workflow_lib.context.DOCS", [research, current]), \
-             patch("workflow_lib.context.get_context_limit", return_value=126_000), \
-             patch("os.path.exists", return_value=True), \
-             patch("builtins.open", mock_open(read_data="market summary")):
-            result = ctx.get_accumulated_context(current, include_research=False)
-
         assert result == ""
 
 
@@ -491,7 +476,7 @@ class TestOrchestratorSummarizeIntegration:
         # Track phase execution order
         executed_phases = []
 
-        def tracking_agent(self_ctx, full_prompt, allowed_files=None, sandbox=False):
+        def tracking_agent(self_ctx, full_prompt, allowed_files=None):
             if allowed_files:
                 for f in allowed_files:
                     if isinstance(f, str) and not f.endswith(os.sep):
@@ -501,19 +486,16 @@ class TestOrchestratorSummarizeIntegration:
                                 fp.write("# Stub\n")
             return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
-        # We only need to test that Phase2B appears in the right spot.
-        # Run the first 3 phases (Phase1 + Phase2 + Phase2B) for the first doc, then abort.
+        # Test that Phase2B runs after all Phase1s and Phase2s complete.
+        # Abort after seeing the first Phase2BSummarizeDoc.
         original_run_phase = Orchestrator.run_phase_with_retry
 
         def tracking_run_phase(orc_self, phase):
             executed_phases.append(type(phase).__name__)
+            original_run_phase(orc_self, phase)
             # After we've seen Phase2BSummarizeDoc for the first doc, abort
             if type(phase).__name__ == "Phase2BSummarizeDoc":
-                # Let it run but then stop after the first doc
-                original_run_phase(orc_self, phase)
                 raise _StopEarly()
-                return
-            original_run_phase(orc_self, phase)
 
         class _StopEarly(Exception):
             pass
@@ -526,7 +508,6 @@ class TestOrchestratorSummarizeIntegration:
              patch("workflow_lib.phases.TOOLS_DIR", str(tools_dir)), \
              patch("workflow_lib.context.ProjectContext.run_gemini", tracking_agent), \
              patch("workflow_lib.context.ProjectContext.stage_changes"), \
-             patch("workflow_lib.context.ProjectContext.verify_changes"), \
              patch("subprocess.run", return_value=MagicMock(returncode=0,
                                                             stdout="", stderr="")):
 
@@ -537,12 +518,11 @@ class TestOrchestratorSummarizeIntegration:
                 with pytest.raises(_StopEarly):
                     orc._run_phases()
 
-        # The first doc should go: Phase1 -> Phase2 -> Phase2B
-        assert executed_phases[:3] == [
-            "Phase1GenerateDoc",
-            "Phase2FleshOutDoc",
-            "Phase2BSummarizeDoc",
-        ]
+        # All Phase1s run first (sequential), then Phase2s, then Phase2Bs
+        # So the first entries should all be Phase1GenerateDoc
+        phase1_count = len(DOCS)
+        assert all(p == "Phase1GenerateDoc" for p in executed_phases[:phase1_count]), \
+            f"Expected all Phase1 first, got: {executed_phases[:phase1_count]}"
 
     def test_skip_all_summarized_no_ai_calls(self):
         """When all docs are already summarized, no AI calls are made for Phase2B."""

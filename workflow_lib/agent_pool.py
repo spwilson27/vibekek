@@ -37,7 +37,7 @@ QUOTA_PATTERNS: List[str] = [
     "ModelNotFoundError: Requested entity was not found",
     "You've hit your limit · resets", # Claude
     "Possible quota limitations in place or slow response times detected. Please wait and try again later.", # Ollama
-    'Failed to authenticate. API Error: 401', # Claude 2am key rotation
+    'OAuth token has expired. Please', # Claude
 ]
 
 # Substrings (case-insensitive) that indicate the CLI is already handling
@@ -195,7 +195,7 @@ class AgentPoolManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def acquire(self, timeout: float = 300.0, step: str = "all") -> Optional[AgentConfig]:
+    def acquire(self, timeout: float = 300.0, step: Optional[str] = "all") -> Optional[AgentConfig]:
         """Block until an agent slot is available and return it.
 
         Walks agents in priority order, skipping any that are at their
@@ -216,43 +216,33 @@ class AgentPoolManager:
             while True:
                 agent = self._pick(step)
                 if agent is not None:
-                    now = time.time()
-                    last = self._last_spawn.get(agent.name, 0)
-                    
-                    if agent.spawn_rate > 0.0 and last > 0:
-                        target = last + agent.spawn_rate
-                        if now < target:
-                            # We want this agent, but need to wait for its spawn_rate cooldown.
-                            # We wait inside the lock (which unlocks while sleeping) so that 
-                            # if quota is exhausted during our wait, we are woken up via notify_all()
-                            # and will loop again to potentially pick a different agent.
-                            wait_for_spawn = target - now
-                            remaining = deadline - time.monotonic()
-                            if remaining <= 0:
-                                return None
-                            self._lock.wait(timeout=min(remaining, wait_for_spawn))
-                            continue # Re-evaluate everything (including quota) after waking up
-                    
                     # Ready to spawn
                     self._active[agent.name] += 1
                     self._last_spawn[agent.name] = time.time()
                     return agent
-                    
+
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return None
-                
+
                 # Calculate wait time for the next available agent slot
                 now = time.time()
                 next_wakeup = now + 5.0
                 for cfg in self._configs:
-                    if "all" not in cfg.steps and step not in cfg.steps:
+                    if step is not None and "all" not in cfg.steps and step not in cfg.steps:
                         continue
                     if self._active[cfg.name] < cfg.parallel:
+                        # Agent has capacity but may be blocked by quota or spawn_rate
                         qe = self._quota_expiry.get(cfg.name, 0)
                         if qe > now:
                             next_wakeup = min(next_wakeup, qe)
-                
+                        if cfg.spawn_rate > 0.0:
+                            last = self._last_spawn.get(cfg.name, 0)
+                            if last > 0:
+                                sr_expiry = last + cfg.spawn_rate
+                                if sr_expiry > now:
+                                    next_wakeup = min(next_wakeup, sr_expiry)
+
                 wait_time = max(0.1, next_wakeup - now)
                 self._lock.wait(timeout=min(remaining, wait_time))
 
@@ -291,22 +281,30 @@ class AgentPoolManager:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _pick(self, step: str = "all") -> Optional[AgentConfig]:
+    def _pick(self, step: Optional[str] = "all", respect_spawn_rate: bool = True) -> Optional[AgentConfig]:
         """Return the best available agent for *step* or ``None`` (must hold *_lock*).
 
         An agent is eligible when:
 
-        * Its :attr:`~AgentConfig.steps` list contains *step* or ``"all"``.
-        * Its quota-suppression window has not elapsed.
+        * *step* is ``None`` (match any agent), **or** its
+          :attr:`~AgentConfig.steps` list contains *step* or ``"all"``.
+        * Its quota-suppression window has elapsed.
         * Its active job count is below :attr:`~AgentConfig.parallel`.
+        * Its spawn_rate cooldown has elapsed (when *respect_spawn_rate* is True).
         """
         now = time.time()
         for cfg in self._configs:  # already sorted by priority
-            # Step filter: agent must allow this step or be configured for "all".
-            if "all" not in cfg.steps and step not in cfg.steps:
+            # Step filter: None matches any agent; otherwise agent must
+            # allow this step or be configured for "all".
+            if step is not None and "all" not in cfg.steps and step not in cfg.steps:
                 continue
             if now < self._quota_expiry.get(cfg.name, 0):
                 continue  # quota suppressed
             if self._active[cfg.name] < cfg.parallel:
+                # Check spawn_rate cooldown
+                if respect_spawn_rate and cfg.spawn_rate > 0.0:
+                    last = self._last_spawn.get(cfg.name, 0)
+                    if last > 0 and now < last + cfg.spawn_rate:
+                        continue  # spawn rate cooldown, try next agent
                 return cfg
         return None

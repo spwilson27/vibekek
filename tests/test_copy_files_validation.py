@@ -49,7 +49,6 @@ class TestCopyFilesValidation:
              patch("workflow_lib.config.get_agent_pool_configs", return_value=[]), \
              patch("workflow_lib.executor.get_pivot_remote", return_value="origin"), \
              patch("workflow_lib.executor.get_gitlab_remote_url", return_value="https://test.com"), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.make_dashboard") as mock_dashboard, \
              patch("workflow_lib.executor.subprocess.run", side_effect=fake_sudo_run), \
              patch("workflow_lib.executor.concurrent.futures.ThreadPoolExecutor"):
@@ -68,7 +67,6 @@ class TestCopyFilesValidation:
                 jobs=1,
                 presubmit_cmd="test",
                 backend="gemini",
-                serena_enabled=False,
                 cache_lock=MagicMock(),
                 dashboard=mock_ctx,
             )
@@ -104,7 +102,6 @@ class TestCopyFilesValidation:
              patch("workflow_lib.config.get_agent_pool_configs", return_value=[]), \
              patch("workflow_lib.executor.get_pivot_remote", return_value="origin"), \
              patch("workflow_lib.executor.get_gitlab_remote_url", return_value="https://test.com"), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.make_dashboard") as mock_dashboard, \
              patch("workflow_lib.executor.notify_failure") as mock_notify, \
              patch("workflow_lib.executor.sys.exit") as mock_exit, \
@@ -124,7 +121,6 @@ class TestCopyFilesValidation:
                 jobs=1,
                 presubmit_cmd="test",
                 backend="gemini",
-                serena_enabled=False,
                 cache_lock=MagicMock(),
                 dashboard=mock_ctx,
             )
@@ -169,7 +165,6 @@ class TestCopyFilesValidation:
         with patch("workflow_lib.executor.get_docker_config", return_value=docker_cfg), \
              patch("workflow_lib.executor.get_pivot_remote", return_value="origin"), \
              patch("workflow_lib.executor.get_gitlab_remote_url", return_value="https://test.com"), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.make_dashboard") as mock_dashboard, \
              patch("workflow_lib.executor.sys.exit") as mock_exit, \
              patch("workflow_lib.executor.subprocess.run", side_effect=fake_run):
@@ -187,7 +182,6 @@ class TestCopyFilesValidation:
                 jobs=1,
                 presubmit_cmd="test",
                 backend="gemini",
-                serena_enabled=False,
                 cache_lock=MagicMock(),
                 dashboard=mock_ctx,
             )
@@ -226,7 +220,6 @@ class TestCopyFilesValidation:
              patch("workflow_lib.config.get_agent_pool_configs", return_value=[]), \
              patch("workflow_lib.executor.get_pivot_remote", return_value="origin"), \
              patch("workflow_lib.executor.get_gitlab_remote_url", return_value="https://test.com"), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.make_dashboard") as mock_dashboard, \
              patch("workflow_lib.executor.sys.exit") as mock_exit, \
              patch("workflow_lib.executor.subprocess.run", side_effect=fake_sudo_run):
@@ -244,7 +237,6 @@ class TestCopyFilesValidation:
                 jobs=1,
                 presubmit_cmd="test",
                 backend="gemini",
-                serena_enabled=False,
                 cache_lock=MagicMock(),
                 dashboard=mock_ctx,
             )
@@ -302,7 +294,6 @@ class TestCopyFilesValidation:
              patch("workflow_lib.config.get_agent_pool_configs", return_value=[agent_config]), \
              patch("workflow_lib.executor.get_pivot_remote", return_value="origin"), \
              patch("workflow_lib.executor.get_gitlab_remote_url", return_value="https://test.com"), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.make_dashboard") as mock_dashboard, \
              patch("workflow_lib.executor.sys.exit", side_effect=track_exit), \
              patch("workflow_lib.executor.notify_failure"):
@@ -324,7 +315,6 @@ class TestCopyFilesValidation:
                     jobs=1,
                     presubmit_cmd="test",
                     backend="gemini",
-                    serena_enabled=False,
                     cache_lock=MagicMock(),
                     dashboard=mock_ctx,
                 )
@@ -370,7 +360,6 @@ class TestCopyFilesValidation:
         with patch("workflow_lib.executor.get_docker_config", return_value=docker_cfg), \
              patch("workflow_lib.executor.get_pivot_remote", return_value="origin"), \
              patch("workflow_lib.executor.get_gitlab_remote_url", return_value="https://test.com"), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.make_dashboard") as mock_dashboard, \
              patch("workflow_lib.executor.sys.exit", side_effect=track_exit), \
              patch("workflow_lib.executor.notify_failure"):  # Mock to avoid webhook issues
@@ -393,7 +382,6 @@ class TestCopyFilesValidation:
                     jobs=1,
                     presubmit_cmd="test",
                     backend="gemini",
-                    serena_enabled=False,
                     cache_lock=MagicMock(),
                     dashboard=mock_ctx,
                 )
@@ -411,7 +399,6 @@ class TestCopyFilesValidation:
              patch("workflow_lib.config.get_agent_pool_configs", return_value=[]), \
              patch("workflow_lib.executor.get_pivot_remote", return_value="origin"), \
              patch("workflow_lib.executor.get_gitlab_remote_url", return_value="https://test.com"), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.make_dashboard") as mock_dashboard, \
              patch("workflow_lib.executor.concurrent.futures.ThreadPoolExecutor"):
             
@@ -428,7 +415,6 @@ class TestCopyFilesValidation:
                 jobs=1,
                 presubmit_cmd="test",
                 backend="gemini",
-                serena_enabled=False,
                 cache_lock=MagicMock(),
                 dashboard=mock_ctx,
             )
@@ -450,7 +436,6 @@ class TestCopyFilesValidation:
              patch("workflow_lib.config.get_agent_pool_configs", return_value=[]), \
              patch("workflow_lib.executor.get_pivot_remote", return_value="origin"), \
              patch("workflow_lib.executor.get_gitlab_remote_url", return_value="https://test.com"), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.make_dashboard") as mock_dashboard, \
              patch("workflow_lib.executor.concurrent.futures.ThreadPoolExecutor"):
             
@@ -467,7 +452,6 @@ class TestCopyFilesValidation:
                 jobs=1,
                 presubmit_cmd="test",
                 backend="gemini",
-                serena_enabled=False,
                 cache_lock=MagicMock(),
                 dashboard=mock_ctx,
             )
@@ -503,7 +487,6 @@ class TestCopyFilesValidation:
              patch("workflow_lib.config.get_agent_pool_configs", return_value=[]), \
              patch("workflow_lib.executor.get_pivot_remote", return_value="origin"), \
              patch("workflow_lib.executor.get_gitlab_remote_url", return_value="https://test.com"), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.make_dashboard") as mock_dashboard, \
              patch("workflow_lib.executor.subprocess.run", side_effect=fake_run), \
              patch("workflow_lib.executor.concurrent.futures.ThreadPoolExecutor"):
@@ -521,7 +504,6 @@ class TestCopyFilesValidation:
                 jobs=1,
                 presubmit_cmd="test",
                 backend="gemini",
-                serena_enabled=False,
                 cache_lock=MagicMock(),
                 dashboard=mock_ctx,
             )

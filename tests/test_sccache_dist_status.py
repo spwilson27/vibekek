@@ -32,6 +32,10 @@ from workflow_lib.config import (
 from workflow_lib.agent_pool import DockerConfig
 
 
+@pytest.mark.skipif(
+    get_sccache_config() is None,
+    reason="sccache not configured in .workflow.jsonc"
+)
 class TestSCCacheDistStatusConfig:
     """Tests for sccache --dist-status configuration."""
 

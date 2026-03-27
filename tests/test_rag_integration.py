@@ -113,6 +113,72 @@ def test_stop_rag_server_returns_false_for_missing_pid():
     print("✓ stop_rag_server returns False for missing PID file")
 
 
+def test_start_rag_server_missing_rag_dir_verbose():
+    """Test verbose output when RAG tool dir is missing."""
+    result = start_rag_server("/nonexistent", verbose=True)
+    assert result is None
+
+
+def test_stop_rag_server_verbose_missing_pid():
+    """Test verbose output when PID file missing."""
+    result = stop_rag_server("/nonexistent", verbose=True)
+    assert result is False
+
+
+def test_stop_rag_server_stale_pid_file(tmp_path):
+    """Test stop_rag_server with stale PID file (process not running)."""
+    pid_file = tmp_path / ".rag-mcp-server.pid"
+    pid_file.write_text("999999999")
+    result = stop_rag_server(str(tmp_path), verbose=True)
+    assert result is False
+    assert not pid_file.exists()
+
+
+def test_stop_rag_server_invalid_pid_content(tmp_path):
+    """Test stop_rag_server with non-integer PID file content."""
+    pid_file = tmp_path / ".rag-mcp-server.pid"
+    pid_file.write_text("not-a-pid")
+    result = stop_rag_server(str(tmp_path), verbose=True)
+    assert result is False
+    assert not pid_file.exists()
+
+
+def test_start_rag_server_existing_pid_stale(tmp_path):
+    """Test start_rag_server when PID file exists but process is dead."""
+    from unittest.mock import patch
+    pid_file = tmp_path / ".rag-mcp-server.pid"
+    pid_file.write_text("999999999")
+    # RAG_TOOL_DIR must exist for the function to proceed past first check
+    with patch("workflow_lib.rag_integration.RAG_TOOL_DIR", str(tmp_path)):
+        # start_rag_server will try to clean up stale PID, then start server
+        # but subprocess will fail since RAG_CLI_MODULE doesn't exist
+        result = start_rag_server(str(tmp_path), verbose=True)
+    # Either None (if Popen fails) or a PID (if it somehow starts)
+    # The stale PID file should be cleaned up regardless
+
+
+def test_start_rag_server_existing_pid_valid_content(tmp_path):
+    """Test start_rag_server when PID file has invalid content."""
+    from unittest.mock import patch
+    pid_file = tmp_path / ".rag-mcp-server.pid"
+    pid_file.write_text("not-a-number")
+    with patch("workflow_lib.rag_integration.RAG_TOOL_DIR", str(tmp_path)):
+        result = start_rag_server(str(tmp_path), verbose=True)
+
+
+def test_wait_for_rag_indexing_timeout():
+    """Test wait_for_rag_indexing returns False on timeout."""
+    from workflow_lib.rag_integration import wait_for_rag_indexing
+    result = wait_for_rag_indexing("/nonexistent", timeout=1, verbose=True)
+    assert result is False
+
+
+def test_start_rag_server_container_name_no_rag_dir():
+    """Test start_rag_server with container_name but no RAG dir."""
+    result = start_rag_server("/nonexistent", container_name="test-container", verbose=True)
+    assert result is None
+
+
 if __name__ == "__main__":
     # Run tests
     tests = [

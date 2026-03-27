@@ -29,6 +29,14 @@ from workflow_lib.agent_pool import DockerConfig
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _mock_harness():
+    """Mock harness.py existence and copy for _start_task_container calls."""
+    with patch("os.path.exists", return_value=True), \
+         patch("shutil.copy2"):
+        yield
+
+
 @pytest.fixture
 def sccache_config_enabled():
     """Return an enabled SCCacheConfig for testing."""

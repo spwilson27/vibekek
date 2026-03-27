@@ -213,7 +213,7 @@ class TestProcessTaskPresubmit:
         result = _call_process_task(
             remote, local, "phase_1/05_presubmit_fail.md",
             run_agent_mock=lambda *a, **kw: True,
-            presubmit_cmd="/bin/false",
+            presubmit_cmd="/usr/bin/false",
             max_retries=1,
         )
         assert result is False
@@ -360,7 +360,7 @@ class TestProcessTaskCleanupBehaviour:
                 result = process_task(
                     root_dir=local,
                     full_task_id="phase_1/10_cleanup_fail.md",
-                    presubmit_cmd="/bin/false",
+                    presubmit_cmd="/usr/bin/false",
                     dev_branch="dev",
                     remote_url=remote,
                     max_retries=1,
@@ -409,7 +409,6 @@ class TestStageAPI:
                 remote_url=remote,
                 backend="gemini",
                 model=None,
-                serena=False,
                 dashboard=None,
                 agent_pool=None,
                 cleanup=True,
@@ -450,7 +449,7 @@ class TestStageAPI:
             stack.enter_context(patch("workflow_lib.executor.run_agent", side_effect=_mock))
             for p in _context_patches():
                 stack.enter_context(p)
-            run_impl_stage(serena=False, **common_kwargs)
+            run_impl_stage(**common_kwargs)
             agent_calls.clear()
             ok = run_review_stage(**common_kwargs)
 
@@ -484,7 +483,7 @@ class TestStageAPI:
             stack.enter_context(patch("workflow_lib.executor.run_agent", return_value=True))
             for p in _context_patches():
                 stack.enter_context(p)
-            run_impl_stage(serena=False, **common_kwargs)
+            run_impl_stage(**common_kwargs)
             run_review_stage(**common_kwargs)
             ok = run_validate_stage(presubmit_cmd="echo ok", max_retries=1, **common_kwargs)
 
@@ -651,7 +650,6 @@ class TestStagedExecuteDagIntegration:
 
         with patch("workflow_lib.executor.process_task", side_effect=_fake_process), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.get_ready_tasks", side_effect=_get_ready), \
              patch("workflow_lib.executor.save_workflow_state"), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
@@ -687,7 +685,6 @@ class TestStagedExecuteDagIntegration:
 
         with patch("workflow_lib.executor.process_task", side_effect=_fake_process), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
              patch("subprocess.run",
@@ -712,7 +709,6 @@ class TestStagedExecuteDagIntegration:
 
         with patch("workflow_lib.executor.process_task", return_value=True), \
              patch("workflow_lib.executor.merge_task", return_value=True), \
-             patch("workflow_lib.executor.get_serena_enabled", return_value=False), \
              patch("workflow_lib.executor.load_blocked_tasks", return_value=set()), \
              patch("workflow_lib.executor.save_workflow_state"), \
              patch("subprocess.run",
@@ -802,7 +798,6 @@ def test_graceful_shutdown_after_impl_stage_persists_progress(tmp_path):
             full_task_id=full_task_id,
             presubmit_cmd="echo ok",
             backend="gemini",
-            serena=False,
             dashboard=None,
             model=None,
             dev_branch="dev",
@@ -924,7 +919,6 @@ def test_graceful_shutdown_removes_agent_from_dashboard(tmp_path):
             full_task_id=full_task_id,
             presubmit_cmd="echo ok",
             backend="gemini",
-            serena=False,
             dashboard=mock_dashboard,
             model=None,
             dev_branch="dev",
@@ -999,7 +993,6 @@ def test_graceful_shutdown_before_any_stage_keeps_agent_on_dashboard(tmp_path):
             full_task_id=full_task_id,
             presubmit_cmd="echo ok",
             backend="gemini",
-            serena=False,
             dashboard=mock_dashboard,
             model=None,
             dev_branch="dev",
@@ -1072,7 +1065,6 @@ def test_verify_stage_removes_agent_from_dashboard_on_success(tmp_path):
             branch_name=branch_name,
             presubmit_cmd="echo ok",
             backend="gemini",
-            serena=False,
             dashboard=mock_dashboard,
             model=None,
             dev_branch="dev",
@@ -1140,7 +1132,6 @@ def test_verify_stage_clears_agent_name_on_failure(tmp_path):
             branch_name=branch_name,
             presubmit_cmd="echo ok",
             backend="gemini",
-            serena=False,
             dashboard=mock_dashboard,
             model=None,
             dev_branch="dev",

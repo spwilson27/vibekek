@@ -96,13 +96,9 @@ def custom_walk(path):
 @patch("os.path.isfile", return_value=True)
 @patch("os.listdir", side_effect=custom_listdir)
 @patch("os.walk", side_effect=custom_walk)
-@patch("workflow.ProjectContext.get_workspace_snapshot", return_value={})
-@patch("workflow.ProjectContext.verify_changes")
 @patch("workflow.ProjectContext.stage_changes")
 def test_all_phases(
     mock_stage,
-    mock_verify,
-    mock_snap,
     mock_walk,
     mock_listdir,
     mock_isfile,
@@ -140,7 +136,6 @@ def test_all_phases(
                 instance = phase_cls(workflow.DOCS[0])
             elif phase_cls in (
                 workflow.Phase6CCrossPhaseReview,
-                workflow.Phase6DReorderTasks,
             ):
                 instance = phase_cls(pass_num=1)
             else:
@@ -252,13 +247,9 @@ def test_all_cmds(
 @patch("os.path.isfile", return_value=True)
 @patch("os.listdir", side_effect=custom_listdir)
 @patch("os.walk", side_effect=custom_walk)
-@patch("workflow.ProjectContext.get_workspace_snapshot", return_value={})
-@patch("workflow.ProjectContext.verify_changes")
 @patch("workflow.ProjectContext.stage_changes")
 def test_all_phases_failure(
     mock_stage,
-    mock_verify,
-    mock_snap,
     mock_walk,
     mock_listdir,
     mock_isfile,
@@ -301,7 +292,6 @@ def test_all_phases_failure(
                 instance = phase_cls(workflow.DOCS[0])
             elif phase_cls in (
                 workflow.Phase6CCrossPhaseReview,
-                workflow.Phase6DReorderTasks,
             ):
                 instance = phase_cls(pass_num=1)
             else:
@@ -425,7 +415,6 @@ def test_main_all_cmds(mock_subprocess, mock_open_file, mock_load_config, super_
             patch("workflow_lib.cli.load_dags", return_value={}),
             patch("workflow_lib.cli.load_workflow_state", return_value={"completed_tasks": [], "merged_tasks": []}),
             patch("workflow_lib.cli.execute_dag"),
-            patch("workflow_lib.cli.get_serena_enabled", return_value=False),
         ):
             try:
                 workflow.main()

@@ -41,3 +41,5 @@ Before generating the final document, plan your approach:
   3. Typography System
   4. Spacing, Grid & Layout Metrics
   5. Interactive States & Micro-Animations
+  6. Wireframe Proposals (ASCII or Mermaid diagrams showing key screen layouts)
+  7. Animation Sequences (describe transition animations, loading states, and motion design with timing curves and durations)

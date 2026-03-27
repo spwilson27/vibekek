@@ -51,12 +51,24 @@ import re
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 
-from .constants import TOOLS_DIR, ROOT_DIR, parse_requirements
+from .constants import TOOLS_DIR, ROOT_DIR
+
+# Regex to match requirements like [REQ-123], [TAS-001], [REQ-SEC-001], etc.
+_REQ_REGEX = re.compile(r"\[([A-Z0-9_]+-[A-Z0-9\._-]+)\]")
+
+
+def parse_requirements(file_path: str):
+    """Extract all requirement IDs from a file."""
+    if not os.path.exists(file_path):
+        return set()
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    return set(_REQ_REGEX.findall(content))
 from .state import *
 from .executor import phase_sort_key
 from .context import ProjectContext
 from .runners import make_runner as _make_runner_from_runners
-from .phases import Phase5BSharedComponents, Phase7ADAGGeneration
+from .phases import Phase7ADAGGeneration
 
 
 def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
@@ -101,24 +113,49 @@ def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined
     # Also find tasks on disk not in DAG
     on_disk = set()
     if os.path.exists(tasks_dir):
-        # Skip non-task files (READMEs, summaries, etc.)
+        # Skip non-task files
         _NON_TASK_FILES = {
             "README.md",
             "SUB_EPIC_SUMMARY.md",
             "REQUIREMENTS_TRACEABILITY.md",
+            "REQUIREMENTS_COVERAGE_MAP.md",
             "review_summary.md",
+            "cross_phase_review_summary.md",
+            "00_index.md",
         }
-        for phase_dir in sorted(os.listdir(tasks_dir), key=_phase_num):
+        _NON_TASK_JSON = {"dag.json", "dag_reviewed.json"}
+        for phase_dir in sorted(os.listdir(tasks_dir)):
             phase_path = os.path.join(tasks_dir, phase_dir)
             if not os.path.isdir(phase_path) or not phase_dir.startswith("phase_"):
                 continue
-            for sub_epic in sorted(os.listdir(phase_path)):
-                se_path = os.path.join(phase_path, sub_epic)
-                if not os.path.isdir(se_path):
-                    continue
-                for md in sorted(os.listdir(se_path)):
-                    if md.endswith(".md") and md not in _NON_TASK_FILES:
-                        on_disk.add(f"{phase_dir}/{sub_epic}/{md}")
+            for entry in sorted(os.listdir(phase_path)):
+                entry_path = os.path.join(phase_path, entry)
+                # Flat task .json sidecar files (the canonical source)
+                if entry.endswith(".json") and os.path.isfile(entry_path) and entry not in _NON_TASK_JSON:
+                    # Use task_id from JSON if present (matches load_dags behavior)
+                    try:
+                        with open(entry_path, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                        task_ref = meta.get("task_id", f"{phase_dir}/{entry[:-5]}")
+                    except (json.JSONDecodeError, OSError):
+                        task_ref = f"{phase_dir}/{entry[:-5]}"
+                    on_disk.add(task_ref)
+                # Legacy subdirectory structure
+                elif os.path.isdir(entry_path):
+                    for sub in sorted(os.listdir(entry_path)):
+                        sub_path = os.path.join(entry_path, sub)
+                        if sub.endswith(".json") and os.path.isfile(sub_path):
+                            fallback_ref = f"{phase_dir}/{entry}/{sub[:-5]}"
+                            try:
+                                with open(sub_path, "r", encoding="utf-8") as f:
+                                    meta = json.load(f)
+                                task_ref = meta.get("task_id", fallback_ref)
+                                # Normalize: match load_dags behavior
+                                if not task_ref.startswith("phase_"):
+                                    task_ref = f"{phase_dir}/{entry}/{task_ref}"
+                            except (json.JSONDecodeError, OSError):
+                                task_ref = fallback_ref
+                            on_disk.add(task_ref)
 
     total = len(master_dag)
     n_completed = len(completed)
@@ -158,94 +195,36 @@ def cmd_status(args: "argparse.Namespace") -> None:  # type: ignore[name-defined
     print()
 
 
-def _run_all_checks(quiet: bool = False, checks_filter: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Run all applicable verification checks and return structured results.
+def _run_all_checks(quiet: bool = False) -> Dict[str, Any]:
+    """Run all validation checks via ``validate.py --all`` and return results.
 
     :param quiet: When ``True``, suppress printed output.
-    :param checks_filter: Optional list of check names to run. When provided,
-        only these checks will be executed. Valid names: ``"verify-req-format"``,
-        ``"verify-desc-length"``, ``"verify-master"``, ``"verify-phases"``,
-        ``"verify-tasks"``, ``"verify-dags"``, ``"verify-depends-on"``.
-    :returns: Dict with ``"all_pass"`` bool and per-check entries keyed by
-        check name, each containing ``"passed"`` bool, ``"output"`` str, and
-        ``"missing_reqs"`` list of requirement IDs that failed the check.
+    :returns: Dict with ``"all_pass"`` bool and ``"output"`` str.
     :rtype: Dict[str, Any]
     """
-    verify_script = os.path.join(TOOLS_DIR, "verify.py")
-    plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
-    phases_dir = os.path.join(plan_dir, "phases")
-    tasks_dir = get_tasks_dir()
+    validate_script = os.path.join(TOOLS_DIR, "validate.py")
 
-    all_checks: List[Tuple[str, List[str]]] = []
+    results: Dict[str, Any] = {"all_pass": True, "output": ""}
 
-    if os.path.exists(req_file):
-        all_checks.append(("verify-req-format", [sys.executable, verify_script, "req-format", "docs/plan/requirements.md"]))
-        all_checks.append(("verify-desc-length", [sys.executable, verify_script, "req-desc-length", "docs/plan/requirements.md"]))
+    res = subprocess.run(
+        [sys.executable, validate_script, "--all"],
+        capture_output=True, text=True, cwd=ROOT_DIR
+    )
 
-    if os.path.exists(req_file) and os.path.isdir(os.path.join(plan_dir, "requirements")):
-        all_checks.append(("verify-master", [sys.executable, verify_script, "master", "docs/plan/requirements.md", "docs/plan/requirements"]))
+    results["all_pass"] = res.returncode == 0
+    results["output"] = res.stdout.strip()
 
-    if os.path.exists(req_file) and os.path.isdir(phases_dir):
-        all_checks.append(("verify-phases", [sys.executable, verify_script, "phases", "docs/plan/requirements.md", "docs/plan/phases/"]))
-
-    if os.path.isdir(phases_dir) and os.path.isdir(tasks_dir):
-        all_checks.append(("verify-tasks", [sys.executable, verify_script, "tasks", "docs/plan/phases/", "docs/plan/tasks/"]))
-        all_checks.append(("verify-dags", [sys.executable, verify_script, "dags", "docs/plan/tasks/"]))
-        all_checks.append(("verify-depends-on", [sys.executable, verify_script, "depends-on", tasks_dir]))
-
-    # Apply filter if provided
-    if checks_filter is not None:
-        all_checks = [(name, cmd) for name, cmd in all_checks if name in checks_filter]
-
-    results: Dict[str, Any] = {"all_pass": True, "checks": {}}
-
-    if not all_checks:
-        if not quiet:
-            print("No plan artifacts found to validate.")
-        return results
-
-    for name, cmd in all_checks:
-        res = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT_DIR)
-        passed = res.returncode == 0
-        output = res.stdout.strip()
-
-        # Parse missing requirement IDs from output
-        missing_reqs = []
-        if not passed and output:
-            for line in output.splitlines():
-                m = re.match(r'\s*-\s*\[([^\]]+)\]', line)
-                if m:
-                    missing_reqs.append(m.group(1))
-
-        results["checks"][name] = {
-            "passed": passed,
-            "output": output,
-            "missing_reqs": missing_reqs,
-        }
-
-        if not quiet:
-            if passed:
-                print(f"  PASS  {name}")
-            else:
-                print(f"  FAIL  {name}")
-                if output:
-                    for line in output.splitlines():
-                        print(f"        {line}")
-
-        if not passed:
-            results["all_pass"] = False
+    if not quiet:
+        if results["output"]:
+            print(results["output"])
+        if res.stderr.strip():
+            print(res.stderr.strip())
 
     return results
 
 
 def cmd_validate(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
-    """Run all applicable verification checks against the current plan artefacts.
-
-    Determines which checks are relevant based on what artefacts exist on disk
-    (``requirements.md``, ``docs/plan/phases/``, ``docs/plan/tasks/``), then
-    runs each via ``verify.py``.  Exits with code 1 if any check
-    fails.
+    """Run all validation checks via ``validate.py --all``.
 
     :param args: Parsed :mod:`argparse` namespace (no relevant attributes).
     :type args: argparse.Namespace
@@ -495,7 +474,7 @@ def cmd_add(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 
     expected_file = os.path.join(se_dir, task_filename)
     allowed_files = [se_dir + os.sep]
-    result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+    result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
     if result.returncode != 0:
         print(f"\n[!] Error generating task.")
@@ -521,7 +500,7 @@ def cmd_add(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 
 
 def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
-    """Add, remove, or interactively edit ``docs/plan/requirements.md``.
+    """Add, remove, or interactively edit ``docs/plan/requirements.json``.
 
     Exactly one of the mutually exclusive flags must be set:
 
@@ -529,7 +508,7 @@ def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-def
       runs ``verify-master``.
     * ``--remove <REQ_ID>`` — moves the requirement block to a
       "Removed or Modified Requirements" section and shows affected tasks.
-    * ``--edit`` — opens ``$EDITOR`` directly on ``docs/plan/requirements.md``, then
+    * ``--edit`` — opens ``$EDITOR`` directly on ``docs/plan/requirements.json``, then
       runs ``verify-master``.
 
     Supports ``--dry-run`` for ``--remove`` (shows affected tasks without
@@ -542,10 +521,10 @@ def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-def
         - ``edit_req`` (bool) — flag for ``--edit``.
         - ``dry_run`` (bool) — preview mode.
     :type args: argparse.Namespace
-    :raises SystemExit: When ``docs/plan/requirements.md`` is not found or the
+    :raises SystemExit: When ``docs/plan/requirements.json`` is not found or the
         requirement ID is not present.
     """
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
     if not os.path.exists(req_file):
         print(f"Error: {req_file} not found.")
         sys.exit(1)
@@ -555,7 +534,7 @@ def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-def
         editor = os.environ.get("EDITOR", "vim")
         subprocess.run([editor, req_file])
         # Verify
-        _run_verify("verify-master")
+        _run_validate(phase=9)
         return
 
     if args.remove_req:
@@ -564,7 +543,7 @@ def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-def
             content = f.read()
 
         if f"[{req_id}]" not in content:
-            print(f"Requirement [{req_id}] not found in requirements.md")
+            print(f"Requirement [{req_id}] not found in requirements.json")
             sys.exit(1)
 
         if args.dry_run:
@@ -600,7 +579,7 @@ def cmd_modify_req(args: "argparse.Namespace") -> None:  # type: ignore[name-def
         print("Adding a requirement interactively...")
         editor = os.environ.get("EDITOR", "vim")
         subprocess.run([editor, req_file])
-        _run_verify("verify-master")
+        _run_validate(phase=9)
 
         rp_state = load_replan_state()
         log_action(rp_state, "add-req", args.add_req)
@@ -759,7 +738,7 @@ def cmd_regen_tasks(args: "argparse.Namespace") -> None:  # type: ignore[name-de
             shared_components_ctx=shared_components_ctx,
         )
         allowed_files = [se_dir + os.sep]
-        result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+        result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
         if result.returncode != 0:
             print(f"\n[!] Error regenerating tasks for {target_dir}.")
@@ -785,33 +764,15 @@ def cmd_regen_tasks(args: "argparse.Namespace") -> None:  # type: ignore[name-de
 
 
 def cmd_regen_components(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
-    """Regenerate the shared components manifest (``docs/plan/shared_components.md``).
+    """Deprecated: shared components phase has been replaced by E2E interfaces.
 
-    Resets the ``shared_components_completed`` state flag and re-runs
-    :class:`~workflow_lib.phases.Phase5BSharedComponents`.  Supports
-    ``--dry-run``.
-
-    :param args: Parsed :mod:`argparse` namespace with attributes:
-
-        - ``dry_run`` (bool) — preview mode.
-        - ``backend`` (str) — AI backend.
+    :param args: Parsed :mod:`argparse` namespace.
     :type args: argparse.Namespace
     """
-    runner = _make_runner(args.backend, model=getattr(args, 'model', None))
-    ctx = ProjectContext(ROOT_DIR, runner=runner)
-
-    if args.dry_run:
-        print("[dry-run] Would regenerate shared_components.md")
-        return
-
-    phase = Phase5BSharedComponents()
-    ctx.state["shared_components_completed"] = False
-    ctx.save_state()
-    phase.execute(ctx)
-
-    rp_state = load_replan_state()
-    log_action(rp_state, "regen-components", "shared_components.md")
-    save_replan_state(rp_state)
+    print("The regen-components command has been removed. "
+          "Shared components are now handled via E2E interfaces (Phase 14) "
+          "and feature gates (Phase 15).")
+    sys.exit(1)
 
 
 def cmd_cascade(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
@@ -889,7 +850,7 @@ def cmd_cascade(args: "argparse.Namespace") -> None:  # type: ignore[name-define
 
     # Validate
     print("Running validation...")
-    _run_verify("verify-dags")
+    _run_validate(phase=20)
 
     rp_state = load_replan_state()
     log_action(rp_state, "cascade", phase_id)
@@ -909,7 +870,7 @@ def _fix_phase_mappings(unmapped_reqs: List[str], ctx: ProjectContext, dry_run: 
 
     plan_dir = os.path.join(ROOT_DIR, "docs", "plan")
     phases_dir = os.path.join(plan_dir, "phases")
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
 
     print(f"\n=> Fixing {len(unmapped_reqs)} requirement(s) not mapped to any phase:")
     for r in sorted(unmapped_reqs):
@@ -954,7 +915,7 @@ def _fix_phase_mappings(unmapped_reqs: List[str], ctx: ProjectContext, dry_run: 
     )
 
     allowed_files = [phases_dir + os.sep]
-    result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+    result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
     if result.returncode != 0:
         print(f"\n[!] Error fixing phase mappings.")
@@ -1085,7 +1046,7 @@ def _fix_task_mappings(unmapped_reqs: List[str], ctx: ProjectContext, dry_run: b
 
         print(f"\nGenerating tasks for {len(req_ids)} unmapped requirement(s) in {target_dir}...")
         allowed_files = [se_dir + os.sep]
-        result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+        result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
         if result.returncode != 0:
             print(f"\n[!] Error generating fix tasks for {target_dir}.")
@@ -1118,7 +1079,7 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 
     - **verify-desc-length**: Expands short requirement descriptions.
     - **verify-master**: Appends missing requirement definitions from extracted
-      docs to ``requirements.md``.
+      docs to ``requirements.json``.
     - **verify-phases**: Assigns unmapped requirements to the best-fit phase
       using AI.
     - **verify-tasks**: Generates new task files to cover unmapped requirements
@@ -1149,42 +1110,14 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 
     fixed_anything = False
 
-    # Fix verify-desc-length failures first (expand short descriptions)
-    desc_check = results["checks"].get("verify-desc-length", {})
-    if not desc_check.get("passed", True):
-        if _fix_description_length(ctx, dry_run=dry_run):
-            fixed_anything = True
+    # Fix short descriptions
+    if _fix_description_length(ctx, dry_run=dry_run):
+        fixed_anything = True
 
-    # Fix verify-master failures (add missing requirement definitions to master list)
-    master_check = results["checks"].get("verify-master", {})
-    if not master_check.get("passed", True) and master_check.get("missing_reqs"):
-        if _fix_master_list(master_check["missing_reqs"], dry_run=dry_run):
-            fixed_anything = True
-
-    # Fix verify-phases failures first (must happen before verify-tasks)
-    phases_check = results["checks"].get("verify-phases", {})
-    if not phases_check.get("passed", True) and phases_check.get("missing_reqs"):
-        if _fix_phase_mappings(phases_check["missing_reqs"], ctx, dry_run=dry_run):
-            fixed_anything = True
-
-    # Fix verify-tasks failures
-    tasks_check = results["checks"].get("verify-tasks", {})
-    if not tasks_check.get("passed", True) and tasks_check.get("missing_reqs"):
-        if _fix_task_mappings(tasks_check["missing_reqs"], ctx, dry_run=dry_run):
-            fixed_anything = True
-
-    # Fix verify-dags failures
-    dags_check = results["checks"].get("verify-dags", {})
-    if not dags_check.get("passed", True):
-        dag_fixes = _fix_dag_references(dry_run=dry_run, ctx=ctx)
-        if dag_fixes > 0:
-            fixed_anything = True
-
-    # Fix verify-depends-on failures
-    depends_on_check = results["checks"].get("verify-depends-on", {})
-    if not depends_on_check.get("passed", True):
-        if _fix_depends_on_formatting(dry_run=dry_run):
-            fixed_anything = True
+    # Fix DAG reference issues
+    dag_fixes = _fix_dag_references(dry_run=dry_run, ctx=ctx)
+    if dag_fixes > 0:
+        fixed_anything = True
 
     if not fixed_anything:
         print("\nNo automatic fixes available for the remaining failures.")
@@ -1198,8 +1131,7 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
     final = _run_all_checks()
 
     rp_state = load_replan_state()
-    total_fixed = len(phases_check.get("missing_reqs", [])) + len(tasks_check.get("missing_reqs", []))
-    log_action(rp_state, "fixup", f"fixed {total_fixed} validation error(s)")
+    log_action(rp_state, "fixup", "ran automatic fixups")
     save_replan_state(rp_state)
 
     if not final["all_pass"]:
@@ -1210,18 +1142,18 @@ def cmd_fixup(args: "argparse.Namespace") -> None:  # type: ignore[name-defined]
 
 
 def _fix_master_list(missing_reqs: List[str], dry_run: bool = False) -> bool:
-    """Append missing requirement definitions to ``docs/plan/requirements.md``.
+    """Append missing requirement definitions to ``docs/plan/requirements.json``.
 
     Scans ``docs/plan/requirements/*.md`` for heading-level definitions of
     the missing IDs and appends the full requirement blocks to the master
     file.
 
-    :param missing_reqs: List of requirement IDs missing from docs/plan/requirements.md.
+    :param missing_reqs: List of requirement IDs missing from docs/plan/requirements.json.
     :param dry_run: If ``True``, print what would be added without writing.
     :returns: ``True`` if any requirements were added.
     """
     req_dir = os.path.join(ROOT_DIR, "docs", "plan", "requirements")
-    master_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    master_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
     missing_set = set(missing_reqs)
 
     if not missing_set:
@@ -1259,14 +1191,14 @@ def _fix_master_list(missing_reqs: List[str], dry_run: bool = False) -> bool:
     if not_found:
         print(f"  WARNING: Could not find definitions for: {sorted(not_found)}")
 
-    print(f"  Adding {len(found_blocks)} requirement(s) to requirements.md:")
+    print(f"  Adding {len(found_blocks)} requirement(s) to requirements.json:")
     for req_id in sorted(found_blocks):
         print(f"    + [{req_id}]")
 
     if dry_run:
         return True
 
-    # Append to requirements.md
+    # Append to requirements.json
     with open(master_file, "a", encoding="utf-8") as f:
         f.write("\n")
         for req_id in sorted(found_blocks):
@@ -1499,38 +1431,36 @@ def _fix_single_dag_ref(
 
 
 def _fix_description_length(ctx: ProjectContext, dry_run: bool = False) -> bool:
-    """Fix verify-desc-length failures by expanding short descriptions.
+    """Fix short description failures by expanding descriptions under 10 words.
 
-    Spawns an AI agent to review docs/plan/requirements.md and expand all descriptions
+    Spawns an AI agent to review docs/plan/requirements.json and expand all descriptions
     that are shorter than 10 words to meet the minimum length requirement.
 
     :param ctx: Project context with AI runner.
     :param dry_run: Preview mode — don't actually run AI.
     :returns: ``True`` if fix was attempted (or dry-run shown), ``False`` if nothing to do.
     """
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
 
     if not os.path.exists(req_file):
-        print("Error: docs/plan/requirements.md not found.")
+        print("Error: docs/plan/requirements.json not found.")
         return False
 
-    # Run verify-desc-length to get the list of short descriptions
-    verify_script = os.path.join(TOOLS_DIR, "verify.py")
-    result = subprocess.run(
-        [sys.executable, verify_script, "req-desc-length", req_file],
-        capture_output=True, text=True, cwd=ROOT_DIR
-    )
-
-    if result.returncode == 0:
-        print("No description length issues to fix.")
+    # Detect short descriptions directly from the JSON
+    import json as _json
+    try:
+        with open(req_file, "r", encoding="utf-8") as f:
+            req_data = _json.load(f)
+    except (_json.JSONDecodeError, OSError):
+        print("Error: could not parse docs/plan/requirements.json")
         return False
 
-    # Parse the output to extract requirement IDs with short descriptions
     short_reqs = []
-    for line in result.stdout.splitlines():
-        m = re.match(r'\s*-\s*\[([^\]]+)\]\s*\((\d+)\s+words\)', line)
-        if m:
-            short_reqs.append((m.group(1), int(m.group(2))))
+    for req in req_data.get("requirements", []):
+        desc = req.get("description", "")
+        word_count = len(desc.split())
+        if word_count < 10:
+            short_reqs.append((req.get("id", "?"), word_count))
 
     if not short_reqs:
         print("No description length issues found in output.")
@@ -1571,7 +1501,7 @@ def _fix_description_length(ctx: ProjectContext, dry_run: bool = False) -> bool:
     )
 
     allowed_files = [req_file]
-    result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+    result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
     if result.returncode != 0:
         print(f"\n[!] Error fixing description length.")
@@ -1650,7 +1580,6 @@ def _rebuild_phase_dag(phase_dir: str, ctx: Optional[ProjectContext]) -> None:
         result = ctx.run_ai(
             "dag_tasks.md",
             allowed_files=[dag_file],
-            sandbox=False,
             context_files={
                 "description_ctx": ctx.input_dir,
                 "tasks_content": phase_dir,
@@ -1727,30 +1656,28 @@ def _show_affected_tasks(req_id: str) -> None:
         print(f"\nNo tasks reference [{req_id}].")
 
 
-def _run_verify(mode: str) -> None:
-    """Run a specific ``verify.py`` verification mode and print the result.
+def _run_validate(phase: Optional[int] = None) -> None:
+    """Run ``validate.py`` and print the result.
 
-    Supported modes: ``"master"`` and ``"dags"``.  Unknown modes
-    are silently ignored.
-
-    :param mode: Verification mode string matching a key in the internal
-        ``cmd_map``.
-    :type mode: str
+    :param phase: When provided, validate only this phase number.
+        When ``None``, runs ``--all``.
+    :type phase: Optional[int]
     """
-    verify_script = os.path.join(TOOLS_DIR, "verify.py")
-    cmd_map = {
-        "master": [sys.executable, verify_script, "master", "docs/plan/requirements.md", "docs/plan/requirements"],
-        "dags": [sys.executable, verify_script, "dags", "docs/plan/tasks/"],
-    }
-    cmd = cmd_map.get(mode)
-    if cmd:
-        res = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT_DIR)
-        if res.returncode == 0:
-            print(f"  PASS  {mode}")
-        else:
-            print(f"  FAIL  {mode}")
-            if res.stdout.strip():
-                print(res.stdout.strip())
+    validate_script = os.path.join(TOOLS_DIR, "validate.py")
+    cmd = [sys.executable, validate_script]
+    if phase is not None:
+        cmd.extend(["--phase", str(phase)])
+    else:
+        cmd.append("--all")
+    res = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT_DIR)
+    if res.returncode == 0:
+        label = f"phase {phase}" if phase else "all"
+        print(f"  PASS  {label}")
+    else:
+        label = f"phase {phase}" if phase else "all"
+        print(f"  FAIL  {label}")
+        if res.stdout.strip():
+            print(res.stdout.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -1759,12 +1686,12 @@ def _run_verify(mode: str) -> None:
 
 
 def _load_requirements_ctx() -> str:
-    """Load docs/plan/requirements.md content, or empty string if missing."""
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    """Load docs/plan/requirements.json content, or empty string if missing."""
+    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
     if os.path.exists(req_file):
         with open(req_file, "r", encoding="utf-8") as f:
             return f.read()
-    return "(no docs/plan/requirements.md found)"
+    return "(no docs/plan/requirements.json found)"
 
 
 def _load_phases_ctx() -> str:
@@ -1867,7 +1794,6 @@ def cmd_add_feature(args: "argparse.Namespace") -> None:  # type: ignore[name-de
                 print(line)
                 streamed_lines.append(line)
 
-            before = ctx.get_workspace_snapshot()
             effective_timeout = ctx.agent_timeout
             result = ctx.runner.run(ctx.root_dir, prompt, ctx.image_paths,
                                     on_line=_on_line, timeout=effective_timeout)
@@ -1922,7 +1848,7 @@ def cmd_add_feature(args: "argparse.Namespace") -> None:  # type: ignore[name-de
             print(f"[dry-run] Would generate spec at: {spec_output}")
             return
 
-        result = ctx.run_ai(prompt, allowed_files=[spec_output], sandbox=False)
+        result = ctx.run_ai(prompt, allowed_files=[spec_output])
 
         if result.returncode != 0 or not os.path.exists(spec_output):
             print(f"\n[!] Error generating spec.")
@@ -2010,8 +1936,8 @@ def cmd_add_feature(args: "argparse.Namespace") -> None:  # type: ignore[name-de
         next_task_num=str(next_task_num),
     )
 
-    # Allow writes to: sub-epic dir, docs/plan/requirements.md, phase doc, shared_components
-    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.md")
+    # Allow writes to: sub-epic dir, docs/plan/requirements.json, phase doc, shared_components
+    req_file = os.path.join(ROOT_DIR, "docs/plan/requirements.json")
     phase_doc = os.path.join(ROOT_DIR, "docs", "plan", "phases", f"{phase_id}.md")
     shared_comp = os.path.join(ROOT_DIR, "docs", "plan", "shared_components.md")
     allowed_files = [
@@ -2021,7 +1947,7 @@ def cmd_add_feature(args: "argparse.Namespace") -> None:  # type: ignore[name-de
         shared_comp,
     ]
 
-    result = ctx.run_ai(prompt, allowed_files=allowed_files, sandbox=False)
+    result = ctx.run_ai(prompt, allowed_files=allowed_files)
 
     if result.returncode != 0:
         print(f"\n[!] Error integrating feature.")
@@ -2055,52 +1981,6 @@ def cmd_add_feature(args: "argparse.Namespace") -> None:  # type: ignore[name-de
     print("Run 'workflow.py validate' to verify plan consistency.")
 
 
-def _fix_depends_on_formatting(dry_run: bool = False) -> bool:
-    """Fix verify-depends-on failures by running the validation script with --fix.
-
-    Delegates to :mod:`verify` to automatically fix common
-    formatting issues like:
-    - Inconsistent quoting in depends_on arrays
-    - Relative paths with ../ prefixes
-    - Full project-relative paths
-
-    :param dry_run: If ``True``, print what would be fixed without writing.
-    :returns: ``True`` if fix was attempted (or dry-run shown), ``False`` if
-        nothing to do or on error.
-    """
-    tasks_dir = get_tasks_dir()
-    verify_script = os.path.join(TOOLS_DIR, "verify.py")
-
-    print("\n=> Fixing depends_on formatting issues...")
-
-    if dry_run:
-        print(f"\n[dry-run] Would run: python {verify_script} depends-on --fix {tasks_dir}")
-        print("This will attempt to automatically fix:")
-        print("  - Inconsistent quoting in depends_on arrays")
-        print("  - Relative paths with ../ prefixes")
-        print("  - Full project-relative paths")
-        return True
-
-    # Run the verification script with --fix flag
-    result = subprocess.run(
-        [sys.executable, verify_script, "depends-on", "--fix", tasks_dir],
-        capture_output=True,
-        text=True,
-        cwd=ROOT_DIR
-    )
-
-    # Print output
-    print(result.stdout)
-
-    if result.returncode != 0:
-        print(result.stderr)
-        print("\n[!] Some depends_on issues could not be fixed automatically.")
-        print("Manual fixes may be required. Review the errors above.")
-        # Return True to indicate we attempted the fix, even if not all succeeded
-        return True
-
-    print("\n✓ depends_on formatting fixes applied successfully.")
-    return True
 
 
 # ---------------------------------------------------------------------------
